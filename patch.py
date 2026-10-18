@@ -21,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.4.0-proxy.1"
+VERSION = "0.4.1-proxy.1"
 EDITION = "proxy"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -33,10 +33,10 @@ PROVIDER = "deepseek-desktop"
 MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
-SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py",
+SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py", "responses_compat.py",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/test_tools.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -328,7 +328,8 @@ def prepared_config(current, catalog, account, service, managed=None, helper=Non
             require(managed and managed.get("proxy_provider")==existing,"An unmanaged proxy provider exists")
             require({k:v for k,v in managed.get("proxy",{}).items() if k!="models"}=={k:v for k,v in proxy.items() if k!="models"},
                     "The managed proxy connection changed; review before migrating")
-        else:add(ps.PROVIDER,ps.provider_config(proxy,Path(catalog).parent/"proxy_support.py"))
+            updated=remove_provider(updated,ps.PROVIDER)
+        add(ps.PROVIDER,ps.provider_config(proxy,Path(catalog).parent/"proxy_support.py"))
     if locals:
         import local_support as ls
         for connection in locals:

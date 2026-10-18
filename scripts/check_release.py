@@ -5,6 +5,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "responses_compat.py", "tests/test_responses_compat.py", "scripts/test_tools.py",
     "local_support.py", "local_bridge.py", "tests/test_local_support.py", "scripts/test_switching.py", "scripts/route_driver.cjs",
     "model_sync.py", "updater.py", "update_worker.py", "edition.json", "update.json",
     "scripts/test_reasoning.py", "scripts/release_manifest.py", "scripts/test_context.py", "tests/test_model_sync.py", "tests/test_updater.py",

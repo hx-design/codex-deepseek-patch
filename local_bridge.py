@@ -1,4 +1,4 @@
-"""Idle-exiting adaptation for local tool schemas and strict message templates."""
+"""Idle-exiting adaptation for native tools and strict message templates."""
 from pathlib import Path
 import argparse
 import hmac
@@ -50,10 +50,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path not in ('/v1/responses','/v1/models'):
             self.reply(404,b'{"error":"unsupported local endpoint"}');return
         profile=self.server.profile
+        adapter=None
         if raw is not None:
             try:body=json.loads(raw)
             except ValueError:self.reply(400,b'{"error":"invalid JSON"}');return
-            if body.get('model') in profile['chat_only_models']:
+            if body.get('model') in profile.get('chat_only_models',[]):
                 for key in ('tools','tool_choice','parallel_tool_calls'):body.pop(key,None)
             if body.get('model') in profile.get('normalize_instructions_models',[]) and isinstance(body.get('input'),list):
                 instructions=[body['instructions']] if body.get('instructions') else []
@@ -64,10 +65,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         instructions.append(content if isinstance(content,str) else '\n'.join(x.get('text','') for x in content))
                     else:messages.append(item)
                 body['instructions']='\n\n'.join(instructions);body['input']=messages
+            if profile.get('native_tools') or body.get('model') in profile.get('tool_adapter_models',[]):
+                from responses_compat import ToolAdapter
+                adapter=ToolAdapter(body,flatten_namespaces=profile.get('flatten_namespaces',
+                    body.get('model') in profile.get('tool_adapter_models',[])));body=adapter.body
             raw=json.dumps(body,ensure_ascii=False).encode('utf-8')
         headers={'Content-Type':'application/json'}
         if profile.get('key_file'):
             headers['Authorization']='Bearer '+Path(profile['key_file']).read_text(encoding='utf-8').strip()
+        elif profile.get('proxy_config'):
+            from proxy_support import read_api_key
+            headers['Authorization']='Bearer '+read_api_key(profile['proxy_config'])
         url=profile['base_url'].rstrip('/')+self.path.removeprefix('/v1')
         self.server.active+=1
         try:
@@ -76,10 +84,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_response(response.status)
                 self.send_header('Content-Type',response.headers.get('Content-Type','application/json'))
                 self.send_header('Connection','close');self.end_headers();self.close_connection=True
-                while True:
-                    chunk=response.read1(16384)
-                    if not chunk:break
-                    self.wfile.write(chunk);self.wfile.flush()
+                if adapter and 'text/event-stream' in response.headers.get('Content-Type',''):
+                    for chunk in adapter.stream(response):
+                        self.wfile.write(chunk);self.wfile.flush()
+                elif adapter:
+                    self.wfile.write(json.dumps(adapter.response(json.load(response)),ensure_ascii=False).encode())
+                else:
+                    while True:
+                        chunk=response.read1(16384)
+                        if not chunk:break
+                        self.wfile.write(chunk);self.wfile.flush()
         except urllib.error.HTTPError as error:
             self.reply(error.code,error.read(1000000))
         except (BrokenPipeError,ConnectionResetError):pass

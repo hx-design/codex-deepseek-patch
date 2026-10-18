@@ -109,13 +109,15 @@ def validate(settings):
 
 def provider_config(settings, helper):
     validate(settings)
+    from local_support import bridge_port
+    endpoint='http://127.0.0.1:'+str(bridge_port(helper,PROVIDER))+'/v1'
     command = Path(sys.executable)
     if command.name.lower() == "pythonw.exe":
         command = command.with_name("python.exe")
         if not command.is_file():
             raise ValueError("Console Python is required by the credential helper")
     return (f'\n[model_providers.{PROVIDER}]\nname = "EasyCLIProxyAPI"\n'
-            + 'base_url = ' + json.dumps(settings["base_url"]) + '\n'
+            + 'base_url = ' + json.dumps(endpoint) + '\n'
             + 'wire_api = "responses"\nrequires_openai_auth = false\n'
             + 'supports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
             + f'\n[model_providers.{PROVIDER}.auth]\ncommand = ' + json.dumps(str(command)) + '\n'
@@ -143,7 +145,7 @@ def add_catalog(catalog, models):
                      effective_context_window_percent=100,
                      prefer_websockets=False, use_responses_lite=False, tool_mode=None,
                      experimental_supported_tools=[], multi_agent_reasoning_effort="high",
-                     web_search_tool_type="text", supports_search_tool=False,
+                     web_search_tool_type="text", supports_search_tool=True,
                      input_modalities=["text"], supports_image_detail_original=False,
                      supports_reasoning_effort_updates=False, support_verbosity=False,
                      default_verbosity=None)
@@ -153,11 +155,29 @@ def add_catalog(catalog, models):
     return result
 
 
+def stage_helpers(directory, settings):
+    import secrets, shutil
+    import patch
+    from local_support import bridge_port
+    directory=Path(directory)
+    for name in ('proxy_support.py','local_bridge.py','responses_compat.py'):
+        shutil.copy2(Path(__file__).with_name(name),directory/name)
+    patch.save_json(directory/(PROVIDER+'-bridge.json'),{
+        'base_url':settings['base_url'],'proxy_config':settings['config'],
+        'native_tools':True,'port':bridge_port(directory/'proxy_support.py',PROVIDER),
+        'token':secrets.token_urlsafe(32)})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["credential-get"])
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
+    profile=Path(__file__).with_name(PROVIDER+'-bridge.json')
+    if profile.is_file():
+        from local_bridge import credential
+        credential(profile)
+        return 0
     try:
         key = read_api_key(args.config)
     except (ValueError, OSError):

@@ -21,6 +21,9 @@ def verify_build(output):
     if manifest.get('switching_probe_required'):
         from scripts.test_switching import main as switching
         switching(output)
+    if manifest.get('tool_loading_probe_required'):
+        from scripts.test_tools import main as tools
+        tools(output)
     boot(output)
 
 

@@ -191,13 +191,14 @@ def build_compatible(args):
                 specs,warnings=ls.discover(connection)
                 connection["chat_only_models"]=[m for m,spec in specs.items() if not spec.get("supports_tools",True)]
                 connection["normalize_instructions_models"]=[m for m,spec in specs.items() if spec.get("normalize_instructions")]
+                connection["tool_adapter_models"]=[m for m,spec in specs.items() if ls.needs_tool_adapter(spec)]
                 p.require(specs,"No usable model specifications for "+connection["id"]+": "+"; ".join(warnings))
                 for model,spec in specs.items():
                     p.require(not any(e["slug"]==model for e in catalog["models"]),"Model ID belongs to more than one provider: "+model)
                     entry=ls.make_entry(native_template,model,connection,spec,100+len(routes))
                     compact=apply_reductions(entry,{},spec.get("configured_context_window") if connection.get("respect_server_context") else None)
                     catalog["models"].append(entry)
-                    routes[model]={"provider":connection["id"]+("-compat" if not spec.get("supports_tools",True) or spec.get("normalize_instructions") else ""),"context_window":entry["context_window"],"max_context_window":entry["max_context_window"],"compact_limit":compact,
+                    routes[model]={"provider":connection["id"]+("-compat" if not spec.get("supports_tools",True) or spec.get("normalize_instructions") or ls.needs_tool_adapter(spec) else ""),"context_window":entry["context_window"],"max_context_window":entry["max_context_window"],"compact_limit":compact,
                                    "supports_tools":spec.get("supports_tools",True)}
     allowed={p.PROVIDER} if deepseek else set()
     if proxy:allowed.add("easycli-desktop")
@@ -217,7 +218,9 @@ def build_compatible(args):
     p.run([getattr(args, "node_path", None) or shutil.which("node"), "--check", source], capture_output=True, timeout=60)
     p.save_json(output / "desktop-models.json", catalog)
     if model_snapshot:p.save_json(output/'synced-models.json',model_snapshot)
-    if proxy:shutil.copy2(p.ROOT/"proxy_support.py",output/"proxy_support.py")
+    if proxy:
+        import proxy_support
+        proxy_support.stage_helpers(output,proxy)
     if locals:
         import local_support
         local_support.stage_helpers(output,locals)
@@ -264,6 +267,7 @@ def build_compatible(args):
     manifest.update(edition=p.EDITION,deepseek_enabled=deepseek,locals=locals,model_routes=routes)
     manifest['reasoning_probe_required']=True
     manifest['switching_probe_required']=bool(routes)
+    manifest['tool_loading_probe_required']=bool(routes)
     if model_snapshot:
         manifest['model_routes']=model_snapshot['routes']
     if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
@@ -305,6 +309,8 @@ def install_compatible(directory, manifest):
         p.require(manifest.get('reasoning_probe')=='passed','Run the reasoning selection probe before installation')
     if manifest.get('switching_probe_required'):
         p.require(manifest.get('switching_probe')=='passed','Run the saved-chat switching probe before installation')
+    if manifest.get('tool_loading_probe_required'):
+        p.require(manifest.get('tool_loading_probe')=='passed','Run the large-tool discovery/compaction probe before installation')
     if manifest.get("deepseek_enabled",True):
         p.require(credential_available(manifest),"DeepSeek credential is unavailable; run setup-key")
     if manifest.get('model_routes'):

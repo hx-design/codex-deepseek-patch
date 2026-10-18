@@ -15,7 +15,7 @@ def validate(value):
     if not isinstance(value,dict):
         raise ValueError('Connection must be an object')
     result=copy.deepcopy(value)
-    allowed={'id','name','kind','base_url','models','key_file','model_specs','chat_only_models','normalize_instructions_models','respect_server_context'}
+    allowed={'id','name','kind','base_url','models','key_file','model_specs','chat_only_models','normalize_instructions_models','tool_adapter_models','respect_server_context'}
     if set(result)-allowed or not re.fullmatch(r'local-[a-z0-9-]+',result.get('id','')):
         raise ValueError('Use a unique local-... connection ID')
     if result.get('kind') not in ('ollama','lmstudio','openai'):
@@ -34,6 +34,9 @@ def validate(value):
     if type(result['respect_server_context']) is not bool:raise ValueError('Invalid server context preference')
     result.setdefault('chat_only_models',[])
     result.setdefault('normalize_instructions_models',[])
+    result.setdefault('tool_adapter_models',[])
+    if not isinstance(result['tool_adapter_models'],list) or any(not isinstance(m,str) for m in result['tool_adapter_models']):
+        raise ValueError('Invalid tool-adaptation model list')
     if not isinstance(result['normalize_instructions_models'],list) or any(not isinstance(m,str) for m in result['normalize_instructions_models']):
         raise ValueError('Invalid instruction-adaptation model list')
     if not isinstance(result['chat_only_models'],list) or any(not isinstance(m,str) for m in result['chat_only_models']):
@@ -129,6 +132,7 @@ def discover(connection, fetch=request):
                            'reasoning_levels':info.get('reasoning_levels',levels),
                            'supports_tools':info.get('supports_tools',tools),
                            'normalize_instructions':bool(info.get('normalize_instructions',False)),
+                           'native_tool_search':info.get('native_tool_search') is True,
                            'source':connection['base_url']+'/models',
                            'configured_context_window':info.get('configured_context_window')}
         except Exception as error:warnings.append(model+': '+type(error).__name__+'; check local model metadata')
@@ -136,14 +140,18 @@ def discover(connection, fetch=request):
 
 
 def provider_ids(connection):
-    return [(connection['id'],False)]+([(connection['id']+'-compat',True)] if connection.get('chat_only_models') or connection.get('normalize_instructions_models') else [])
+    return [(connection['id'],False)]+([(connection['id']+'-compat',True)] if connection.get('chat_only_models') or connection.get('normalize_instructions_models') or connection.get('tool_adapter_models') else [])
+
+
+def needs_tool_adapter(spec):
+    return spec.get('supports_tools',True) and not spec.get('native_tool_search',False)
 
 
 def provider_config(connection,helper,chat_only=False):
     connection=validate(connection)
     if chat_only:connection['id']+='-compat'
-    else:connection.update(chat_only_models=[],normalize_instructions_models=[])
-    adapted=bool(connection.get('chat_only_models') or connection.get('normalize_instructions_models'))
+    else:connection.update(chat_only_models=[],normalize_instructions_models=[],tool_adapter_models=[])
+    adapted=bool(connection.get('chat_only_models') or connection.get('normalize_instructions_models') or connection.get('tool_adapter_models'))
     base_url=connection['base_url']
     if adapted:
         base_url='http://127.0.0.1:'+str(bridge_port(helper,connection['id']))+'/v1'
@@ -171,9 +179,10 @@ def stage_helpers(directory,connections):
     directory=Path(directory)
     shutil.copy2(Path(__file__),directory/'local_support.py')
     for connection in connections:
-        if not connection.get('chat_only_models') and not connection.get('normalize_instructions_models'):continue
+        if not connection.get('chat_only_models') and not connection.get('normalize_instructions_models') and not connection.get('tool_adapter_models'):continue
         shutil.copy2(Path(__file__).with_name('local_bridge.py'),directory/'local_bridge.py')
-        profile={k:v for k,v in connection.items() if k in ('base_url','key_file','chat_only_models','normalize_instructions_models')}
+        shutil.copy2(Path(__file__).with_name('responses_compat.py'),directory/'responses_compat.py')
+        profile={k:v for k,v in connection.items() if k in ('base_url','key_file','chat_only_models','normalize_instructions_models','tool_adapter_models')}
         profile.update(port=bridge_port(directory/'local_support.py',connection['id']+'-compat'),token=secrets.token_urlsafe(32))
         import patch
         patch.save_json(directory/(connection['id']+'-compat-bridge.json'),profile)
@@ -187,7 +196,7 @@ def make_entry(template,model,provider,spec,priority):
         shell_type='shell_command' if spec.get('supports_tools',True) else 'disabled',visibility='list',supported_in_api=True,
         priority=priority,additional_speed_tiers=[],service_tiers=[],default_service_tier=None,available_access_programs=None,
         availability_nux=None,upgrade=None,prefer_websockets=False,use_responses_lite=False,tool_mode=None,
-        experimental_supported_tools=[],supports_search_tool=False,web_search_tool_type='text',support_verbosity=False,
+        experimental_supported_tools=[],supports_search_tool=spec.get('supports_tools',True),web_search_tool_type='text',support_verbosity=False,
         default_verbosity=None,input_modalities=spec.get('input_modalities',['text']),supports_image_detail_original=False,
         supports_reasoning_effort_updates=False,default_reasoning_level=None,supported_reasoning_levels=[])
     entry.update(node_repl_disabled=True,apply_patch_tool_type=None,multi_agent_version=None)
@@ -219,6 +228,7 @@ def connect(args):
     if not specs:raise ValueError('No models with usable specifications: '+'; '.join(warnings))
     row['chat_only_models']=[m for m,spec in specs.items() if not spec.get('supports_tools',True)]
     row['normalize_instructions_models']=[m for m,spec in specs.items() if spec.get('normalize_instructions')]
+    row['tool_adapter_models']=[m for m,spec in specs.items() if needs_tool_adapter(spec)]
     path=directory/'connections.json';value=monitor.load_json(path,{'locals':[]})
     value['locals']=[r for r in value.get('locals',[]) if r['id']!=identifier]+[validate(row)]
     with monitor.state_lock(directory) as locked:

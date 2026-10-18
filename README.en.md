@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.0-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.1-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -13,8 +13,9 @@ This is the **0.4.0-proxy.1 multi-model extension**, on the independent `codex/e
 - Switch registered providers and native GPT within the same saved local chat, retaining its ID and history. Finish the current reply before switching.
 - Select supported reasoning levels per turn, including proxy model IDs ending in `-high` or `-thinking`.
 - Use each model's maximum context by default; preserve deliberate reductions. Refresh legacy saved-chat windows and retain the correct window after compaction.
+- Discover tools on demand and load only matching definitions, preventing large MCP catalogs from repeatedly filling context.
 - Detect Codex updates, check compatibility, rebuild and reinstall after normal exit. Optional patch updates and model/spec synchronization use separate edition feeds.
-- Standard-library Python and Node.js only: no extra packages, database or management UI. Natively compatible local models use direct Responses connections. Chat-only models and strict message templates use a small authenticated helper that starts on demand and exits after 120 idle seconds.
+- Standard-library Python and Node.js only: no extra packages, database or management UI. Endpoints supporting the full native tool protocol can connect directly. Existing proxies and local models needing adaptation use a small authenticated helper that starts on demand and exits after 120 idle seconds.
 
 Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Windows desktop app. This unofficial source-only project does not distribute the application, extracted model prompts or credentials.
 
@@ -24,14 +25,21 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | --- | --- | --- |
 | Native interface | Reuse the model menu, chats and permission controls | Work within the existing Codex application |
 | Standard libraries | Python / Node.js standard libraries; JSON / TOML state | No additional Python/npm packages or database service |
-| Direct connections | Compatible models call existing Responses endpoints directly | These requests do not traverse a patch relay |
-| On-demand adaptation | Strip unsupported tools or normalize strict message templates | The helper starts when needed and exits after about 120 idle seconds |
+| Direct connections | Endpoints with full native tool discovery support connect directly | These requests do not traverse a patch relay |
+| On-demand adaptation | Translate discovery/custom calls, strip unsupported tools or normalize strict templates | Reuse existing services; the helper exits after about 120 idle seconds |
+| Lazy tools | Expose discovery first and load matching tool definitions when requested | Large MCP catalogs are not sent with every request |
 | Native scheduling | launchd or Windows Task Scheduler runs one check per interval | Each check exits; no persistent monitoring loop |
 | Change-based updates | Compare app, runtime and model digests; reuse verified source packages | Unchanged checks avoid rebuilding and redundant downloads |
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.0-proxy.1` update runtime uses **22 source files totaling about 263 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.1-proxy.1` update runtime uses **24 source files totaling about 287 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+
+### 0.4.1 fix: repeated compaction with large tool catalogs
+
+Earlier extension releases disabled discovery for proxy and local models, causing MCP definitions to be sent eagerly. These fixed definitions returned after history compaction, even with the model's full context window configured. This affected published defaults too.
+
+Tool-capable models now enable lazy discovery. A small adapter translates native search and custom calls for function-compatible peers; Codex still performs discovery, execution and permission checks. Compaction requests keep tools disabled. Model maxima, deliberate reductions and chat history are preserved. Restart Codex after updating and continue the existing chat.
 
 ## Connect and install
 
@@ -57,7 +65,7 @@ python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_B
 
 On Windows, use `python` in PowerShell, choose a build directory under `$env:LOCALAPPDATA`, and pass the official Store app path to monitor `--app`. Builds discover the Store source automatically. The patched app is installed separately under `%LOCALAPPDATA%\CodexDeepSeekPatch\app`; the existing **Codex DeepSeek** Start menu shortcut launches it. The official package remains read-only.
 
-`--verify` runs all isolated catalog, reasoning, context, same-chat switching and boot checks without provider inference. A temporary window may appear. Repeat with `python3 patch.py verify BUILD`. Keep the build directory: configuration references its catalog/helpers and it contains recovery data. App copies require disk space.
+`--verify` runs isolated catalog, reasoning, context, same-chat switching, 160-tool MCP discovery/execution/compaction recovery and boot checks without provider inference. A temporary window may appear. Repeat with `python3 patch.py verify BUILD`. Keep the build directory: configuration references its catalog/helpers and it contains recovery data. App copies require disk space.
 
 ## Optional providers
 

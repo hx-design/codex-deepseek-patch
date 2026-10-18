@@ -219,7 +219,7 @@ def make_entry(template, model, provider, spec, priority):
                  default_reasoning_level='high', supported_reasoning_levels=[{'effort':x,'description':x} for x in spec.get('reasoning_levels',['high'])],
                  input_modalities=spec.get('input_modalities',['text']), prefer_websockets=False, use_responses_lite=False,
                  tool_mode=None, experimental_supported_tools=[], multi_agent_reasoning_effort='high',
-                 supports_search_tool=provider=='deepseek-desktop', web_search_tool_type='text',
+                 supports_search_tool=True, web_search_tool_type='text',
                  support_verbosity=False, default_verbosity=None)
     return configure_reasoning(entry, spec.get('reasoning_levels'))
 
@@ -349,6 +349,7 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
                     found.setdefault(model,specs[model])
             connection['chat_only_models']=[m for m,spec in found.items() if not spec.get('supports_tools',True)]
             connection['normalize_instructions_models']=[m for m,spec in found.items() if spec.get('normalize_instructions')]
+            connection['tool_adapter_models']=[m for m,spec in found.items() if ls.needs_tool_adapter(spec)]
             for model in [m for m in found if m not in preferences.get('hidden',[])]:
                 p.require(not any(e['slug']==model for e in entries),'Model ID belongs to more than one provider: '+model)
                 spec=found[model];specs[model]=spec
@@ -358,9 +359,22 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
                 entry=ls.make_entry(template,model,connection,spec,100+len(routes))
                 compact=apply_reductions(entry,preferences,configured)
                 defaults[model]=entry['context_window'];entries.append(entry)
-                routes[model]={'provider':identifier+('-compat' if not spec.get('supports_tools',True) or spec.get('normalize_instructions') else ''),'context_window':entry['context_window'],
+                routes[model]={'provider':identifier+('-compat' if not spec.get('supports_tools',True) or spec.get('normalize_instructions') or ls.needs_tool_adapter(spec) else ''),'context_window':entry['context_window'],
                                'max_context_window':entry['max_context_window'],'compact_limit':compact,
                                'supports_tools':spec.get('supports_tools',True)}
+        # Apply current transport policy even while an endpoint is offline and
+        # its last verified model specifications must be retained.
+        by_model={entry['slug']:entry for entry in entries}
+        for connection in locals:
+            identifier=connection['id']
+            for model,route in routes.items():
+                if route['provider'] not in (identifier,identifier+'-compat'):continue
+                tools=route.get('supports_tools',True)
+                by_model[model]['supports_search_tool']=tools
+                if tools and ls.needs_tool_adapter(specs.get(model,{})):
+                    route['provider']=identifier+'-compat'
+                    selected=connection.setdefault('tool_adapter_models',[])
+                    if model not in selected:selected.append(model)
     if preferences:p.save_json(directory/'model-preferences.json',preferences)
     p.require(entries, 'No models remain visible')
     snapshot={'format':1,'edition':settings['edition'],'catalog':{'models':entries},'routes':routes,

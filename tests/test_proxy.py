@@ -101,12 +101,14 @@ class ProxyTests(unittest.TestCase):
             (new/'manifest.json').write_text(json.dumps({'format':1,'proxy':settings}))
             next_managed = backend.managed_baseline(new,'account','service')
             refreshed = patch.prepared_config(updated+'\n[user]\nkeep=12\n',root/'future.json','account','service',managed=next_managed,proxy=settings)
-            self.assertEqual(patch.tomllib.loads(refreshed)['model_providers'],parsed['model_providers'])
+            refreshed_providers=patch.tomllib.loads(refreshed)['model_providers']
+            self.assertEqual(refreshed_providers[patch.PROVIDER],parsed['model_providers'][patch.PROVIDER])
+            self.assertEqual(refreshed_providers[ps.PROVIDER],patch.tomllib.loads(ps.provider_config(settings,root/'proxy_support.py'))['model_providers'][ps.PROVIDER])
             self.assertEqual(patch.tomllib.loads(refreshed)['user'],{'keep':12})
             with self.assertRaises(patch.PatchError):
-                backend.refresh_config(updated.replace('8317','9999'),root/'future.json',next_managed)
+                backend.refresh_config(updated.replace(parsed['model_providers'][ps.PROVIDER]['base_url'],'http://127.0.0.1:9999/v1'),root/'future.json',next_managed)
             selection = patch.prepared_config(updated,root/'future.json','account','service',managed=next_managed,proxy={**settings,'models':['grok-4.5']})
-            self.assertEqual(patch.tomllib.loads(selection)['model_providers'],parsed['model_providers'])
+            self.assertEqual(patch.tomllib.loads(selection)['model_providers'],refreshed_providers)
 
     def test_unmanaged_same_named_provider_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
