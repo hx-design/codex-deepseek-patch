@@ -118,6 +118,20 @@ class AdoptionTests(unittest.TestCase):
 
 
 class InstallAdapterTests(unittest.TestCase):
+    def test_proxy_install_requires_context_probe_before_touching_configuration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);catalog=root/'desktop-models.json';catalog.write_text('{}')
+            manifest={'status':'prepared','target':str(root/'app'),'codex_home':str(root),
+                      'original_asar':'old','patched_asar':'new','catalog_sha256':p.file_sha(catalog),
+                      'boot_probe':'passed','offline_probe':'passed','proxy':{'config':'must-not-read'}}
+            with mock('backend.p.require_stopped'), mock('backend.p.verify_app'), \
+                 mock('backend.credential_available',return_value=True), mock('backend.p.install_transaction') as install, \
+                 mock('proxy_support.read_api_key') as credential:
+                with self.assertRaisesRegex(p.PatchError,'context/compaction probe'):
+                    backend.install_compatible(root,manifest)
+            credential.assert_not_called();install.assert_not_called()
+            self.assertFalse((root/'config.toml').exists())
+
     def test_refresh_verifies_signed_source_and_exact_previous_target_before_exchange(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

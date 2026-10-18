@@ -30,7 +30,7 @@ for (const [method, params, host] of [
 ]) assert.equal(route(method, params, host), params);
 assert.equal(route('thread/list', {}, 'local').modelProviders.length, 0);
 for (const model of ['grok-4.5', 'grok-4.7', 'gemini-3.8-flash-high', 'claude-opus-4-6-thinking']) {
-  for (const modelProvider of [undefined, null, 'openai']) {
+  for (const modelProvider of [undefined, null, 'openai', 'easycli-desktop']) {
     const params = {model, modelProvider, config: {keep: 42}, serviceTier: 'priority'};
     const result = route('thread/start', params, 'local');
     assert.equal(result.modelProvider, 'easycli-desktop');
@@ -44,6 +44,18 @@ for (const model of ['grok-4.5', 'grok-4.7', 'gemini-3.8-flash-high', 'claude-op
   }
   const explicit = {model, modelProvider: 'custom'};
   assert.equal(route('thread/start', explicit, 'local'), explicit);
+  const window = {'grok-4.5':500000, 'grok-4.7':500000, 'gemini-3.8-flash-high':1048576, 'claude-opus-4-6-thinking':1000000}[model];
+  const defaults = route('thread/start', {model}, 'local').config;
+  assert.equal(defaults.model_context_window, window);
+  assert.equal(defaults.model_auto_compact_token_limit, Math.floor(window * 0.9));
+  const reduced = {model, config:{model_context_window:200000,model_auto_compact_token_limit:160000}};
+  const adjusted = route('thread/start', reduced, 'local');
+  assert.equal(adjusted.config.model_context_window, 200000);
+  assert.equal(adjusted.config.model_auto_compact_token_limit, 160000);
+  assert.equal(reduced.config.model_context_window, 200000);
+  const tooLarge = route('thread/start', {model, config:{model_context_window:9000000,model_auto_compact_token_limit:8000000}}, 'local');
+  assert.equal(tooLarge.config.model_context_window, window);
+  assert.equal(tooLarge.config.model_auto_compact_token_limit, Math.floor(window * 0.9));
 }
 for (const model of ['__proto__', 'constructor', 'gemini-4', 'claude-opus-5-5']) {
   const params = {model};

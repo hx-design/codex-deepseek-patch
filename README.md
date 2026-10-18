@@ -1,6 +1,6 @@
 # Codex DeepSeek Patch · 现有代理扩展版
 
-本分支为 **`codex/existing-proxy-models`**，基于 v0.2.1 的可选多模型扩展，版本标记 `0.2.1-proxy.1`。使用 Grok / Gemini / Claude 需要自行配置并运行 EasyCLIProxyAPI。独立 DS 补丁继续在 [main 分支](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) 维护。
+本分支为 **`codex/existing-proxy-models`**，基于 v0.2.1 的可选多模型扩展，版本标记 `0.2.1-proxy.2`。使用 Grok / Gemini / Claude 需要自行配置并运行 EasyCLIProxyAPI。独立 DS 补丁继续在 [main 分支](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) 维护。
 
 [![Tests](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml/badge.svg)](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -122,7 +122,20 @@ Mac 已安装旧补丁时，可使用保留的官方签名原版备份，增加 
 python3 scripts/test_connection.py "$NEW_PATCH_BUILD" --model grok-4.7 --run
 ```
 
-联网测试使用对应账户额度。四个模型采用文本与工具调用配置、128k 保守上下文上限和提供商推理预设。安装后重新启用监测并指定新 baseline；后续自动补装继承这组模型与接口，不发送联网推理测试。切换服务商时请新建本机聊天。
+联网测试使用对应账户额度。四个模型采用文本与工具调用配置及提供商推理预设。**默认上下文按各模型官网最大值配置**（2026-10-18 核对）：
+
+| 模型 | 默认 / 最大窗口（token） | 官方规格 |
+| --- | ---: | --- |
+| Grok 4.5 | 500,000 | [xAI](https://docs.x.ai/developers/models/grok-4.5) |
+| Grok 4.7 | 500,000 | [xAI](https://docs.x.ai/developers/grok-4-7) |
+| Gemini 3.8 Flash | 1,048,576 | [Google](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash) |
+| Opus 4.6 Thinking | 1,000,000 | [Anthropic](https://platform.claude.com/docs/en/models/opus-4-6/overview) |
+
+目录窗口按 100% 计入，不再继承 GPT 模板的百分比折减。新建代理聊天时填入该模型的窗口和 90% 自动压缩阈值，避免旧的全局小窗口 / 低阈值覆盖默认值；请求 `config.model_context_window` 和 `config.model_auto_compact_token_limit` 中显式设定的较小值会保留。GPT / DS 的既有全局设置不变。
+
+Opus 官网规格为 1M，但 CLIProxyAPI 8.0.32 的 Antigravity 静态表仍标注 200k；本分支按模型官网设置客户端窗口，上游订阅通道的长请求能力需独立核验。[代理版本模型表](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/internal/registry/models/models.json)
+
+代理版安装前还需执行 `python3 scripts/test_context.py "$NEW_PATCH_BUILD"`：它使用真实内置 CLI 和本机模拟服务，连续两轮模拟 180k 占用，检查实际窗口与重复压缩，**不调用订阅接口**。安装后重新启用监测并指定新 baseline；后续自动补装继承这组模型与接口并执行此回归检查。更新后新建本机聊天，以采用修正后的上下文默认值。
 
 ## 可选：官方更新后自动重新安装
 

@@ -17,6 +17,15 @@ MODELS = {
     "claude-opus-4-6-thinking": "Claude Opus 4.6 Thinking",
 }
 
+# Provider specifications checked 2026-10-18; see README for exact sources.
+# Keep route.js defaults in sync (the regression test checks both together).
+MODEL_CONTEXT_WINDOWS = {
+    "grok-4.5": 500000,
+    "grok-4.7": 500000,
+    "gemini-3.8-flash-high": 1048576,
+    "claude-opus-4-6-thinking": 1000000,
+}
+
 
 def read_api_key(path):
     """Read only the client api-keys list in CPA v1/v2 generated YAML.
@@ -114,7 +123,7 @@ def provider_config(settings, helper):
 
 
 def add_catalog(catalog, models):
-    """Conservative tool capabilities; leave all bundled GPT and DS entries intact."""
+    """Provider context maxima; leave all bundled GPT and DS entries intact."""
     result = copy.deepcopy(catalog)
     template = next(m for m in result["models"] if m["slug"] == "gpt-6.1-sol")
     result["models"] = [m for m in result["models"] if m["slug"] not in MODELS]
@@ -128,7 +137,8 @@ def add_catalog(catalog, models):
                      shell_type="shell_command", visibility="list", supported_in_api=True, priority=priority,
                      additional_speed_tiers=[], service_tiers=[], default_service_tier=None,
                      available_access_programs=None, availability_nux=None, upgrade=None,
-                     context_window=128000, max_context_window=128000,
+                     context_window=MODEL_CONTEXT_WINDOWS[model], max_context_window=MODEL_CONTEXT_WINDOWS[model],
+                     effective_context_window_percent=100,
                      prefer_websockets=False, use_responses_lite=False, tool_mode=None,
                      experimental_supported_tools=[], multi_agent_reasoning_effort="high",
                      web_search_tool_type="text", supports_search_tool=False,

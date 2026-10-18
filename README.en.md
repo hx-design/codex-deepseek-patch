@@ -1,6 +1,6 @@
 # Codex DeepSeek Patch · Existing Proxy Edition
 
-This is **`codex/existing-proxy-models`**, an optional extension based on v0.2.1, versioned `0.2.1-proxy.1`. Grok / Gemini / Claude require an existing running EasyCLIProxyAPI setup. The standalone DeepSeek edition remains on [main](https://github.com/limyum-creator/codex-deepseek-patch/tree/main).
+This is **`codex/existing-proxy-models`**, an optional extension based on v0.2.1, versioned `0.2.1-proxy.2`. Grok / Gemini / Claude require an existing running EasyCLIProxyAPI setup. The standalone DeepSeek edition remains on [main](https://github.com/limyum-creator/codex-deepseek-patch/tree/main).
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API. Optionally add **Grok 4.5 / 4.7, Gemini 3.8 Flash, and Claude Opus 4.6 Thinking** through an existing EasyCLIProxyAPI endpoint.
 
@@ -90,7 +90,11 @@ Use matching `--keychain-account` and `--keychain-service` values with `setup-ke
 
 Configure and run [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) first. Add `--proxy-config "/path/to/existing/config.yaml" --proxy-base-url "http://127.0.0.1:8317/v1" --proxy-models grok-4.5 grok-4.7 gemini-3.8-flash-high claude-opus-4-6-thinking` to `build --compatible`. Choose only models available from your endpoint.
 
-The helper reads client `access.api-keys` (or legacy root `api-keys`) from the existing configuration. It does not copy keys or import OAuth credentials. Keep the proxy running and that file in place. Remote endpoints require HTTPS; loopback HTTP is supported. The presets use text input, shell tools, conservative 128k context, and provider reasoning presets.
+The helper reads client `access.api-keys` (or legacy root `api-keys`) from the existing configuration. It does not copy keys or import OAuth credentials. Keep the proxy running and that file in place. Remote endpoints require HTTPS; loopback HTTP is supported. The presets use text input, shell tools, and provider reasoning presets. Default/max context follows provider specifications: Grok 4.5 and 4.7 = 500,000; Gemini 3.8 Flash = 1,048,576; Opus 4.6 Thinking = 1,000,000 tokens. Sources and the dated upstream metadata discrepancy are listed in the [Chinese specification table](README.md#可选接入现成的-gemini--grok--opus-代理).
+
+Catalog windows use 100% without the inherited GPT percentage reduction. New proxy threads receive model-specific context and a 90% compaction threshold, overriding stale global defaults. Explicit smaller per-thread `config.model_context_window` / `config.model_auto_compact_token_limit` values are preserved. Existing GPT/DS global settings remain intact. CLIProxyAPI 8.0.32 still labels the Antigravity Opus route as 200k; the client uses the official 1M specification, while upstream long-request support requires separate verification.
+
+Run `python3 scripts/test_context.py BUILD` before installing proxy models: the real bundled CLI processes two locally simulated 180k-usage turns per model and must report the correct window without repeated compaction. No external inference is sent. The monitor repeats this regression during rebuilds.
 
 Run offline/startup tests and `python3 scripts/test_connection.py BUILD --model MODEL_ID --run` for each selected model before installation. Live tests consume provider usage. Start a new local chat when switching providers. Re-enable monitoring with the installed baseline; later builds retain its selected models and settings without inference calls.
 

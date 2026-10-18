@@ -15,7 +15,9 @@ def main(directory, model='deepseek-flash'):
     provider = ps.PROVIDER if proxy else patch.PROVIDER
     staged = directory/'patched.app'
     CLI = str(patch.cli_path(staged if manifest.get('status')=='prepared' and staged.is_dir() else Path(manifest['target'])))
-    evidence={'model':model,'provider':provider,'checks':[], 'status':'failed'}
+    evidence={'model':model,'provider':provider,'checks':[], 'status':'failed',
+              'catalog_sha256':patch.file_sha(directory/'desktop-models.json'),
+              'cli_sha256':patch.file_sha(Path(CLI))}
     with tempfile.TemporaryDirectory(prefix='codex-ds41f-smoke-') as tmp:
         home=Path(tmp)/'home';home.mkdir();cwd=Path(tmp)/'work';cwd.mkdir()
         (cwd/'probe.txt').write_text('DS41F_TOOL_OK\n')
@@ -57,12 +59,14 @@ def main(directory, model='deepseek-flash'):
             print('PASS:',model,'catalog and thread routing',flush=True)
             for prompt,expected in [('Reply exactly DS41F_OK. Do not call tools.','DS41F_OK'),('Use the shell tool to read probe.txt in the current directory, then reply with its exact content.','DS41F_TOOL_OK')]:
                 receive(send('turn/start',{'threadId':tid,'input':[{'type':'text','text':prompt}],'model':model,'effort':'high' if proxy else 'low'}))
-                deadline=time.monotonic()+180;messages=[];item_types=[];status=None
+                deadline=time.monotonic()+180;messages=[];item_types=[];status=None;windows=[]
                 while time.monotonic()<deadline:
                     e=events.get(timeout=max(.1,deadline-time.monotonic()));method=e.get('method');params=e.get('params',{})
                     if method=='item/completed':
                         item=params['item'];item_types.append(item['type'])
                         if item['type']=='agentMessage':messages.append(item.get('text',''))
+                    if method=='thread/tokenUsage/updated':
+                        windows.append(params['tokenUsage']['modelContextWindow'])
                     if method=='turn/completed':
                         status=params['turn']['status']
                         if status!='completed':raise RuntimeError(json.dumps(params['turn'].get('error')))
@@ -70,7 +74,8 @@ def main(directory, model='deepseek-flash'):
                 assert status=='completed',status
                 assert expected in '\n'.join(messages),messages
                 if expected=='DS41F_TOOL_OK': assert 'commandExecution' in item_types,item_types
-                evidence['checks'].append({'expected':expected,'status':status,'item_types':item_types,'assistant':messages})
+                if proxy: assert windows and set(windows)=={ps.MODEL_CONTEXT_WINDOWS[model]},windows
+                evidence['checks'].append({'expected':expected,'status':status,'item_types':item_types,'assistant':messages,'context_windows':windows})
                 print('PASS:',model,expected,'items:',','.join(item_types),flush=True)
             evidence['status']='passed'
         finally:

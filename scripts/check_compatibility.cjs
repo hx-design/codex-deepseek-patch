@@ -25,14 +25,19 @@ async function main() {
   });
   for (const hostId of ['local', 'remote-workpc']) {
     for (const model of ['gpt-6.1-sol', 'deepseek-flash', 'deepseek-v4-pro', 'grok-4.5', 'grok-4.7', 'gemini-3.8-flash-high', 'claude-opus-4-6-thinking']) {
-      for (const provider of [undefined, null, 'openai', 'other-provider', 'deepseek-desktop']) {
+      for (const provider of [undefined, null, 'openai', 'other-provider', 'deepseek-desktop', 'easycli-desktop']) {
         const params = {model, serviceTier: 'priority', config: {keep: 'yes', web_search: 'enabled'}};
         if (provider !== undefined) params.modelProvider = provider;
         const snapshot = structuredClone(params);
         const options = {priority: 'critical', timeoutMs: 12};
         const target = model === 'deepseek-flash' ? 'deepseek-desktop' : ['grok-4.5', 'grok-4.7', 'gemini-3.8-flash-high', 'claude-opus-4-6-thinking'].includes(model) ? 'easycli-desktop' : null;
-        const expected = hostId === 'local' && target && (provider == null || provider === 'openai')
+        const expected = hostId === 'local' && target && (provider == null || provider === 'openai' || target === 'easycli-desktop' && provider === target)
           ? {...params, modelProvider: target, serviceTier: null, config: {...params.config, web_search: 'disabled'}} : params;
+        if (expected !== params && target === 'easycli-desktop') {
+          const window = {'grok-4.5':500000, 'grok-4.7':500000, 'gemini-3.8-flash-high':1048576, 'claude-opus-4-6-thinking':1000000}[model];
+          expected.config.model_context_window = window;
+          expected.config.model_auto_compact_token_limit = Math.floor(window * 0.9);
+        }
         const c = client(hostId);
         const actual = await methods.sendRequest.call(c, 'thread/start', params, options);
         equal(actual, {kind: 'enqueue', method: 'thread/start', params: expected, options});

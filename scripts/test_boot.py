@@ -56,7 +56,7 @@ def inspect_children(rows, root_pid, browser, cli):
             "owned_processes": len(owned)}
 
 
-def main(directory, timeout=60):
+def main(directory, timeout=180):
     directory, manifest = patch.load_build(Path(directory))
     patch.require(manifest["status"] == "prepared", "Only prepared builds can be boot-tested")
     app = directory / "patched.app"

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
 
 import backend
 import patch
@@ -61,6 +62,22 @@ class ProxyTests(unittest.TestCase):
                                  ('models',['grok-4.5','grok-4.5']), ('models',[]), ('config','relative.yaml')]:
                 with self.assertRaises(ValueError):
                     ps.validate({**original,field:value})
+
+    def test_context_defaults_match_provider_maxima_and_actual_javascript_route(self):
+        expected = {'grok-4.5':500000, 'grok-4.7':500000, 'gemini-3.8-flash-high':1048576, 'claude-opus-4-6-thinking':1000000}
+        catalog = ps.add_catalog({'models':[{'slug':'gpt-6.1-sol','effective_context_window_percent':95}]},list(ps.MODELS))
+        script = ("const fs=require('fs'),vm=require('vm');const c=vm.createContext({});"
+                  "vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),c);"
+                  "const models=JSON.parse(process.argv[2]);"
+                  "console.log(JSON.stringify(Object.fromEntries(models.map(model=>[model,c.codexPatchAppServerParams('thread/start',{model},'local').config]))));")
+        routed = json.loads(subprocess.check_output(['node','-e',script,str(patch.ROOT/'route.js'),json.dumps(list(ps.MODELS))],text=True))
+        for model in catalog['models'][1:]:
+            slug=model['slug']
+            self.assertEqual(model['context_window'],expected[slug])
+            self.assertEqual(model['max_context_window'],expected[slug])
+            self.assertEqual(model['effective_context_window_percent'],100)
+            self.assertEqual(routed[slug]['model_context_window'],expected[slug])
+            self.assertEqual(routed[slug]['model_auto_compact_token_limit'],int(expected[slug]*0.9))
 
     def test_opt_in_provider_and_managed_refresh_keep_user_settings(self):
         with tempfile.TemporaryDirectory() as tmp:

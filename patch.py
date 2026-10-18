@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.2.1-proxy.1"
+VERSION = "0.2.1-proxy.2"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -33,7 +33,7 @@ KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (

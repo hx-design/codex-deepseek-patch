@@ -231,6 +231,7 @@ def install_compatible(directory, manifest):
     p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
     if manifest.get("proxy"):
         import proxy_support as ps
+        p.require(manifest.get("context_probe") == "passed", "Run the offline context/compaction probe before installing proxy models")
         ps.read_api_key(manifest["proxy"]["config"])
     current = p.read_config(config)
     updated = p.prepared_config(current, directory / "desktop-models.json", manifest["keychain_account"],
@@ -304,10 +305,13 @@ class MonitorBackend:
                                   keychain_account=self.settings["keychain_account"],
                                   keychain_service=self.settings["keychain_service"],
                                   node_path=self.settings.get("node_path"), inspection=self.inspection)
-        build_compatible(args)
+        built = build_compatible(args)
         from scripts.test_offline import main as offline
         from scripts.test_boot import main as boot
         offline(output)
+        if built.get("proxy"):
+            from scripts.test_context import main as check_context
+            check_context(output)
         boot(output)
         return {"directory": str(output)}
 
