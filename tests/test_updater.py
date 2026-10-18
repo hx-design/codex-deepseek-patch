@@ -89,7 +89,7 @@ class UpdateTests(unittest.TestCase):
             root=Path(tmp);current=u.edition()['edition'];other='ds' if current=='proxy' else 'proxy'
             monitor.atomic_json(root/'settings.json',{'edition':other,'app':'untouched'})
             args=Mock(state_dir=root,interval=300,baseline=None)
-            with self.assertRaisesRegex(ValueError,'pinned to another edition'):
+            with self.assertRaisesRegex(ValueError,'pinned to another edition'), mock.object(monitor.sys,'platform','darwin'):
                 monitor.enable(args)
             self.assertEqual(monitor.load_json(root/'settings.json')['app'],'untouched')
             self.assertFalse((root/'runtime').exists())
