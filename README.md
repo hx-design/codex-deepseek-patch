@@ -4,7 +4,7 @@
 
 支持 **Gemini、Grok、Opus、Ollama、LM Studio 和其他 Responses 兼容接口**，保留原生 GPT。使用现有模型服务与登录配置，在 Codex 内完成模型选择和聊天。
 
-本分支为多模型扩展版 **`0.4.1-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
+本分支为多模型扩展版 **`0.4.2-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -31,7 +31,15 @@
 | 简化接入操作 | `connect` 发现并保存连接，`build --verify` 合并安装前检查 | 减少手改配置和逐项执行验证的步骤 |
 | 复用已有会话 | 通过原生接口恢复同一个聊天 ID，保留历史、权限与工作目录 | 不维护另一套聊天数据库或迁移历史副本 |
 
-`0.4.1-proxy.1` 的更新监测运行文件共 **24 个，约 287 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+`0.4.2-proxy.1` 的更新监测运行文件共 **24 个，约 289 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+
+### 0.4.2 修复：Windows 后台自动更新
+
+- 修正后台校验对 `pythonw.exe` 与 `python.exe` 的预期，避免把正确的凭据读取配置误判成错误；Windows CI 同时测试普通和无窗口 Python。
+- 监测任务在稳定的状态目录启动，更新时先离开将被替换的 runtime 目录。已有任务在构建及全部安装检查通过后迁移工作目录，保留启用状态、运行计划、身份和命令，并保存原定义。
+- 扩展版继续跟随 `codex/existing-proxy-models`；独立直连版继续跟随 `main`。更新包验证通道、版本和摘要，两个版本各自更新。
+
+若旧版已出现“应用更新成功，但监测程序仍为旧版”，在更新后的仓库目录运行一次 `python monitor.py run-once --sync-now` 恢复激活；之后由正常监测继续更新。
 
 ### 0.4.1 修复：大量工具引起的反复压缩
 

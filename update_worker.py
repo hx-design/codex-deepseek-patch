@@ -47,6 +47,9 @@ def execute(action, job):
              model_snapshot=job.get('models'),update_metadata=job.get('update'))
         backend.build_compatible(args)
         verify_build(output)
+        if settings.get('state_dir'):
+            from monitor import migrate_windows_working_directory
+            migrate_windows_working_directory(settings['state_dir'])
         return {'directory':str(output),'status':'prepared'}
     if action=='install':
         directory,manifest=p.load_build(Path(job['directory']))

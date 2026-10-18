@@ -127,10 +127,65 @@ class UpdateTests(unittest.TestCase):
             obj.promote.assert_called_once_with(build)
             self.assertFalse((root/'activation-pending.json').exists())
 
+    def test_activation_releases_runtime_working_directory_before_rename(self):
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); runtime = root / 'runtime'; runtime.mkdir()
+            (runtime / 'version').write_text('old')
+            package = root / 'package'; package.mkdir(); (package / 'version').write_text('new')
+            identity = {'edition': 'proxy', 'files': ['version'], 'runtime_digest': u.runtime_digest(package, ['version'])}
+            try:
+                u.os.chdir(runtime)
+                with mock.object(u, 'worker', return_value=identity):
+                    u.activate_runtime(package, root, 'proxy')
+                self.assertEqual(Path.cwd(), root)
+                self.assertEqual((runtime / 'version').read_text(), 'new')
+                self.assertEqual(next(root.glob('runtime-backup-*')).joinpath('version').read_text(), 'old')
+            finally:
+                u.os.chdir(previous)
+
     def test_release_cannot_omit_required_regression_tests(self):
         release,_=self.release()
         del release['files']['tests/test_updater.py']
         with self.assertRaisesRegex(p.PatchError,'Incomplete'):u.validate_release(release,'ds')
+
+
+class ExtensionWorkerTests(unittest.TestCase):
+    def test_task_migration_runs_only_after_all_extension_checks_pass(self):
+        import update_worker as worker
+        for fail in [True, False]:
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                job={'app':str(root/'app'),'baseline':str(root/'baseline'),'output':str(root/'build'),
+                     'settings':{'codex_home':str(root/'home'),'keychain_account':'account',
+                                 'keychain_service':'service','state_dir':str(root/'state')}}
+                calls=[]
+                def verify(output):
+                    calls.append('verify')
+                    if fail:raise RuntimeError('probe failed')
+                with mock.object(worker.backend,'build_compatible',side_effect=lambda _:calls.append('build')), \
+                     mock.object(worker,'verify_build',side_effect=verify), \
+                     mock.object(monitor,'migrate_windows_working_directory',side_effect=lambda path:calls.append(('migrate',path))):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError,'probe failed'):worker.execute('build',job)
+                        self.assertEqual(calls,['build','verify'])
+                    else:
+                        result=worker.execute('build',job)
+                        self.assertEqual(result['status'],'prepared')
+                        self.assertEqual(calls,['build','verify',('migrate',str(root/'state'))])
+
+    def test_extension_verification_keeps_large_tool_and_switching_gates(self):
+        import update_worker as worker
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);p.save_json(root/'manifest.json',{'model_routes':{'example':{}},
+                'switching_probe_required':True,'tool_loading_probe_required':True})
+            calls=[]
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                for name in ['offline','reasoning','context','switching','tools','boot']:
+                    stack.enter_context(mock('scripts.test_'+name+'.main',side_effect=lambda _,name=name:calls.append(name)))
+                worker.verify_build(root)
+            self.assertEqual(calls,['offline','reasoning','context','switching','tools','boot'])
 
 
 if __name__=='__main__':unittest.main()

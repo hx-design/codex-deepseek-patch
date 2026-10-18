@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.1-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.2-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -33,7 +33,15 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.1-proxy.1` update runtime uses **24 source files totaling about 287 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.2-proxy.1` update runtime uses **24 source files totaling about 289 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+
+### 0.4.2 fix: Windows background updates
+
+- Correct the credential-helper expectation when preflight runs under `pythonw.exe`; Windows CI now tests both console and windowless Python.
+- Start monitoring from the stable state directory and leave runtime before replacing it. After all build checks pass, migrate an existing task's working directory while preserving enablement, schedule, identity and commands, with a backup of the original definition.
+- Keep the extension on `codex/existing-proxy-models` and the independent direct edition on `main`, with separate versioned and hashed update feeds.
+
+If an older release already installed the app but left the monitor on an older version, run `python monitor.py run-once --sync-now` once from the updated repository directory to recover activation, then let normal monitoring continue.
 
 ### 0.4.1 fix: repeated compaction with large tool catalogs
 

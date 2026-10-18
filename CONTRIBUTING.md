@@ -15,7 +15,7 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 
 ## Monitor and configuration changes
 
-Keep unchanged checks quiet, notifications deduplicated, and state writes atomic. The monitor must wait for normal app exit, retain recovery data, and never submit paid inference or fetch new patch code automatically. Scheduler registration must remain optional and reversible.
+Keep unchanged checks quiet, notifications deduplicated, and state writes atomic. The monitor must wait for normal app exit, retain recovery data, and never submit paid inference. Automatic code updates must follow the enabled edition-pinned feed with digest checks and isolated validation. Scheduler registration must remain optional and reversible.
 
 Managed updates may refresh the registered catalog path while preserving unrelated user edits. Changes to managed provider/catalog fields must stop for review. Test baseline adoption separately for in-place macOS installation and Windows's separate deployment/source paths.
 

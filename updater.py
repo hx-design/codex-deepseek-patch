@@ -126,6 +126,8 @@ def activate_runtime(package, directory, expected_edition):
             destination=stage/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,destination)
         p.require(runtime_digest(stage,identity['files'])==identity['runtime_digest'],'Staged runtime differs from tested code')
         runtime=directory/'runtime'
+        if Path.cwd().resolve().is_relative_to(runtime.resolve()):
+            os.chdir(directory)  # Windows cannot rename its process working directory.
         if runtime.exists():
             backup=directory/('runtime-backup-'+str(time.time_ns()));os.replace(runtime,backup)
         try:os.replace(stage,runtime)

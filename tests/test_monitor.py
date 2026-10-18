@@ -307,6 +307,31 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn('"' + str(Path('/tmp/Patch & Monitor').resolve() / 'runtime/monitor.py') + '"', args)
         self.assertNotIn("ExecutionPolicy", xml)
 
+    def test_task_cwd_migration_preserves_disabled_task_and_triggers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp).resolve()
+            xml = monitor.windows_task_xml(directory, 300, identity_sid="S-1-5-21-100-200-300-1001")
+            root = ET.fromstring(xml)
+            self.assertEqual(root.findtext("{*}Actions/{*}Exec/{*}WorkingDirectory"), str(directory))
+            root.find("{*}Actions/{*}Exec/{*}WorkingDirectory").text = str(directory / "runtime")
+            ET.SubElement(root.find("{*}Settings"), "{http://schemas.microsoft.com/windows/2004/02/mit/task}Enabled").text = "false"
+            before = ET.tostring(root, encoding="utf-16")
+            result = Mock(returncode=0, stdout=before)
+            with mock.object(monitor.sys, 'platform', 'win32'), mock.object(monitor.subprocess, 'run', return_value=result) as run:
+                self.assertTrue(monitor.migrate_windows_working_directory(directory))
+                after = ET.fromstring((directory / 'task-cwd-migration.xml').read_bytes())
+                self.assertEqual(after.findtext('{*}Settings/{*}Enabled'), 'false')
+                self.assertEqual(after.findtext('{*}Actions/{*}Exec/{*}WorkingDirectory'), str(directory))
+                after.find('{*}Actions/{*}Exec/{*}WorkingDirectory').text = str(directory / 'runtime')
+                self.assertEqual(ET.tostring(after), ET.tostring(root))
+                self.assertEqual(next(directory.glob('task-before-cwd-*.xml')).read_bytes(), before)
+                self.assertEqual(run.call_count, 2)
+                result.stdout = (directory / 'task-cwd-migration.xml').read_bytes()
+                self.assertFalse(monitor.migrate_windows_working_directory(directory))
+                result.returncode = 1
+                self.assertFalse(monitor.migrate_windows_working_directory(directory))
+                self.assertEqual(run.call_count, 4)
+
     def test_windows_identity_uses_current_sid_even_with_workgroup_environment(self):
         expected = "S-1-5-21-100-200-300-1001"
         with mock.dict(monitor.os.environ, {"USERDOMAIN": "WorkGroup", "USERNAME": "pc"}), \

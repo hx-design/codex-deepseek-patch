@@ -53,4 +53,8 @@
 
 macOS 使用 launchd，Windows 使用当前用户任务计划程序；默认每五分钟检查应用、每小时检查补丁与规格，系统锁防止并发安装。变化先稳定检查，全部验证通过后等待正常退出；不会结束用户正在运行的聊天。失败和需要处理的状态去重通知，未变化时安静。
 
+Windows 任务的工作目录使用监测状态目录，runtime 替换前也主动离开该目录。自动构建完成全部验证后，`migrate_windows_working_directory` 仅迁移旧调度任务的工作目录，备份原 XML 并保留其他字段；未注册或已经迁移的任务不改动。旧进程持有 runtime 时保留激活恢复记录，下一轮从新工作目录恢复。
+
+后台下载预检通过 `pythonw.exe` 运行时，凭据 helper 仍使用能够输出凭据的 `python.exe`；测试按这个实际行为检查。CI 使用真实的无窗口 Python 运行完整单元测试，覆盖 Windows 后台执行路径。
+
 发布流程：先提交并验证源码，再执行 `scripts/release_manifest.py --commit FULL_SHA --sequence N` 并提交清单。发布清单本身不计入源码包摘要。CI 覆盖 Windows / Linux 与 Python 3.11 / 3.13；实际应用检查按平台单独记录。

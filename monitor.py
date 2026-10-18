@@ -411,7 +411,7 @@ def windows_task_xml(directory, interval, python=None, now=None, identity_sid=No
     execute = child(actions, "Exec")
     child(execute, "Command", command[0])
     child(execute, "Arguments", subprocess.list2cmdline(command[1:]))
-    child(execute, "WorkingDirectory", str(Path(directory).resolve() / "runtime"))
+    child(execute, "WorkingDirectory", str(Path(directory).resolve()))
     return ET.tostring(task, encoding="utf-16", xml_declaration=True).decode("utf-16")
 
 
@@ -430,6 +430,30 @@ def windows_xml_text(raw):
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         return raw.decode("mbcs" if os.name == "nt" else "latin-1", errors="replace")
+
+
+def migrate_windows_working_directory(directory):
+    """Move an existing task outside the runtime that future updates replace."""
+    if sys.platform != "win32":
+        return False
+    directory = Path(directory).resolve()
+    label = service_label(directory)
+    result = subprocess.run(["schtasks.exe", "/Query", "/TN", label, "/XML"], capture_output=True)
+    if result.returncode:
+        return False  # An unregistered monitor stays unregistered.
+    root = ET.fromstring(windows_xml_text(result.stdout))
+    working = root.find("{*}Actions/{*}Exec/{*}WorkingDirectory")
+    if working is None or not working.text or Path(working.text).resolve() != directory / "runtime":
+        return False
+    # Preserve triggers, enablement, identity, actions and all unrelated settings.
+    backup = directory / ("task-before-cwd-" + uuid.uuid4().hex[:12] + ".xml")
+    backup.write_bytes(result.stdout)
+    working.text = str(directory)
+    definition = directory / "task-cwd-migration.xml"
+    definition.write_bytes(ET.tostring(root, encoding="utf-16", xml_declaration=True))
+    subprocess.run(["schtasks.exe", "/Create", "/TN", label, "/XML", str(definition), "/F"],
+                   check=True, capture_output=True)
+    return True
 
 
 class Scheduler:
