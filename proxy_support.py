@@ -148,6 +148,8 @@ def add_catalog(catalog, models):
                      supports_reasoning_effort_updates=False, support_verbosity=False,
                      default_verbosity=None)
         result["models"].append(entry)
+        from model_sync import configure_reasoning
+        configure_reasoning(entry)
     return result
 
 

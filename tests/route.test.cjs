@@ -83,3 +83,57 @@ async function actualBundleTest(filename) {
   console.log('PASS: local Flash routing, GPT/remote/existing/custom provider preservation' +
               (process.argv[2] ? ', actual patched request method' : ''));
 })().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function managedRoutingTests() {
+  if (!context.codexPatchManagedRequest) return;
+  let current = {id:'saved', model:'grok-4.5', modelProvider:'easycli-desktop', ephemeral:false, status:{type:'idle'}};
+  const calls = [];
+  const client = {hostId:'local',
+    async enqueueRequest(method, params) {
+      calls.push({method,params});
+      if (method === 'thread/read') return {thread:{...current}};
+      if (method === 'thread/unsubscribe') return {status:'unsubscribed'};
+      if (method === 'thread/resume') {
+        current = {...current, model:params.model ?? current.model, modelProvider:params.modelProvider ?? current.modelProvider};
+        return {thread:{...current},model:current.model,modelProvider:current.modelProvider,
+          approvalPolicy:'never',sandbox:{type:'readOnly'},activePermissionProfile:{id:':read-only'},cwd:'/safe/work'};
+      }
+      return {sent:true};
+    }};
+  await context.codexPatchManagedRequest(client,'turn/start',{threadId:'saved',model:'grok-4.7'}, {});
+  assert.deepEqual(calls.map(x=>x.method),['thread/read','thread/resume','thread/unsubscribe','thread/resume','turn/start']);
+  assert.equal(calls[3].params.config.model_context_window,500000);
+  assert.equal(calls[3].params.permissions,':read-only');
+  assert.equal(calls[3].params.approvalPolicy,'never');
+  assert.equal(calls[3].params.cwd,'/safe/work');
+  calls.length=0;
+  await context.codexPatchManagedRequest(client,'turn/start',{threadId:'saved',model:'grok-4.7'}, {});
+  assert.deepEqual(calls.map(x=>x.method),['turn/start']);
+  const active = {hostId:'local',enqueueRequest:async method => {
+    if (method==='thread/read') return {thread:{...current,status:{type:'active'}}};
+    assert.fail('An active turn must not be unloaded');
+  }};
+  await assert.rejects(context.codexPatchManagedRequest(active,'turn/start',{threadId:'saved',model:'grok-4.5'},{}),/finish/);
+  const outsider = {hostId:'local',enqueueRequest:async (method,params) => {
+    if (method==='thread/read') return {thread:{...current,modelProvider:'outside'}};
+    assert.equal(method,'turn/start');assert.equal(params.serviceTier,'priority');return {sent:true};
+  }};
+  for (let i=0;i<2;i++)
+    await context.codexPatchManagedRequest(outsider,'turn/start',{threadId:'saved',model:'grok-4.7',serviceTier:'priority'},{});
+  const rollback=[];
+  const broken={hostId:'local',enqueueRequest:async(method,params)=>{
+    rollback.push({method,params});
+    if(method==='thread/read')return {thread:{...current,model:'grok-4.5'}};
+    if(method==='thread/unsubscribe')return {};
+    if(method==='thread/resume'){
+      if(params.model==='grok-4.7')throw new Error('provider unavailable');
+      return {thread:{...current},model:'grok-4.5',modelProvider:'easycli-desktop',sandbox:{type:'readOnly'},cwd:'/safe/work'};
+    }
+    assert.fail('Failed switching must not send the turn');
+  }};
+  await assert.rejects(context.codexPatchManagedRequest(broken,'turn/start',{threadId:'saved',model:'grok-4.7'},{}),/unavailable/);
+  assert.equal(rollback.at(-2).method,'thread/unsubscribe');
+  assert.equal(rollback.at(-1).params.model,'grok-4.5');
+  console.log('PASS: cached model switches, busy-chat guard and explicit-provider preservation');
+}
+managedRoutingTests().catch(error=>{console.error(error);process.exitCode=1;});

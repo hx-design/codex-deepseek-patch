@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -20,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.3.0-proxy.1"
+VERSION = "0.4.0-proxy.1"
 EDITION = "proxy"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -32,10 +33,10 @@ PROVIDER = "deepseek-desktop"
 MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
-SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py",
+SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -245,8 +246,9 @@ def catalog_template(catalog):
     return next((m for m in models if m['slug']=='gpt-6.1-sol'),models[0])
 
 
-def make_catalog(original):
+def make_catalog(original, deepseek=True):
     catalog = copy.deepcopy(original)
+    if not deepseek:return catalog
     flash = copy.deepcopy(catalog_template(catalog))
     # Prompt text remains local: inherit it from the user's installed catalog.
     flash.update(
@@ -263,6 +265,7 @@ def make_catalog(original):
         experimental_supported_tools=[], multi_agent_reasoning_effort="high",
         web_search_tool_type="text", supports_search_tool=True,
         input_modalities=["text", "image"], supports_image_detail_original=True,
+        supports_reasoning_effort_updates=True,
     )
     catalog["models"] = [m for m in catalog["models"] if not m["slug"].startswith("deepseek-")] + [flash]
     return catalog
@@ -284,35 +287,58 @@ def provider_config(account, service, helper=None):
             'command = ' + json.dumps(command) + '\nargs = ' + json.dumps(args) + '\nrefresh_interval_ms = 0\n')
 
 
-def prepared_config(current, catalog, account, service, managed=None, helper=None, proxy=None):
-    parsed = tomllib.loads(current)
+def remove_provider(text, identifier):
+    lines=[];skip=False
+    for line in text.splitlines(keepends=True):
+        header=re.match(r"\s*\[([^]]+)\]",line)
+        if header:
+            name=header.group(1)
+            skip=name=="model_providers."+identifier or name.startswith("model_providers."+identifier+".")
+        if not skip:lines.append(line)
+    return "".join(lines)
+
+
+def prepared_config(current, catalog, account, service, managed=None, helper=None, proxy=None, deepseek=True, locals=None):
+    parsed=tomllib.loads(current)
+    expected=copy.deepcopy(parsed);expected["model_catalog_json"]=str(catalog)
     if managed:
         from backend import refresh_config
-        updated = refresh_config(current, catalog, managed)
+        updated=refresh_config(current,catalog,managed)
     else:
-        require(parsed.get("model_provider", "openai") == "openai", "A different default provider is configured")
-        require("model_catalog_json" not in parsed and PROVIDER not in parsed.get("model_providers", {}),
-                "A custom catalog or desktop DeepSeek provider already exists; review it before installing")
-        updated = ('model_catalog_json = ' + json.dumps(str(catalog)) + '\n' + current
-                   + ("" if current.endswith("\n") else "\n") + provider_config(account, service, helper))
-    expected = copy.deepcopy(parsed)
-    expected["model_catalog_json"] = str(catalog)
-    if not managed:
-        expected.setdefault("model_providers", {})[PROVIDER] = tomllib.loads(provider_config(account, service, helper))["model_providers"][PROVIDER]
+        require(parsed.get("model_provider","openai")=="openai","A different default provider is configured")
+        require("model_catalog_json" not in parsed,"A custom catalog already exists; review it before installing")
+        updated="model_catalog_json = "+json.dumps(str(catalog))+"\n"+current+("" if current.endswith("\n") else "\n")
+    def add(identifier,addition):
+        nonlocal updated
+        updated+=("" if updated.endswith("\n") else "\n")+addition
+        expected.setdefault("model_providers",{})[identifier]=tomllib.loads(addition)["model_providers"][identifier]
+    existing=parsed.get("model_providers",{}).get(PROVIDER)
+    if deepseek:
+        if existing is not None:
+            require(managed and managed.get("provider")==existing,"An unmanaged DeepSeek provider exists")
+        else:add(PROVIDER,provider_config(account,service,helper))
+    elif managed and managed.get("deepseek_enabled",True) and existing is not None and managed.get("provider") is not None:
+        require(parsed.get("model_provider","openai")!=PROVIDER and not str(parsed.get("model","")).startswith("deepseek-"),
+                "Select a retained default model before disconnecting DeepSeek")
+        updated=remove_provider(updated,PROVIDER);expected.get("model_providers",{}).pop(PROVIDER,None)
     if proxy:
         import proxy_support as ps
-        existing = parsed.get("model_providers", {}).get(ps.PROVIDER)
+        existing=parsed.get("model_providers",{}).get(ps.PROVIDER)
         if existing is not None:
-            require(managed and managed.get("proxy_provider") == existing,
-                    "An unmanaged proxy provider exists; review the configuration")
-            # A baseline keeps the helper in its retained build directory.
-            require({k:v for k,v in managed.get("proxy",{}).items() if k!='models'} == {k:v for k,v in proxy.items() if k!='models'},
+            require(managed and managed.get("proxy_provider")==existing,"An unmanaged proxy provider exists")
+            require({k:v for k,v in managed.get("proxy",{}).items() if k!="models"}=={k:v for k,v in proxy.items() if k!="models"},
                     "The managed proxy connection changed; review before migrating")
-        else:
-            addition = ps.provider_config(proxy, Path(catalog).parent / "proxy_support.py")
-            updated += ("" if updated.endswith("\n") else "\n") + addition
-            expected.setdefault("model_providers", {})[ps.PROVIDER] = tomllib.loads(addition)["model_providers"][ps.PROVIDER]
-    require(tomllib.loads(updated) == expected, "Unrelated configuration changed")
+        else:add(ps.PROVIDER,ps.provider_config(proxy,Path(catalog).parent/"proxy_support.py"))
+    if locals:
+        import local_support as ls
+        for connection in locals:
+            for identifier,chat_only in ls.provider_ids(connection):
+                existing=parsed.get("model_providers",{}).get(identifier)
+                if existing is not None:
+                    require(managed and managed.get("local_providers",{}).get(identifier)==existing,"An unmanaged local connection exists")
+                    updated=remove_provider(updated,identifier)
+                add(identifier,ls.provider_config(connection,Path(catalog).parent/"local_support.py",chat_only))
+    require(tomllib.loads(updated)==expected,"Unrelated configuration changed")
     return updated
 
 
@@ -565,9 +591,19 @@ def main():
     p.add_argument("--proxy-models", nargs="+", choices=__import__("proxy_support").MODELS,
                    help="Explicit model IDs to expose through the existing proxy")
     p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
+    p.add_argument("--connections", type=Path, help="Connections saved by the connect command")
+    p.add_argument("--verify",action="store_true",help="Run all isolated installation checks after building")
+    ds=p.add_mutually_exclusive_group()
+    ds.add_argument("--with-deepseek", dest="deepseek_enabled", action="store_true")
+    ds.add_argument("--without-deepseek", dest="deepseek_enabled", action="store_false")
+    p.set_defaults(deepseek_enabled=None,compatible=True)
+
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)
+    p=subs.add_parser("verify",help="Run all offline, reasoning, context, switching and isolated boot checks")
+    p.add_argument("directory",type=Path)
+    p.set_defaults(func=lambda args: __import__('update_worker').verify_build(args.directory))
     for name, function in (("install", install), ("restore", restore), ("status", status)):
         p = subs.add_parser(name)
         p.add_argument("directory", type=Path)
@@ -579,9 +615,20 @@ def main():
     p = subs.add_parser("test-boot", help="Launch only the prepared copy with temporary user data")
     p.add_argument("directory", type=Path)
     p.set_defaults(func=lambda args: __import__("scripts.test_boot", fromlist=["main"]).main(args.directory))
+    p=subs.add_parser("connect",help="Discover local/compatible models and save a connection without editing Codex settings")
+    p.add_argument("--url")
+    p.add_argument("--name",default="models")
+    p.add_argument("--kind",choices=["ollama","lmstudio","openai"])
+    p.add_argument("--models",nargs="+")
+    p.add_argument("--key-file",type=Path)
+    p.add_argument("--context-window",type=int)
+    p.add_argument("--respect-server-context",action="store_true",help="Keep an existing smaller local-server window")
+    p.add_argument("--state-dir",type=Path,default=__import__("monitor").default_directory())
+    p.set_defaults(func=__import__("local_support").connect)
     args = parser.parse_args()
     try:
         args.func(args)
+        if args.action=='build' and args.verify:__import__('update_worker').verify_build(args.output)
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         return 1

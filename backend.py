@@ -27,6 +27,8 @@ def refresh_config(current, catalog, managed):
         import proxy_support as ps
         p.require(parsed.get("model_providers", {}).get(ps.PROVIDER) == managed["proxy_provider"],
                   "The managed proxy provider was changed; review the configuration")
+    for identifier,provider in managed.get("local_providers",{}).items():
+        p.require(parsed.get("model_providers",{}).get(identifier)==provider,"A managed local provider changed")
     lines = current.splitlines(keepends=True)
     matches = []
     for i, line in enumerate(lines):
@@ -50,7 +52,7 @@ def managed_baseline(directory, account, service):
     if installed.is_file():
         parsed = p.tomllib.loads(installed.read_text(encoding="utf-8"))
         catalog = parsed["model_catalog_json"]
-        provider = parsed["model_providers"][p.PROVIDER]
+        provider = parsed.get("model_providers",{}).get(p.PROVIDER)
     else:
         # Compatibility with the original local installer, before public v0.1.0.
         p.require(sys.platform == "darwin" and manifest.get("patched_asar"), "Baseline configuration record is missing")
@@ -62,6 +64,12 @@ def managed_baseline(directory, account, service):
         import proxy_support as ps
         result["proxy"] = ps.validate(manifest["proxy"])
         result["proxy_provider"] = parsed["model_providers"][ps.PROVIDER]
+    if "deepseek_enabled" in manifest:result["deepseek_enabled"]=manifest["deepseek_enabled"]
+    if manifest.get("locals"):
+        result["locals"]=manifest["locals"]
+        import local_support
+        result["local_providers"]={identifier:parsed.get("model_providers",{}).get(identifier)
+                                   for r in result["locals"] for identifier,_ in local_support.provider_ids(r)}
     return result
 
 
@@ -77,7 +85,7 @@ def verify_official(app):
     return {"team": "2DC432GLL2"}
 
 
-def inspect_source(app, node=None, routes=None):
+def inspect_source(app, node=None, routes=None, native_contexts=None):
     from compatibility import locate_bundle, apply_source
     p.mac_only()
     layout = p.app_layout(app)
@@ -87,7 +95,7 @@ def inspect_source(app, node=None, routes=None):
     route_source=(p.ROOT / "route.js").read_text(encoding="utf-8")
     if routes is not None:
         from model_sync import render_route
-        route_source=render_route(route_source,routes)
+        route_source=render_route(route_source,routes,native_contexts)
     patched, evidence = apply_source(source, route_source)
     if routes is not None:evidence['model_routes']=routes
     node = node or shutil.which("node")
@@ -118,21 +126,26 @@ def build_compatible(args):
     managed = getattr(args, "managed", None)
     if getattr(args, "baseline", None):
         managed = managed_baseline(args.baseline, args.keychain_account, args.keychain_service)
-    proxy = managed.get("proxy") if managed else None
-    model_snapshot=getattr(args,'model_snapshot',None)
-    if isinstance(model_snapshot,Path):model_snapshot=json.loads(model_snapshot.read_text())
+    proxy=managed.get("proxy") if managed else None
+    locals=managed.get("locals",[]) if managed else []
+    deepseek=getattr(args,"deepseek_enabled",None)
+    if deepseek is None:deepseek=managed.get("deepseek_enabled",True) if managed else False
+    if getattr(args,"connections",None):
+        import local_support
+        locals=local_support.load(args.connections)
+    model_snapshot=getattr(args,"model_snapshot",None)
+    if isinstance(model_snapshot,Path):model_snapshot=json.loads(model_snapshot.read_text(encoding="utf-8"))
     if model_snapshot:
-        p.require(model_snapshot.get('edition')==p.EDITION,'Model snapshot belongs to another edition')
-        digest=p.sha(json.dumps({'catalog':model_snapshot['catalog'],'routes':model_snapshot['routes']},sort_keys=True,separators=(',',':')).encode())
-        p.require(digest==model_snapshot['digest'],'Model snapshot digest mismatch')
-        if proxy:
-            proxy={**proxy,'models':[model for model,route in model_snapshot['routes'].items() if route['provider']=='easycli-desktop']}
-        else:
-            p.require(all(route['provider']=='deepseek-desktop' for route in model_snapshot['routes'].values()),'DS edition cannot install proxy routes')
-    if getattr(args, "proxy_config", None):
+        p.require(model_snapshot.get("edition")==p.EDITION,"Model snapshot belongs to another edition")
+        from model_sync import snapshot_digest
+        digest=snapshot_digest(model_snapshot)
+        p.require(digest==model_snapshot["digest"],"Model snapshot digest mismatch")
+        locals=model_snapshot.get("locals",locals)
+        deepseek=model_snapshot.get("deepseek_enabled",deepseek)
+        if proxy:proxy={**proxy,"models":[m for m,r in model_snapshot["routes"].items() if r["provider"]=="easycli-desktop"]}
+    if getattr(args,"proxy_config",None):
         import proxy_support as ps
-        proxy = ps.validate({"config": str(args.proxy_config.resolve()), "base_url": args.proxy_base_url,
-                             "models": args.proxy_models or list(ps.MODELS)})
+        proxy=ps.validate({"config":str(args.proxy_config.resolve()),"base_url":args.proxy_base_url,"models":args.proxy_models or list(ps.MODELS)})
         ps.read_api_key(proxy["config"])
     install_target = getattr(args, "install_target", None)
     replaced_asar = None
@@ -146,21 +159,57 @@ def build_compatible(args):
             p.require(install_target == Path(baseline_manifest["target"]).resolve(), "Install target differs from the baseline")
         replaced_asar = baseline_manifest["patched_asar"]
         p.verify_app(install_target, replaced_asar)
-    current = p.read_config(home / "config.toml")
-    p.prepared_config(current, output / "desktop-models.json", args.keychain_account, args.keychain_service,
-                      managed=managed, helper=output / "windows_support.py", proxy=proxy)
-    prepared = (getattr(args, "inspection", None) if not model_snapshot else None) or inspect_source(app, getattr(args, "node_path", None), model_snapshot['routes'] if model_snapshot else None)
-    layout = p.app_layout(app)
-    original_hash = p.file_sha(layout["asar"])
-    p.require(original_hash == prepared["source_asar"], "App changed after compatibility checks")
-    # A disposable CLI home avoids inheriting the catalog from the previous patch.
-    with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
-        raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
-                                      env={**os.environ, "CODEX_HOME": temp}, timeout=90)
-    catalog = model_snapshot['catalog'] if model_snapshot else p.make_catalog(json.loads(raw))
-    if proxy and not model_snapshot:
-        import proxy_support as ps
-        catalog = ps.add_catalog(catalog, proxy["models"])
+    current=p.read_config(home/"config.toml")
+    p.prepared_config(current,output/"desktop-models.json",args.keychain_account,args.keychain_service,
+                      managed=managed,helper=output/"windows_support.py",proxy=proxy,deepseek=deepseek,locals=locals)
+    cached=getattr(args,"inspection",None)
+    if cached:p.require(p.file_sha(p.app_layout(app)["asar"])==cached["source_asar"],"App changed after compatibility checks")
+    if model_snapshot:
+        catalog=model_snapshot["catalog"];routes=model_snapshot["routes"]
+    else:
+        verify_official(app)
+        with tempfile.TemporaryDirectory(prefix="codex-model-catalog-") as temp:
+            raw=subprocess.check_output([str(p.cli_path(app)),"debug","models","--bundled"],stderr=subprocess.PIPE,
+                                        env={**os.environ,"CODEX_HOME":temp},timeout=90)
+        catalog=p.make_catalog(json.loads(raw),deepseek=deepseek)
+        if proxy:
+            import proxy_support
+            catalog=proxy_support.add_catalog(catalog,proxy["models"])
+        from model_sync import apply_reductions
+        routes={}
+        native_template=p.catalog_template(catalog)
+        for entry in catalog["models"]:
+            provider=p.PROVIDER if deepseek and entry["slug"]==p.MODEL else "easycli-desktop" if proxy and entry["slug"] in proxy["models"] else None
+            if provider:
+                config=p.tomllib.loads(current)
+                compact=apply_reductions(entry,{},config.get("model_context_window") if provider==p.PROVIDER else None)
+                if provider==p.PROVIDER and config.get("model_auto_compact_token_limit"):compact=min(compact,config["model_auto_compact_token_limit"])
+                routes[entry["slug"]]={"provider":provider,"context_window":entry["context_window"],"max_context_window":entry["max_context_window"],"compact_limit":compact}
+        if locals:
+            import local_support as ls
+            for connection in locals:
+                specs,warnings=ls.discover(connection)
+                connection["chat_only_models"]=[m for m,spec in specs.items() if not spec.get("supports_tools",True)]
+                connection["normalize_instructions_models"]=[m for m,spec in specs.items() if spec.get("normalize_instructions")]
+                p.require(specs,"No usable model specifications for "+connection["id"]+": "+"; ".join(warnings))
+                for model,spec in specs.items():
+                    p.require(not any(e["slug"]==model for e in catalog["models"]),"Model ID belongs to more than one provider: "+model)
+                    entry=ls.make_entry(native_template,model,connection,spec,100+len(routes))
+                    compact=apply_reductions(entry,{},spec.get("configured_context_window") if connection.get("respect_server_context") else None)
+                    catalog["models"].append(entry)
+                    routes[model]={"provider":connection["id"]+("-compat" if not spec.get("supports_tools",True) or spec.get("normalize_instructions") else ""),"context_window":entry["context_window"],"max_context_window":entry["max_context_window"],"compact_limit":compact,
+                                   "supports_tools":spec.get("supports_tools",True)}
+    allowed={p.PROVIDER} if deepseek else set()
+    if proxy:allowed.add("easycli-desktop")
+    if locals:
+        import local_support
+        allowed.update(identifier for r in locals for identifier,_ in local_support.provider_ids(r))
+    p.require(all(r["provider"] in allowed for r in routes.values()),"Snapshot references an unconfigured provider")
+    native_contexts={m["slug"]:{"window":m["context_window"],"maximum":m.get("max_context_window",m["context_window"])}
+                     for m in catalog["models"] if m["slug"].startswith(("gpt-","codex-")) and m.get("context_window")}
+    prepared=inspect_source(app,getattr(args,"node_path",None),routes,native_contexts)
+    layout=p.app_layout(app);original_hash=p.file_sha(layout["asar"])
+    p.require(original_hash==prepared["source_asar"],"App changed after compatibility checks")
     output.mkdir(parents=True, mode=0o700)
     patched = prepared["patched"].encode()
     source = output / "patched-client.mjs"
@@ -168,8 +217,10 @@ def build_compatible(args):
     p.run([getattr(args, "node_path", None) or shutil.which("node"), "--check", source], capture_output=True, timeout=60)
     p.save_json(output / "desktop-models.json", catalog)
     if model_snapshot:p.save_json(output/'synced-models.json',model_snapshot)
-    if proxy:
-        shutil.copy2(p.ROOT / "proxy_support.py", output / "proxy_support.py")
+    if proxy:shutil.copy2(p.ROOT/"proxy_support.py",output/"proxy_support.py")
+    if locals:
+        import local_support
+        local_support.stage_helpers(output,locals)
     p.save_json(output / "compatibility.json", {k: v for k, v in prepared.items() if k not in ("patched",)})
     if sys.platform == "win32":
         shutil.copy2(p.ROOT / "windows_support.py", output / "windows_support.py")
@@ -210,7 +261,9 @@ def build_compatible(args):
         manifest["deployment_target"] = str(Path(os.environ["LOCALAPPDATA"]) / "CodexDeepSeekPatch/app")
     if proxy:
         manifest["proxy"] = proxy
-    manifest['edition']=p.EDITION
+    manifest.update(edition=p.EDITION,deepseek_enabled=deepseek,locals=locals,model_routes=routes)
+    manifest['reasoning_probe_required']=True
+    manifest['switching_probe_required']=bool(routes)
     if model_snapshot:
         manifest['model_routes']=model_snapshot['routes']
     if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
@@ -248,7 +301,12 @@ def install_compatible(directory, manifest):
     p.require(p.file_sha(directory / "desktop-models.json") == manifest["catalog_sha256"], "Catalog changed")
     p.require(manifest.get("boot_probe") == "passed" and manifest.get("offline_probe") == "passed",
               "Both isolated boot and offline app-server probes must pass before installation")
-    p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
+    if manifest.get('reasoning_probe_required'):
+        p.require(manifest.get('reasoning_probe')=='passed','Run the reasoning selection probe before installation')
+    if manifest.get('switching_probe_required'):
+        p.require(manifest.get('switching_probe')=='passed','Run the saved-chat switching probe before installation')
+    if manifest.get("deepseek_enabled",True):
+        p.require(credential_available(manifest),"DeepSeek credential is unavailable; run setup-key")
     if manifest.get('model_routes'):
         p.require(manifest.get('context_probe')=='passed','Run the offline context/compaction probe before installation')
     if manifest.get("proxy"):
@@ -259,7 +317,8 @@ def install_compatible(directory, manifest):
     current = p.read_config(config)
     updated = p.prepared_config(current, directory / "desktop-models.json", manifest["keychain_account"],
                                 manifest["keychain_service"], managed=manifest.get("managed"),
-                                helper=directory / "windows_support.py", proxy=manifest.get("proxy"))
+                                helper=directory / "windows_support.py",proxy=manifest.get("proxy"),
+                                deepseek=manifest.get("deepseek_enabled",True),locals=manifest.get("locals",[]))
     existed = config.exists()
     p.atomic_text(directory / "config-before.toml", current)
     p.atomic_text(directory / "config-installed.toml", updated)
@@ -329,13 +388,8 @@ class MonitorBackend:
                                   keychain_service=self.settings["keychain_service"],
                                   node_path=self.settings.get("node_path"), inspection=self.inspection)
         built = build_compatible(args)
-        from scripts.test_offline import main as offline
-        from scripts.test_boot import main as boot
-        offline(output)
-        if built.get("proxy"):
-            from scripts.test_context import main as check_context
-            check_context(output)
-        boot(output)
+        from update_worker import verify_build
+        verify_build(output)
         return {"directory": str(output)}
 
     def is_running(self):

@@ -39,7 +39,7 @@ def isolated_environment(base):
     return environment
 
 
-def offline_config(catalog, proxy_models=()):
+def offline_config(catalog, proxy_models=(), routes=None):
     result = ("model = " + json.dumps(patch.MODEL) + "\nmodel_provider = " + json.dumps(patch.PROVIDER) +
             "\nmodel_catalog_json = " + json.dumps(str(Path(catalog).resolve())) + "\n" +
             "web_search = \"disabled\"\n[features]\nmemories = false\n" +
@@ -51,6 +51,9 @@ def offline_config(catalog, proxy_models=()):
         result += ('\n[model_providers.' + ps.PROVIDER + ']\nname = "Proxy offline probe"\n'
                    + 'base_url = ' + json.dumps(LOOPBACK_BASE_URL) + '\nwire_api = "responses"\n'
                    + 'env_key = ' + json.dumps(DUMMY_KEY_VARIABLE) + '\nrequires_openai_auth = false\n')
+    if routes is not None:
+        for provider in {r['provider'] for r in routes.values()}-{'deepseek-desktop','easycli-desktop'}:
+            result+='\n[model_providers.'+provider+']\nname="Local offline probe"\nbase_url='+json.dumps(LOOPBACK_BASE_URL)+'\nwire_api="responses"\nenv_key='+json.dumps(DUMMY_KEY_VARIABLE)+'\nrequires_openai_auth=false\n'
     return result
 
 
@@ -186,8 +189,17 @@ def check_session(client, work, proxy_models=(), routes=None):
         patch.require(thread.get("model") == model and thread.get("modelProvider") == 'easycli-desktop'
                       and thread.get("thread", {}).get("id"), "Incorrect proxy thread model/provider")
         checked.append({"model": model, "provider": 'easycli-desktop'})
+    local_checked=[]
+    for model,route in (routes or {}).items():
+        if route['provider'] in (patch.PROVIDER,'easycli-desktop'):continue
+        patch.require(any(m.get('model')==model for m in models),"Local model missing from catalog")
+        thread=client.receive(client.send("thread/start",{"model":model,"modelProvider":route['provider'],
+                   "cwd":str(work),"ephemeral":True,"approvalPolicy":"never","sandbox":"read-only",
+                   "config":{"web_search":"disabled","features.memories":False}}))
+        patch.require(thread.get("model")==model and thread.get("modelProvider")==route['provider'],"Incorrect local model route")
+        local_checked.append(model)
     return {"model": patch.MODEL, "provider": patch.PROVIDER, "deepseek_models": len(deepseek),
-            "proxy_models": checked,
+            "proxy_models": checked, "local_models":local_checked,
             "catalog_models": len(models), "ephemeral_thread": True, "inference_turns": 0,
             "provider_base_url": LOOPBACK_BASE_URL, "methods": client.methods}
 
@@ -208,7 +220,7 @@ def main(directory):
             work = base / "work"
             work.mkdir()
             proxy_models = manifest.get("proxy", {}).get("models", [])
-            (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json", proxy_models), encoding="utf-8")
+            (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json", proxy_models, manifest.get("model_routes")), encoding="utf-8")
             with (directory / "offline-stderr.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen([str(patch.cli_path(app)), "app-server", "--listen", "stdio://"],
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,

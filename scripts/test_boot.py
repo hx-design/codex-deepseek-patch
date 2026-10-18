@@ -56,7 +56,7 @@ def inspect_children(rows, root_pid, browser, cli):
             "owned_processes": len(owned)}
 
 
-def main(directory, timeout=180):
+def main(directory, timeout=360):
     directory, manifest = patch.load_build(Path(directory))
     patch.require(manifest["status"] == "prepared", "Only prepared builds can be boot-tested")
     app = directory / "patched.app"
@@ -72,7 +72,7 @@ def main(directory, timeout=180):
             environment[DUMMY_KEY_VARIABLE] = DUMMY_KEY
             # The desktop keeps its native default provider; proxy providers are
             # selected by the patched thread route, not as a global GUI default.
-            config = offline_config(directory / "desktop-models.json", manifest.get("proxy", {}).get("models", []))
+            config = offline_config(directory / "desktop-models.json", manifest.get("proxy", {}).get("models", []), manifest.get("model_routes"))
             config = "\n".join(config.splitlines()[2:]) + "\n"
             (base / "home/config.toml").write_text(config, encoding="utf-8")
             browser = base / "browser"

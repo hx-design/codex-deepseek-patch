@@ -5,8 +5,9 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "local_support.py", "local_bridge.py", "tests/test_local_support.py", "scripts/test_switching.py", "scripts/route_driver.cjs",
     "model_sync.py", "updater.py", "update_worker.py", "edition.json", "update.json",
-    "scripts/release_manifest.py", "scripts/test_context.py", "tests/test_model_sync.py", "tests/test_updater.py",
+    "scripts/test_reasoning.py", "scripts/release_manifest.py", "scripts/test_context.py", "tests/test_model_sync.py", "tests/test_updater.py",
     ".gitignore", ".github/workflows/tests.yml", "LICENSE", "NOTICE", "README.md", "README.en.md",
     "CONTRIBUTING.md", "patch.py", "route.js", "docs/ARCHITECTURE.md", "docs/VALIDATION.md",
     "scripts/__init__.py", "scripts/test_boot.py", "scripts/test_connection.py", "scripts/check_release.py",

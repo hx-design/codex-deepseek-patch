@@ -1,167 +1,89 @@
-# Codex DeepSeek Patch · Existing Proxy Edition
+# Codex model extension patch
 
-This is **`codex/existing-proxy-models`**, an optional extension with its own update channel, versioned `0.3.0-proxy.1`. Grok / Gemini / Claude require an existing running EasyCLIProxyAPI setup. The standalone DeepSeek edition remains on [main](https://github.com/limyum-creator/codex-deepseek-patch/tree/main).
+Use existing cloud endpoints and local models in the native Codex desktop model menu. GPT stays available; **DeepSeek is optional**. This is the independent **0.4.0-proxy.1 extension channel** (`codex/existing-proxy-models`). The [DS-only edition](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) stays on `main`; update channels cannot overwrite each other.
 
-Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API. Optionally add **Grok 4.5 / 4.7, Gemini 3.8 Flash, and Claude Opus 4.6 Thinking** through an existing EasyCLIProxyAPI endpoint.
+[中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
-**v0.3.0-proxy.1** adds edition-pinned patch self-updates and model/specification synchronization. Native GPT and direct DeepSeek connections remain intact; Grok, Gemini Flash, and Opus use the existing proxy. Context defaults follow model maxima while preserving explicit user reductions.
+## Features
 
-This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
+- Switch registered providers and native GPT within the same saved local chat, retaining its ID and history. Finish the current reply before switching.
+- Select supported reasoning levels per turn, including proxy model IDs ending in `-high` or `-thinking`.
+- Use each model's maximum context by default; preserve deliberate reductions. Refresh legacy saved-chat windows and retain the correct window after compaction.
+- Detect Codex updates, check compatibility, rebuild and reinstall after normal exit. Optional patch updates and model/spec synchronization use separate edition feeds.
+- Standard-library Python and Node.js only: no extra packages, database or management UI. Natively compatible local models use direct Responses connections. Chat-only models and strict message templates use a small authenticated helper that starts on demand and exits after 120 idle seconds.
 
-## Compatibility
+Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Windows desktop app. This unofficial source-only project does not distribute the application, extracted model prompts or credentials.
 
-- Apple Silicon macOS; app and build directory on the same APFS volume.
-- Windows official Codex app. Store packages are read-only sources; installation uses a separate user-owned copy.
-- Inspected baseline: app **26.1013.40934**, build **20770**. The historical tested CLI is **0.163.0-alpha.10.2**; see validation records for platform-specific evidence.
-- Python **3.11+**, Node.js **18+**. No third-party Python/npm dependencies.
-
-Compatible mode verifies the official publisher, resource integrity, unique request contracts, and the behavior of extracted methods. Asset hashes, filenames, and minified identifiers may change. Unknown control flow stops the build. The v0.1 fixed-version build remains available for its original baseline; use `--compatible` for new installations and updates.
-
-As verified on October 18, 2026, `deepseek-flash` is served by DeepSeek-V4.1-Flash-1017. DeepSeek controls alias updates. [Official API documentation](https://api-docs.deepseek.com/quick_start/agent_integrations/)
-
-## macOS installation
-
-Install and sign in to the official app first. Choose a new build directory that you can retain.
+## Connect and install
 
 ```sh
 git clone --branch codex/existing-proxy-models https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
-python3 --version
-node --version
-python3 patch.py setup-key
+python3 patch.py connect --name local --kind ollama --url http://127.0.0.1:11434/v1
+```
 
-PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-20261018"
-python3 patch.py build --compatible --output "$PATCH_BUILD"
-python3 scripts/test_offline.py "$PATCH_BUILD"
-python3 patch.py test-boot "$PATCH_BUILD"
+Use `--kind lmstudio` for LM Studio (usually port 1234), or `--kind openai` for other **Responses-compatible** services. Pure Chat Completions endpoints are not supported. By default, discover all generation models; `--models ID1 ID2` selects a fixed subset. Missing context metadata requires an explicit verified maximum: `--models MODEL --context-window N`.
 
-# Quit Codex normally, then install.
+`--respect-server-context` preserves an existing smaller local-server window while retaining the model's maximum separately. `--key-file /absolute/path/key.txt` reads an existing API key without copying it into connection settings.
+
+Use the `saved` connection-file path printed by `connect`:
+
+```sh
+PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-040"
+python3 patch.py build --output "$PATCH_BUILD" --connections "/path/to/connections.json" --verify
+# Quit Codex / ChatGPT normally, then:
 python3 patch.py install "$PATCH_BUILD"
-```
-
-`setup-key` stores the interactively entered API key in macOS Keychain. Build works on copies. The offline check uses temporary configuration and a loopback placeholder provider to verify catalog and ephemeral thread routing without an inference turn. The startup check briefly opens an isolated window, checks the renderer and backend, and stops only its own test processes.
-
-The default source is `/Applications/ChatGPT.app`, falling back to `/Applications/Codex.app`. Set `--app "/path/to/ChatGPT.app"` or `--codex-home "$HOME/.codex"` on `build` as needed.
-
-## Windows installation
-
-Install official Codex, Python 3.11+, and Node.js 18+. In PowerShell, from the repository directory:
-
-```powershell
-python --version
-node --version
-python patch.py setup-key
-
-$PatchBuild = Join-Path $env:LOCALAPPDATA "CodexDeepSeekPatch\build-20261018"
-python patch.py build --compatible --output "$PatchBuild"
-python scripts/test_offline.py "$PatchBuild"
-python patch.py test-boot "$PatchBuild"
-
-# Quit Codex normally, then install.
-python patch.py install "$PatchBuild"
-```
-
-Build discovers the official Store app; use `--app "C:\path\to\app"` for an explicit source. The key is entered interactively and stored in **Windows Credential Manager**.
-
-The patched copy lives at `%LOCALAPPDATA%\CodexDeepSeekPatch\app`. Open **Codex DeepSeek** from the Start menu; its shortcut launches that copy's `ChatGPT.exe`. The official Store app stays in its original location. Keep the build and managed target on the same volume, with space for complete application copies and recovery data.
-
-## Usage and configuration
-
-Open the patched app, create a **new local chat**, and select **DeepSeek 4.1 Flash**. Existing chats retain their provider; start a new chat when switching between GPT and DeepSeek. Remote hosts retain their existing routing.
-
-Each build needs a fresh output directory. Initial installation rejects custom catalog/default-provider conflicts for review. To update an existing installation, pass `--baseline "PREVIOUS_BUILD"` to `build --compatible`. This refreshes the registered catalog while preserving unrelated user settings. Changes to the managed catalog or DeepSeek provider stop the update for review.
-
-For a manual refresh, select the official updated app at its intended installation path. To rebuild the same version, restore first, then follow the initial installation steps without `--baseline`, since restore also reverts configuration. On macOS, `--app` is also the installation target. A patched copy is rejected as a compatible-build source:
-
-```sh
-NEW_PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-next"
-python3 patch.py build --compatible \
-  --app "/path/to/official/ChatGPT.app" \
-  --baseline "$PATCH_BUILD" --output "$NEW_PATCH_BUILD"
-python3 scripts/test_offline.py "$NEW_PATCH_BUILD"
-python3 patch.py test-boot "$NEW_PATCH_BUILD"
-# Quit the app normally before installing.
-python3 patch.py install "$NEW_PATCH_BUILD"
-```
-
-Use matching `--keychain-account` and `--keychain-service` values with `setup-key` and `build` to customize the credential lookup. Defaults are the current username and `Codex DeepSeek API Key`.
-
-## Optional existing proxy integration
-
-Configure and run [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) first. Add `--proxy-config "/path/to/existing/config.yaml" --proxy-base-url "http://127.0.0.1:8317/v1" --proxy-models grok-4.5 grok-4.7 gemini-3.8-flash-high claude-opus-4-6-thinking` to `build --compatible`. Choose only models available from your endpoint.
-
-The helper reads client `access.api-keys` (or legacy root `api-keys`) from the existing configuration. It does not copy keys or import OAuth credentials. Keep the proxy running and that file in place. Remote endpoints require HTTPS; loopback HTTP is supported. The presets use text input, shell tools, and provider reasoning presets. Default/max context follows provider specifications: Grok 4.5 and 4.7 = 500,000; Gemini 3.8 Flash = 1,048,576; Opus 4.6 Thinking = 1,000,000 tokens. Sources and the dated upstream metadata discrepancy are listed in the [Chinese specification table](README.md#可选接入现成的-gemini--grok--opus-代理).
-
-Catalog windows use 100% without the inherited GPT percentage reduction. New proxy threads receive model-specific context and a 90% compaction threshold, overriding stale global defaults. Explicit smaller per-thread `config.model_context_window` / `config.model_auto_compact_token_limit` values are preserved. Existing GPT/DS global settings remain intact. CLIProxyAPI 8.0.32 still labels the Antigravity Opus route as 200k; the client uses the official 1M specification, while upstream long-request support requires separate verification.
-
-Run `python3 scripts/test_context.py BUILD` before installing proxy models: the real bundled CLI processes two locally simulated 180k-usage turns per model and must report the correct window without repeated compaction. No external inference is sent. The monitor repeats this regression during rebuilds.
-
-Run offline/startup tests and `python3 scripts/test_connection.py BUILD --model MODEL_ID --run` for each selected model before installation. Live tests consume provider usage. Start a new local chat when switching providers. Re-enable monitoring with the installed baseline; later builds retain its selected models and settings without inference calls.
-
-To refresh a patched Mac from a retained signed original backup, combine `--app ORIGINAL_APP --baseline PREVIOUS_BUILD --install-target /Applications/ChatGPT.app`. The target must match the baseline; restore returns to the prior app and configuration. Windows uses its existing separate-deployment workflow with a local proxy configuration path.
-
-## Automatic updates and model synchronization
-
-After the first installation, enable all three functions: application-update reinstallation, patch self-updates, and model/specification refresh.
-
-```sh
 python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"
+```
+
+On Windows, use `python` in PowerShell, choose a build directory under `$env:LOCALAPPDATA`, and pass the official Store app path to monitor `--app`. Builds discover the Store source automatically. The patched app is installed separately under `%LOCALAPPDATA%\CodexDeepSeekPatch\app`; the existing **Codex DeepSeek** Start menu shortcut launches it. The official package remains read-only.
+
+`--verify` runs all isolated catalog, reasoning, context, same-chat switching and boot checks without provider inference. A temporary window may appear. Repeat with `python3 patch.py verify BUILD`. Keep the build directory: configuration references its catalog/helpers and it contains recovery data. App copies require disk space.
+
+## Optional providers
+
+Existing EasyCLIProxyAPI: add these build arguments, using your already configured client endpoint and config file:
+
+```sh
+--proxy-config "/path/to/config.yaml" --proxy-base-url "http://127.0.0.1:8317/v1" \
+--proxy-models grok-4.5 grok-4.7 gemini-3.8-flash-high claude-opus-4-6-thinking
+```
+
+Only the client API key is read; existing software keeps responsibility for subscription login and refresh. Remote proxy endpoints require HTTPS. Select any subset of supported IDs.
+
+DeepSeek: run `python3 patch.py setup-key` and add `--with-deepseek`. Credentials use macOS Keychain or Windows Credential Manager. Fresh extension installs omit DS by default; updates inherit the installed choice. `--without-deepseek` removes a previously managed DS provider unless it is still the global default.
+
+## Update and preferences
+
+Application checks run every five minutes; patch and model checks every hour. Immutable commits, per-file hashes and edition-specific sequences are verified before isolated testing. Installations wait for normal exit. Unchanged states stay quiet; actionable failures are deduplicated.
+
+GPT metadata comes from the native CLI; DS from its official endpoint. Existing proxy Grok, Gemini Flash and Opus families discover new versions and verify vendor specifications. Local connections follow their available generation models unless a fixed subset was selected. Unknown maxima are reported instead of receiving an arbitrary small cap.
+
+```sh
 python3 monitor.py status
 python3 monitor.py run-once --sync-now
-```
-
-Windows uses `python`, the official Store source for `--app`, and the installed build for `--baseline`. Existing users must run `enable` once with this release to upgrade their saved monitor runtime.
-
-The DS edition follows `main`; the proxy edition follows `codex/existing-proxy-models`. Each publishes its own `update.json` pinned to an immutable commit and SHA-256 file inventory. The monitor rejects cross-edition packages, rollbacks, and changed hashes. Only the proxy edition depends on an existing EasyCLIProxyAPI setup.
-
-Application checks run every five minutes; code and model checks run hourly. Downloaded code passes isolated regression tests before a compatible app is rebuilt, checked with offline routing/context probes, and launched in isolation. Installation waits for normal application exit. Runtime activation has a persistent recovery journal. Failures and unknown structures are reported once per issue; unchanged checks are quiet. Checks do not submit inference turns to providers.
-
-Native GPT metadata refreshes through the bundled CLI. DeepSeek metadata comes from its official model endpoint. Proxy IDs come from the configured proxy, with specifications resolved from xAI, Google, and Anthropic documentation. Newly appearing **Grok, Gemini Flash, and Opus** versions are automatically added; DS follows the Flash family. The first successful check records existing IDs without resurrecting older excluded models. Missing models are removed after two successful absent observations and restored if they reappear. New models without verified specifications wait with a notification instead of receiving an arbitrary small context window.
-
-Context defaults follow each model's maximum at 100% effective capacity. Explicit lower per-model preferences and existing GPT/DS global settings survive refreshes; proxy models use their own limits. Automatic compaction defaults to 90% of the configured window, retaining lower user thresholds.
-
-```sh
-python3 monitor.py model-options --model deepseek-flash --context-window 262144
-python3 monitor.py model-options --model deepseek-flash --reset-context
-python3 monitor.py model-options --model deepseek-flash --hide
-python3 monitor.py model-options --model deepseek-flash --show
-python3 monitor.py run-once --retry
+python3 monitor.py model-options --model MODEL --context-window 32768
+python3 monitor.py model-options --model MODEL --reset-context
+python3 monitor.py model-options --model MODEL --hide
+python3 monitor.py model-options --model MODEL --show
 python3 monitor.py disable
 ```
 
-Preferences live in the monitor's `model-preferences.json` and apply after synchronization and normal application exit. New chats use the refreshed settings. `enable --no-code-updates` and `--no-model-sync` independently disable either feature. Keep the current and previous recovery builds; update packages and app copies consume disk space.
+Running `connect` again updates a monitored connection; the next check validates a replacement. Restart after installation; existing chats adopt the selected model's window on the next turn. Per-model reductions and hidden selections persist. `enable --no-code-updates` or `--no-model-sync` disables either feature independently.
 
-## Restore and tests
+For manual updates use a fresh output directory and `--baseline OLD_BUILD`. On macOS, a same-version rebuild uses the signed `OLD_BUILD/original.app` as `--app` and the live application as `--install-target`. Existing managed configuration is validated before replacement. Full commands and current context/reasoning tables are in the [Chinese guide](README.md).
+
+Switching providers sends retained chat history to the newly selected endpoint. Remote-host chats and unregistered custom providers retain their original behavior. Upstream subscription limits still apply; notably the current Antigravity adapter's static Opus context declaration differs from the vendor maximum.
+
+## Validation and recovery
 
 ```sh
-python3 patch.py status "$PATCH_BUILD"
-# Disable the monitor if enabled, then quit the app normally.
-python3 patch.py restore "$PATCH_BUILD"
-
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -q
 node tests/route.test.cjs
+# Optional live reply/tool smoke test, using provider quota:
+python3 scripts/test_connection.py "$PATCH_BUILD" --model MODEL --run
+# Stop monitoring and quit the app before restoring:
+python3 patch.py restore "$PATCH_BUILD"
 ```
 
-macOS restore recovers the previous app and prior configuration. Windows restore recovers the previous managed copy, shortcut, and configuration; the first installation removes its managed copy on restore. Restore stops when configuration or the target has changed since installation.
-
-Keep build directories: installed configuration references their catalogs, and recovery depends on their contents. Compatible builds save `compatibility.json` with source digests, insertion locations, extracted methods, and behavior-check results for local review.
-
-Optional live testing sends two small DeepSeek conversations and incurs API usage. It runs only with explicit `--run`:
-
-```sh
-python3 scripts/test_connection.py "$PATCH_BUILD" --run
-```
-
-Platform/version-specific checks and their scope are recorded in [validation](docs/VALIDATION.md).
-
-## Operational details
-
-The adapter routes new local DS threads to `deepseek-desktop`, preserves other request fields, and lists chats across providers. Local prewarm reuse is bypassed to prevent provider mismatches; new chat creation may be slightly slower.
-
-The first build uses bundled GPT metadata. The monitor then refreshes native GPT and enabled provider metadata before validated rebuilds. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use ad-hoc signing; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
-
-Generated files contain vendor resources and potentially private configuration. Keep them local. See [NOTICE](NOTICE).
-
-## License
-
-[MIT](LICENSE) for original patch code; vendor applications, trademarks, and resources retain their respective ownership and licenses.
+Recovery validates the current app/config and restores the previous state. macOS copies use ad-hoc signatures; resource integrity checks remain enabled. Never publish `.local/`, builds, logs or personal configuration. See [NOTICE](NOTICE) for third-party ownership.
