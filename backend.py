@@ -77,7 +77,7 @@ def verify_official(app):
     return {"team": "2DC432GLL2"}
 
 
-def inspect_source(app, node=None, routes=None):
+def inspect_source(app, node=None, routes=None, native_contexts=None):
     from compatibility import locate_bundle, apply_source
     p.mac_only()
     layout = p.app_layout(app)
@@ -87,7 +87,7 @@ def inspect_source(app, node=None, routes=None):
     route_source=(p.ROOT / "route.js").read_text(encoding="utf-8")
     if routes is not None:
         from model_sync import render_route
-        route_source=render_route(route_source,routes)
+        route_source=render_route(route_source,routes,native_contexts)
     patched, evidence = apply_source(source, route_source)
     if routes is not None:evidence['model_routes']=routes
     node = node or shutil.which("node")
@@ -149,21 +149,36 @@ def build_compatible(args):
     current = p.read_config(home / "config.toml")
     p.prepared_config(current, output / "desktop-models.json", args.keychain_account, args.keychain_service,
                       managed=managed, helper=output / "windows_support.py", proxy=proxy)
-    prepared = (getattr(args, "inspection", None) if not model_snapshot else None) or inspect_source(app, getattr(args, "node_path", None), model_snapshot['routes'] if model_snapshot else None)
+    cached = getattr(args, "inspection", None)
+    if cached:
+        p.require(p.file_sha(p.app_layout(app)["asar"]) == cached["source_asar"], "App changed after compatibility checks")
+    if model_snapshot:
+        catalog, routes = model_snapshot['catalog'], model_snapshot['routes']
+    else:
+        # Read only signed bundled metadata and preserve explicit user reductions.
+        verify_official(app)
+        with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
+            raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
+                stderr=subprocess.PIPE, env={**os.environ, "CODEX_HOME": temp}, timeout=90)
+        catalog = p.make_catalog(json.loads(raw))
+        from model_sync import apply_reductions
+        config = p.tomllib.loads(current)
+        routes = {}
+        for entry in catalog["models"]:
+            if entry["slug"] != p.MODEL:
+                continue
+            compact = apply_reductions(entry, {}, config.get("model_context_window"))
+            if config.get("model_auto_compact_token_limit"):
+                compact = min(compact, config["model_auto_compact_token_limit"])
+            routes[entry["slug"]] = {"provider": p.PROVIDER, "context_window": entry["context_window"],
+                "max_context_window": entry["max_context_window"], "compact_limit": compact}
+    p.require(all(route["provider"] == p.PROVIDER for route in routes.values()), "DS edition cannot install proxy routes")
+    native_contexts = {m["slug"]: {"window": m["context_window"], "maximum": m.get("max_context_window", m["context_window"])}
+                      for m in catalog["models"] if m["slug"].startswith(("gpt-", "codex-")) and m.get("context_window")}
+    prepared = inspect_source(app, getattr(args, "node_path", None), routes, native_contexts)
     layout = p.app_layout(app)
     original_hash = p.file_sha(layout["asar"])
     p.require(original_hash == prepared["source_asar"], "App changed after compatibility checks")
-    if model_snapshot:
-        catalog=model_snapshot['catalog']
-    else:
-        # First installs read bundled metadata without inheriting another catalog.
-        with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
-            raw=subprocess.check_output([str(p.cli_path(app)),"debug","models","--bundled"],
-                stderr=subprocess.PIPE,env={**os.environ,"CODEX_HOME":temp},timeout=90)
-        catalog=p.make_catalog(json.loads(raw))
-    if proxy and not model_snapshot:
-        import proxy_support as ps
-        catalog = ps.add_catalog(catalog, proxy["models"])
     output.mkdir(parents=True, mode=0o700)
     patched = prepared["patched"].encode()
     source = output / "patched-client.mjs"
@@ -215,6 +230,8 @@ def build_compatible(args):
         manifest["proxy"] = proxy
     manifest['edition']=p.EDITION
     manifest['reasoning_probe_required']=True
+    manifest['model_routes']=routes
+    manifest['switching_probe_required']=bool(routes)
     if model_snapshot:
         manifest['model_routes']=model_snapshot['routes']
     if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
@@ -254,6 +271,8 @@ def install_compatible(directory, manifest):
               "Both isolated boot and offline app-server probes must pass before installation")
     if manifest.get('reasoning_probe_required'):
         p.require(manifest.get('reasoning_probe')=='passed','Run the reasoning selection probe before installation')
+    if manifest.get("switching_probe_required"):
+        p.require(manifest.get("switching_probe") == "passed", "Run the saved-chat switching probe before installation")
     p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
     if manifest.get('model_routes'):
         p.require(manifest.get('context_probe')=='passed','Run the offline context/compaction probe before installation')
@@ -334,16 +353,9 @@ class MonitorBackend:
                                   keychain_account=self.settings["keychain_account"],
                                   keychain_service=self.settings["keychain_service"],
                                   node_path=self.settings.get("node_path"), inspection=self.inspection)
-        built = build_compatible(args)
-        from scripts.test_offline import main as offline
-        from scripts.test_boot import main as boot
-        offline(output)
-        from scripts.test_reasoning import main as reasoning
-        reasoning(output)
-        if built.get("proxy"):
-            from scripts.test_context import main as check_context
-            check_context(output)
-        boot(output)
+        build_compatible(args)
+        from update_worker import verify_build
+        verify_build(output)
         return {"directory": str(output)}
 
     def is_running(self):

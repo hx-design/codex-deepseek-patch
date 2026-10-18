@@ -8,6 +8,22 @@ import patch as p
 import backend
 
 
+def verify_build(output):
+    from scripts.test_offline import main as offline
+    from scripts.test_reasoning import main as reasoning
+    from scripts.test_boot import main as boot
+    offline(output)
+    reasoning(output)
+    manifest=json.loads((Path(output)/'manifest.json').read_text(encoding='utf-8'))
+    if manifest.get('proxy') or manifest.get('model_routes'):
+        from scripts.test_context import main as context
+        context(output)
+    if manifest.get('switching_probe_required'):
+        from scripts.test_switching import main as switching
+        switching(output)
+    boot(output)
+
+
 def execute(action, job):
     if action=='identity':
         import updater
@@ -27,16 +43,7 @@ def execute(action, job):
              install_target=Path(job['install_target']) if job.get('install_target') else None,
              model_snapshot=job.get('models'),update_metadata=job.get('update'))
         backend.build_compatible(args)
-        from scripts.test_offline import main as offline
-        from scripts.test_boot import main as boot
-        offline(output)
-        from scripts.test_reasoning import main as reasoning
-        reasoning(output)
-        manifest=json.loads((output/'manifest.json').read_text(encoding="utf-8"))
-        if manifest.get('proxy') or manifest.get('model_routes'):
-            from scripts.test_context import main as context
-            context(output)
-        boot(output)
+        verify_build(output)
         return {'directory':str(output),'status':'prepared'}
     if action=='install':
         directory,manifest=p.load_build(Path(job['directory']))

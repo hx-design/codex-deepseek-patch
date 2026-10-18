@@ -226,6 +226,11 @@ def apply_source(source: str, route_js: str) -> tuple[str, dict]:
     """Apply only recorded insertions and append the local route helper."""
     analysis = analyze_source(source)
     _require(route_js.count(MARKER) == 1 and re.search(r"function\s+" + HELPER + r"\(", route_js), "Invalid route helper/marker")
+    if "function codexPatchManagedRequest(" in route_js:
+        request=analysis["request"]
+        edit=next(e for e in analysis["edits"] if e["kind"]=="send-request")
+        edit["after"]=(f'const __codexModelRequest=codexPatchManagedRequest(this,{request["m"]},{request["p"]},{request["o"]});'
+                       'if(__codexModelRequest!==null)return await __codexModelRequest;'+edit["after"])
     result = source
     for edit in reversed(analysis["edits"]):
         _require(result[edit["start"]:edit["end"]] == edit["before"], "Source changed during patch application")

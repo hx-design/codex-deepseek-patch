@@ -188,6 +188,21 @@ class InstallAdapterTests(unittest.TestCase):
             cli.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_saved_chat_probe_is_required_before_any_install_transaction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            catalog = root / 'desktop-models.json'; catalog.write_text('{}')
+            manifest = {'status': 'prepared', 'target': str(root / 'app'), 'codex_home': str(root / 'home'),
+                        'original_asar': 'original', 'patched_asar': 'patched', 'catalog_sha256': p.file_sha(catalog),
+                        'boot_probe': 'passed', 'offline_probe': 'passed', 'reasoning_probe': 'passed',
+                        'context_probe': 'passed', 'switching_probe_required': True}
+            with mock('backend.p.require_stopped'), mock('backend.p.verify_app'), mock('backend.p.install_transaction') as install:
+                for value in [None, 'failed']:
+                    manifest['switching_probe'] = value
+                    with self.subTest(value=value), self.assertRaisesRegex(p.PatchError, 'saved-chat switching'):
+                        backend.install_compatible(root, manifest)
+            install.assert_not_called()
+
     def test_install_refuses_missing_offline_probe_before_transaction(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -322,7 +322,13 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     return snapshot
 
 
-def render_route(source, routes):
+def render_route(source, routes, native_contexts=None):
     pattern=r'(/\* MODEL_ROUTES_BEGIN \*/).*?(/\* MODEL_ROUTES_END \*/)'
     p.require(len(re.findall(pattern,source,re.S))==1,'Dynamic model routing marker is missing')
-    return re.sub(pattern,lambda m:m.group(1)+json.dumps(routes,separators=(',',':'))+m.group(2),source,flags=re.S)
+    source=re.sub(pattern,lambda m:m.group(1)+json.dumps(routes,separators=(',',':'))+m.group(2),source,flags=re.S)
+    if native_contexts is not None:
+        pattern=r'(/\* NATIVE_CONTEXT_BEGIN \*/).*?(/\* NATIVE_CONTEXT_END \*/)'
+        p.require(len(re.findall(pattern,source,re.S))==1,'Native context routing marker is missing')
+        source=re.sub(pattern,
+                      lambda m:m.group(1)+json.dumps(native_contexts,separators=(',',':'))+m.group(2),source,flags=re.S)
+    return source

@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -378,64 +378,9 @@ def cli_path(app):
 
 
 def build(args):
-    require(not (getattr(args, "proxy_config", None) or getattr(args, "install_target", None)) or getattr(args, "compatible", False),
-            "Proxy integration and installed-app refresh require --compatible")
-    if getattr(args, "compatible", False) or sys.platform == "win32":
-        from backend import build_compatible
-        return build_compatible(args)
-    mac_only()
-    app, home, output = args.app.resolve(), args.codex_home.resolve(), args.output.resolve()
-    require(not output.exists(), "Choose a new output directory; existing builds are never overwritten")
-    require(not output.is_relative_to(app) and not app.is_relative_to(output) and output != home,
-            "Build directory overlaps the app or configuration root")
-    require(home.is_dir(), "Codex home must exist")
-    config = home / "config.toml"
-    current = read_config(config)
-    prepared_config(current, output / "desktop-models.json", args.keychain_account, args.keychain_service)
-    info = app_info(app)
-    require(info.get("CFBundleShortVersionString") == APP_VERSION and info.get("CFBundleVersion") == APP_BUILD,
-            "Unsupported app version/build; supported: " + APP_VERSION + " (" + APP_BUILD + ")")
-    verify_app(app, ORIGINAL_ASAR)
-    require(shutil.which("node"), "Node.js is required for JavaScript syntax validation")
-    archive = app / "Contents/Resources/app.asar"
-    header, base, _ = archive_header(archive)
-    member = dict(entries(header)).get(CENTRAL)
-    require(member is not None, "Supported JavaScript bundle is missing")
-    source = read_member(archive, member, base)
-    check_member(source, member)
-    patched = patch_source(source.decode()).encode()
-    command = [cli_path(app), "debug", "models"] + (["--bundled"] if args.bundled_catalog else [])
-    catalog = make_catalog(json.loads(subprocess.check_output(command, env={**os.environ, "CODEX_HOME": str(home)}, timeout=90)))
-    output.mkdir(parents=True, mode=0o700)
-    os.chmod(output, 0o700)
-    temp_source = output / "patched-client.mjs"
-    temp_source.write_bytes(patched)
-    run(["node", "--check", temp_source])
-    save_json(output / "desktop-models.json", catalog)
-    original, stage = output / "original.app", output / "patched.app"
-    clone_app(app, original)
-    clone_app(app, stage)
-    new_hash = repack(archive, output / "patched.asar", {CENTRAL: patched})
-    os.replace(output / "patched.asar", stage / "Contents/Resources/app.asar")
-    old_integrity = copy.deepcopy(info["ElectronAsarIntegrity"])
-    info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = new_hash
-    fmt = plistlib.FMT_BINARY if (app / "Contents/Info.plist").read_bytes().startswith(b"bplist") else plistlib.FMT_XML
-    (stage / "Contents/Info.plist").write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
-    framework = framework_path(stage)
-    framework.write_bytes(patch_framework_bytes(framework.read_bytes(), old_integrity, info["ElectronAsarIntegrity"]))
-    run(["/usr/bin/codesign", "--deep", "--force", "--sign", "-", stage])
-    patched_hash = file_sha(stage / "Contents/Resources/app.asar")
-    verify_app(stage, patched_hash)
-    count = compare_archives(original / "Contents/Resources/app.asar", stage / "Contents/Resources/app.asar")
-    manifest = {"format": 1, "tool_version": VERSION, "app_version": APP_VERSION, "app_build": APP_BUILD,
-                "target": str(app), "codex_home": str(home), "status": "prepared",
-                "original_asar": ORIGINAL_ASAR, "patched_asar": patched_hash,
-                "catalog_sha256": file_sha(output / "desktop-models.json"),
-                "keychain_account": args.keychain_account, "keychain_service": args.keychain_service,
-                "changed_members": [CENTRAL], "archive_members": count,
-                "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-    save_json(output / "manifest.json", manifest)
-    print(f"Prepared and verified: {output}\nRun test-boot, then quit the app and run install.")
+    # Every entry point uses the same verified routes and saved-chat switch hook.
+    from backend import build_compatible
+    return build_compatible(args)
 
 
 def load_build(directory):
@@ -563,9 +508,13 @@ def main():
     p.add_argument("--baseline", type=Path, help="Existing patch build whose managed catalog should be refreshed")
     p.add_argument("--install-target", type=Path, help="Refresh a known installed Mac baseline using an original signed --app backup")
     p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
+    p.add_argument("--verify", action="store_true", help="Run all isolated installation checks after building")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)
+    p = subs.add_parser("verify", help="Run offline, reasoning, context, switching and isolated boot checks")
+    p.add_argument("directory", type=Path)
+    p.set_defaults(func=lambda args: __import__("update_worker").verify_build(args.directory))
     for name, function in (("install", install), ("restore", restore), ("status", status)):
         p = subs.add_parser(name)
         p.add_argument("directory", type=Path)
@@ -580,6 +529,8 @@ def main():
     args = parser.parse_args()
     try:
         args.func(args)
+        if args.action == "build" and args.verify:
+            __import__("update_worker").verify_build(args.output)
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         return 1

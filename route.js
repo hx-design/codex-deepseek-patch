@@ -26,3 +26,91 @@ function codexPatchAppServerParams(method, params, hostId) {
   }
   return {...params, modelProvider: provider, serviceTier: null, config};
 }
+
+// Refreshed with the native catalog; used only when returning from a custom provider.
+function codexPatchNativeContexts() {
+  return /* NATIVE_CONTEXT_BEGIN */{}/* NATIVE_CONTEXT_END */;
+}
+const codexPatchThreadStates = new WeakMap();
+function codexPatchManagedRequest(client, method, params, options) {
+  if (client.hostId !== 'local' || !params || typeof params !== 'object') return null;
+  let states = codexPatchThreadStates.get(client);
+  if (!states) { states = new Map(); codexPatchThreadStates.set(client, states); }
+  const id = params.threadId;
+  if (id && ['thread/resume', 'thread/unsubscribe'].includes(method)) states.delete(id);
+  if (method !== 'turn/start' || typeof id !== 'string') return null;
+  const model = params.model ?? params.collaborationMode?.settings?.model;
+  const routes = codexPatchModelRoutes();
+  const route = Object.prototype.hasOwnProperty.call(routes, model) ? routes[model] : null;
+  const native = codexPatchNativeContexts();
+  const nativeInfo = Object.prototype.hasOwnProperty.call(native, model) ? native[model] : null;
+  if (!route && !nativeInfo) return null;
+  const target = route?.provider ?? 'openai';
+  const key = JSON.stringify([model, route]);
+  const send = (managed = true) => client.enqueueRequest(method, route && managed ? {...params, serviceTier: null, serviceTierForTurn: null} : params, options);
+  const known = states.get(id);
+  if (known?.key === key) return send(!known.passthrough);
+  if (known?.pending) return known.pending.then(() => codexPatchManagedRequest(client, method, params, options));
+  const pending = (async () => {
+    const read = await client.enqueueRequest('thread/read', {threadId: id, includeTurns: false}, options);
+    const thread = read.thread;
+    if (!thread || thread.id !== id) throw new Error('Cannot read this chat before switching models.');
+    const managedProviders = new Set(Object.values(routes).map(value => value.provider));
+    if (thread.modelProvider !== 'openai' && !managedProviders.has(thread.modelProvider)) {
+      states.set(id, {key, passthrough: true}); return send(false);
+    }
+    if (!route && thread.modelProvider === 'openai') { states.set(id, {key}); return send(); }
+    if (thread.ephemeral) throw new Error('Switch models in a saved chat.');
+    if (thread.status?.type === 'active') throw new Error('Wait for the current reply to finish before switching models.');
+    const current = await client.enqueueRequest('thread/resume', {threadId: id, excludeTurns: true}, options);
+    const retained = {cwd: current.cwd, approvalPolicy: current.approvalPolicy,
+                      approvalsReviewer: current.approvalsReviewer, runtimeWorkspaceRoots: current.runtimeWorkspaceRoots};
+    if (current.activePermissionProfile?.id) retained.permissions = current.activePermissionProfile.id;
+    else {
+      const modes = {readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access'};
+      retained.sandbox = modes[current.sandbox?.type];
+      if (!retained.sandbox) throw new Error('This chat uses permissions that cannot be safely restored during a model switch.');
+    }
+    let config;
+    if (route) {
+      // Refresh old saved 128K defaults from the current per-model preference.
+      config = {web_search: 'disabled', model_context_window: route.context_window,
+                model_auto_compact_token_limit: route.compact_limit};
+    } else {
+      const global = (await client.sendConfigReadRequest({includeLayers: false}, options)).config ?? {};
+      const requested = global.model_context_window;
+      const window = Number.isSafeInteger(requested) && requested > 0
+        ? Math.min(requested, nativeInfo.maximum) : nativeInfo.window;
+      const compact = Math.floor(window * .9);
+      config = {model_context_window: window,
+                model_auto_compact_token_limit: Number.isSafeInteger(global.model_auto_compact_token_limit)
+                  ? Math.min(global.model_auto_compact_token_limit, compact) : compact,
+                web_search: global.web_search ?? 'cached'};
+    }
+    if (!retained.permissions && current.sandbox?.type === 'workspaceWrite') {
+      config.sandbox_workspace_write = {writable_roots: current.sandbox.writableRoots,
+        network_access: current.sandbox.networkAccess, exclude_slash_tmp: current.sandbox.excludeSlashTmp,
+        exclude_tmpdir_env_var: current.sandbox.excludeTmpdirEnvVar};
+    }
+    await client.enqueueRequest('thread/unsubscribe', {threadId: id}, options);
+    try {
+      const resumed = await client.enqueueRequest('thread/resume',
+        {...retained, threadId: id, model, modelProvider: target, config, excludeTurns: true}, options);
+      if (resumed.thread?.id !== id || resumed.modelProvider !== target || resumed.model !== model)
+        throw new Error('The chat did not switch to the selected model. Retry before sending.');
+      if (JSON.stringify(resumed.sandbox) !== JSON.stringify(current.sandbox) ||
+          JSON.stringify(resumed.approvalPolicy) !== JSON.stringify(current.approvalPolicy) ||
+          resumed.approvalsReviewer !== current.approvalsReviewer || resumed.cwd !== current.cwd)
+        throw new Error('Chat permissions changed while switching. No message was sent.');
+    } catch (error) {
+      try { await client.enqueueRequest('thread/unsubscribe', {threadId: id}, options);
+        await client.enqueueRequest('thread/resume',
+        {...retained, threadId: id, model: current.model, modelProvider: current.modelProvider, excludeTurns: true}, options); } catch {}
+      throw error;
+    }
+    states.set(id, {key});
+    return send();
+  })();
+  states.set(id, {pending});
+  return pending.catch(error => { states.delete(id); throw error; });
+}

@@ -146,4 +146,15 @@ class ModelSyncTests(unittest.TestCase):
         self.assertFalse(entry['supports_reasoning_effort_updates'])
 
 
+class RouteMetadataTests(unittest.TestCase):
+    def test_route_renderer_requires_native_context_hook(self):
+        source = (p.ROOT / 'route.js').read_text(encoding='utf-8')
+        contexts = {'gpt-example': {'window': 400000, 'maximum': 1000000}}
+        rendered = m.render_route(source, {}, contexts)
+        self.assertIn('"gpt-example":{"window":400000,"maximum":1000000}', rendered)
+        for invalid in [source.replace('NATIVE_CONTEXT_BEGIN', 'REMOVED'), source + source]:
+            with self.subTest(invalid=invalid[:40]), self.assertRaises(p.PatchError):
+                m.render_route(invalid, {}, contexts)
+
+
 if __name__=='__main__':unittest.main()
