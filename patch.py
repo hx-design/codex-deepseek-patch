@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -263,6 +263,7 @@ def make_catalog(original):
         experimental_supported_tools=[], multi_agent_reasoning_effort="high",
         web_search_tool_type="text", supports_search_tool=True,
         input_modalities=["text", "image"], supports_image_detail_original=True,
+        supports_reasoning_effort_updates=True,
     )
     catalog["models"] = [m for m in catalog["models"] if not m["slug"].startswith("deepseek-")] + [flash]
     return catalog

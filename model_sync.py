@@ -24,6 +24,26 @@ FAMILIES = {
     'deepseek-flash': re.compile(r'^deepseek-(?:v\d+(?:\.\d+)?-)?flash$'),
 }
 OFFICIAL_HOSTS = {'docs.x.ai', 'ai.google.dev', 'platform.claude.com', 'api-docs.deepseek.com'}
+EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
+# Verified against provider docs and CLIProxyAPI 8.0.32's actual adapters.
+# A model ID ending in -high or -thinking still accepts a per-request effort.
+REASONING_PRESETS = {
+    'grok-4.5': ['low', 'medium', 'high'],
+    'grok-4.7': ['low', 'medium', 'high', 'xhigh'],
+    'gemini-3.8-flash-high': ['low', 'medium', 'high'],
+    'claude-opus-4-6-thinking': ['low', 'medium', 'high', 'max'],
+}
+
+
+def configure_reasoning(entry, levels=None):
+    model=entry['slug']
+    values=REASONING_PRESETS.get(model, levels or ['high'])
+    values=list(dict.fromkeys(x for x in values if x in EFFORTS))
+    p.require(values, 'No supported reasoning efforts for '+model)
+    entry['supported_reasoning_levels']=[{'effort':x,'description':x.title()} for x in values]
+    entry['default_reasoning_level']='high' if 'high' in values else values[0]
+    entry['supports_reasoning_effort_updates']=len(values)>1
+    return entry
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -102,9 +122,10 @@ def parse_spec(model, document, url):
     if re.search(r'(?:input|modalities|supported data types).{0,160}\bimage', text, re.I) or re.search(r'\btext and images\b', text, re.I):
         modalities.append('image')
     levels = ['high']
-    match = re.search(r'(?:reasoning efforts|thinking supported)\s*[:(]?\s*(?:supported\s+)?((?:(?:low|medium|high|xhigh|max)[,\s()]*)+)', text, re.I)
-    if match and not model.endswith(('-high', '-thinking')):
-        levels = list(dict.fromkeys(re.findall(r'\b(low|medium|high|xhigh|max)\b', match[1].lower()))) or levels
+    match = re.search(r'(?:reasoning efforts?|thinking levels?|thinking supported)\s*(?:\(\s*supported\s*\)|supported)?\s*[:(]?\s*((?:(?:none|minimal|low|medium|high|xhigh|max)[,\s()/]*)+)', text, re.I)
+    if match:
+        levels = list(dict.fromkeys(re.findall(r'\b(none|minimal|low|medium|high|xhigh|max)\b', match[1].lower()))) or levels
+    levels=REASONING_PRESETS.get(model, levels)
     return {'context_window':values.pop(), 'input_modalities':modalities, 'reasoning_levels':levels,
             'source':url}
 
@@ -112,7 +133,7 @@ def parse_spec(model, document, url):
 def provider_models(provider):
     auth = provider.get('auth')
     if auth:
-        result = subprocess.run([auth['command']]+auth.get('args', []), capture_output=True, text=True, timeout=15,
+        result = subprocess.run([auth['command']]+auth.get('args', []), capture_output=True, text=True,encoding="utf-8",errors="replace", timeout=15,
                                 cwd=auth.get('cwd'))
         p.require(result.returncode == 0 and result.stdout.strip(), 'Provider credential helper is unavailable')
         key = result.stdout.strip()
@@ -134,7 +155,7 @@ def native_catalog(app, home):
         if auth.is_file():
             shutil.copy2(auth, Path(temp)/'auth.json')
             if os.name != 'nt': (Path(temp)/'auth.json').chmod(0o600)
-        result = subprocess.run([str(p.cli_path(app)), 'debug', 'models'], capture_output=True, text=True,
+        result = subprocess.run([str(p.cli_path(app)), 'debug', 'models'], capture_output=True, text=True,encoding="utf-8",errors="replace",
                                 timeout=90, env={**os.environ, 'CODEX_HOME':temp})
         p.require(result.returncode == 0, 'Native GPT catalog refresh failed')
         value = json.loads(result.stdout)
@@ -200,7 +221,7 @@ def make_entry(template, model, provider, spec, priority):
                  tool_mode=None, experimental_supported_tools=[], multi_agent_reasoning_effort='high',
                  supports_search_tool=provider=='deepseek-desktop', web_search_tool_type='text',
                  support_verbosity=False, default_verbosity=None)
-    return entry
+    return configure_reasoning(entry, spec.get('reasoning_levels'))
 
 
 def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, fetch_provider=provider_models, fetch_document=fetch):
@@ -208,15 +229,15 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     directory=Path(directory); baseline=Path(baseline)
     directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     current=p.tomllib.loads(p.read_config(Path(settings['codex_home'])/'config.toml'))
-    manifest=json.loads((baseline/'manifest.json').read_text())
-    previous=json.loads((directory/'models.json').read_text()) if (directory/'models.json').exists() else {}
+    manifest=json.loads((baseline/'manifest.json').read_text(encoding="utf-8"))
+    previous=json.loads((directory/'models.json').read_text(encoding="utf-8")) if (directory/'models.json').exists() else {}
     policy=copy.deepcopy(previous.get('policy', {}))
-    preferences=validate_preferences(json.loads((directory/'model-preferences.json').read_text()) if (directory/'model-preferences.json').exists() else {})
-    old_catalog=json.loads(Path(current['model_catalog_json']).read_text())
+    preferences=validate_preferences(json.loads((directory/'model-preferences.json').read_text(encoding="utf-8")) if (directory/'model-preferences.json').exists() else {})
+    old_catalog=json.loads(Path(current['model_catalog_json']).read_text(encoding="utf-8"))
     old_models={m['slug']:m for m in old_catalog['models']}
     # Recognize manual reductions to a managed catalog instead of overwriting them.
     installed_snapshot=baseline/'synced-models.json'
-    installed_defaults=json.loads(installed_snapshot.read_text()).get('defaults',{}) if installed_snapshot.exists() else {}
+    installed_defaults=json.loads(installed_snapshot.read_text(encoding="utf-8")).get('defaults',{}) if installed_snapshot.exists() else {}
     for model, default in installed_defaults.items():
         value=old_models.get(model,{}).get('context_window')
         if type(value) is int and value < default and model not in preferences.get('context_windows',{}):

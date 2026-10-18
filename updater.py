@@ -23,7 +23,7 @@ CHECK_SECONDS = 3600
 
 
 def edition(root=None):
-    value=json.loads((Path(root or p.ROOT)/'edition.json').read_text())
+    value=json.loads((Path(root or p.ROOT)/'edition.json').read_text(encoding="utf-8"))
     p.require(value.get('edition') in CHANNELS and value.get('branch')==CHANNELS[value['edition']], 'Unknown or crossed update channel')
     return value
 
@@ -94,7 +94,7 @@ def source_package(release, directory, fetch=public_get):
             env=isolated_environment(Path(temp))
             for command in ([sys.executable,'-m','unittest','discover','-s','tests','-q'],
                             [shutil.which('node'),'tests/route.test.cjs']):
-                result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,timeout=120)
+                result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120)
                 p.require(result.returncode==0,'Downloaded package preflight failed: '+result.stderr[-1500:])
         os.replace(stage,target)
         return target
@@ -105,11 +105,11 @@ def source_package(release, directory, fetch=public_get):
 def worker(root, action, job, work_directory):
     root=Path(root);directory=Path(work_directory);directory.mkdir(parents=True,exist_ok=True)
     path=directory/('worker-'+action+'.json');p.save_json(path,job)
-    with (directory/('worker-'+action+'.log')).open('w') as log:
+    with (directory/('worker-'+action+'.log')).open('w',encoding='utf-8') as log:
         result=subprocess.run([sys.executable,str(root/'update_worker.py'),action,str(path)],
                               cwd=root,stdout=log,stderr=log,timeout=1800)
     p.require(result.returncode==0,'Update worker failed during '+action+'; see its local log')
-    return json.loads(path.with_suffix('.result.json').read_text())
+    return json.loads(path.with_suffix('.result.json').read_text(encoding="utf-8"))
 
 
 def activate_runtime(package, directory, expected_edition):
@@ -146,15 +146,15 @@ class UpdateBackend:
         self.edition=settings['edition']
         p.require(edition()['edition']==self.edition,'Installed runtime is from another edition')
         self.cache_path=self.directory/'updates.json'
-        self.cache=json.loads(self.cache_path.read_text()) if self.cache_path.exists() else {}
+        self.cache=json.loads(self.cache_path.read_text(encoding="utf-8")) if self.cache_path.exists() else {}
         p.require(self.cache.get('edition',self.edition)==self.edition,'Update state belongs to another edition')
         self.cache['edition']=self.edition
         installed=self.installed_metadata().get('release') or {}
         self.cache['highest_sequence']=max(self.cache.get('highest_sequence',0),installed.get('sequence',0))
         pending=self.directory/'activation-pending.json'
         if pending.exists():
-            build=Path(json.loads(pending.read_text())['baseline'])
-            record=json.loads((build/'manifest.json').read_text())
+            build=Path(json.loads(pending.read_text(encoding="utf-8"))['baseline'])
+            record=json.loads((build/'manifest.json').read_text(encoding="utf-8"))
             if record.get('status')=='installed':
                 self.base.baseline=build
                 self.settings['recovery_build']=str(build)
@@ -168,8 +168,8 @@ class UpdateBackend:
         if self.prepared:return
         pending=self.directory/'activation-pending.json'
         if pending.exists():
-            build=Path(json.loads(pending.read_text())['baseline'])
-            if json.loads((build/'manifest.json').read_text()).get('status')=='installed':
+            build=Path(json.loads(pending.read_text(encoding="utf-8"))['baseline'])
+            if json.loads((build/'manifest.json').read_text(encoding="utf-8")).get('status')=='installed':
                 self.promote(build)
             pending.unlink()
         self.prepared=True
@@ -211,7 +211,7 @@ class UpdateBackend:
                 self.warnings.append('Model synchronization: '+safe_error(error))
         models=self.directory/'models.json'
         if models.exists():
-            self.model_snapshot=json.loads(models.read_text())
+            self.model_snapshot=json.loads(models.read_text(encoding="utf-8"))
             p.require(self.model_snapshot.get('edition')==self.edition,'Model snapshot belongs to another edition')
             self.warnings.extend(self.model_snapshot.get('warnings',[]))
         p.save_json(self.cache_path,self.cache)
@@ -232,10 +232,10 @@ class UpdateBackend:
     def installed_metadata(self, baseline=None):
         baseline=baseline or self.base.baseline
         if not baseline:return {}
-        return json.loads((Path(baseline)/'manifest.json').read_text()).get('update',{})
+        return json.loads((Path(baseline)/'manifest.json').read_text(encoding="utf-8")).get('update',{})
 
     def source(self):
-        manifest=json.loads((self.base.baseline/'manifest.json').read_text())
+        manifest=json.loads((self.base.baseline/'manifest.json').read_text(encoding="utf-8"))
         if sys.platform=='darwin' and p.file_sha(p.app_layout(self.base.app)['asar'])==manifest.get('patched_asar'):
             original=self.base.baseline/'original.app'
             if not original.exists() and manifest.get('backup'):

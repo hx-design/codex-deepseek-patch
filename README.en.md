@@ -2,7 +2,7 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API.
 
-**v0.3.0** adds edition-pinned patch self-updates and model/specification synchronization, preserving explicit smaller context settings alongside application-update compatibility checks and automatic reinstallation.
+**v0.3.1** adds edition-pinned patch self-updates and model/specification synchronization, preserving explicit smaller context settings alongside application-update compatibility checks and automatic reinstallation.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -31,6 +31,7 @@ python3 patch.py setup-key
 PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-20261018"
 python3 patch.py build --compatible --output "$PATCH_BUILD"
 python3 scripts/test_offline.py "$PATCH_BUILD"
+python3 scripts/test_reasoning.py "$PATCH_BUILD"
 python3 patch.py test-boot "$PATCH_BUILD"
 
 # Quit Codex normally, then install.
@@ -53,6 +54,7 @@ python patch.py setup-key
 $PatchBuild = Join-Path $env:LOCALAPPDATA "CodexDeepSeekPatch\build-20261018"
 python patch.py build --compatible --output "$PatchBuild"
 python scripts/test_offline.py "$PatchBuild"
+python scripts/test_reasoning.py "$PatchBuild"
 python patch.py test-boot "$PatchBuild"
 
 # Quit Codex normally, then install.
@@ -77,12 +79,19 @@ python3 patch.py build --compatible \
   --app "/path/to/official/ChatGPT.app" \
   --baseline "$PATCH_BUILD" --output "$NEW_PATCH_BUILD"
 python3 scripts/test_offline.py "$NEW_PATCH_BUILD"
+python3 scripts/test_reasoning.py "$NEW_PATCH_BUILD"
 python3 patch.py test-boot "$NEW_PATCH_BUILD"
 # Quit the app normally before installing.
 python3 patch.py install "$NEW_PATCH_BUILD"
 ```
 
 Use matching `--keychain-account` and `--keychain-service` values with `setup-key` and `build` to customize the credential lookup. Defaults are the current username and `Codex DeepSeek API Key`.
+
+## Reasoning effort selection
+
+The model picker exposes supported effort levels, including changes within the same chat. Synchronization preserves the complete effort list. DeepSeek Flash supports low/high/max.
+
+Installation and automatic updates require the real bundled CLI to pass a loopback test of model-list choices and transmitted per-turn effort values.
 
 ## Automatic updates and model synchronization
 

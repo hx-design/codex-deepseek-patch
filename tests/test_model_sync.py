@@ -129,5 +129,21 @@ class ModelSyncTests(unittest.TestCase):
             self.assertEqual(later['routes']['deepseek-flash']['context_window'],256000)
             self.assertTrue(any('deepseek-v5-flash' in w for w in later['warnings']))
 
+    def test_reasoning_choices_survive_suffixes_and_disabled_native_template(self):
+        expected={'grok-4.5':['low','medium','high'],'grok-4.7':['low','medium','high','xhigh'],
+                  'gemini-3.8-flash-high':['low','medium','high'],'claude-opus-4-6-thinking':['low','medium','high','max']}
+        for model,levels in expected.items():
+            entry=m.configure_reasoning({'slug':model,'supports_reasoning_effort_updates':False},['high'])
+            self.assertEqual([v['effort'] for v in entry['supported_reasoning_levels']],levels)
+            self.assertTrue(entry['supports_reasoning_effort_updates'])
+            self.assertEqual(entry['default_reasoning_level'],'high')
+
+    def test_future_model_markdown_supported_levels_and_single_level_default(self):
+        spec=m.parse_spec('grok-5','Context window: 1M\n**Reasoning efforts (supported):** `low`, `medium`, `high`, `xhigh`',m.specification_url('grok-5'))
+        self.assertEqual(spec['reasoning_levels'],['low','medium','high','xhigh'])
+        entry=m.configure_reasoning({'slug':'future-model'},['max'])
+        self.assertEqual(entry['default_reasoning_level'],'max')
+        self.assertFalse(entry['supports_reasoning_effort_updates'])
+
 
 if __name__=='__main__':unittest.main()

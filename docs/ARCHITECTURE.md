@@ -71,3 +71,7 @@ CI 使用合成 ASAR、模型元数据和替身后台，检查资源完整性、
 `model_sync.py` 通过原生 CLI、服务商模型列表和官方规格生成可重现的 `synced-models.json`。目录和路由共享该快照，安装前再次校验摘要。模型偏好与已见型号分别持久化，新增系列成员、原有排除项、隐藏项和主动调小窗口不会互相覆盖。官网无法确认新型号规格时保留告警并等待下次同步，已有规格继续使用。
 
 发布流程：先提交并验证源代码，再用 `scripts/release_manifest.py --commit FULL_SHA --sequence N` 生成独立通道的更新清单并提交。清单本身不计入包摘要；序号在各通道内单调递增，已发布序号不得换提交。两个分支分别运行 Windows / Linux、Python 3.11 / 3.13 回归测试。
+
+## v0.3.1 思考档位
+
+`configure_reasoning` 为已验证型号补齐真实可用档位，设置有效默认值及 `supports_reasoning_effort_updates`；目录预设和模型同步都调用它。保留原始代理 ID，原生 CLI 将每回合选择编码为 `reasoning.effort`，已有代理负责上游协议转换。`scripts/test_reasoning.py` 使用实际 CLI、完整菜单数据及 loopback 响应验证各档与回切，构建记录 `reasoning_probe_required` 并要求通过后才能安装。

@@ -5,7 +5,7 @@
 
 在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，保留 GPT 模型和默认设置。选择 DS 后，新建的本机聊天使用 DeepSeek API。
 
-**v0.3.0** 同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
+**v0.3.1** 同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
 
 这是非官方、本地安装的补丁。仓库只提供补丁源码，不提供 ChatGPT/Codex 应用、提取后的程序、模型系统提示词或 API 密钥。
 
@@ -42,6 +42,7 @@ python3 patch.py setup-key
 PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-20261018"
 python3 patch.py build --compatible --output "$PATCH_BUILD"
 python3 scripts/test_offline.py "$PATCH_BUILD"
+python3 scripts/test_reasoning.py "$PATCH_BUILD"
 python3 patch.py test-boot "$PATCH_BUILD"
 ```
 
@@ -67,6 +68,7 @@ python patch.py setup-key
 $PatchBuild = Join-Path $env:LOCALAPPDATA "CodexDeepSeekPatch\build-20261018"
 python patch.py build --compatible --output "$PatchBuild"
 python scripts/test_offline.py "$PatchBuild"
+python scripts/test_reasoning.py "$PatchBuild"
 python patch.py test-boot "$PatchBuild"
 
 # 正常退出 Codex 后安装。
@@ -91,12 +93,21 @@ python3 patch.py build --compatible \
   --app "/path/to/official/ChatGPT.app" \
   --baseline "$PATCH_BUILD" --output "$NEW_PATCH_BUILD"
 python3 scripts/test_offline.py "$NEW_PATCH_BUILD"
+python3 scripts/test_reasoning.py "$NEW_PATCH_BUILD"
 python3 patch.py test-boot "$NEW_PATCH_BUILD"
 # 正常退出应用后：
 python3 patch.py install "$NEW_PATCH_BUILD"
 ```
 
 凭据默认使用当前用户名和 `Codex DeepSeek API Key`；可用 `--keychain-account`、`--keychain-service` 自定义，`setup-key` 与 `build` 使用相同参数。
+
+## 思考程度选择
+
+新增模型在模型菜单中显示各自支持的思考档位；同一聊天可以逐回合调整。自动同步和重新安装会保留完整档位列表。
+
+DeepSeek Flash 提供 **low / high / max**。本版继续使用 DeepSeek 直连接口；公司 Windows 电脑可以保持独立 DS 更新通道。
+
+安装前的 `test_reasoning.py` 会通过实际内置 CLI 读取菜单模型数据，逐档发送本机模拟请求，并切回第一档检查选择是否生效；自动更新也执行此项检查。
 
 ## 自动更新与模型同步
 

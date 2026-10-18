@@ -30,7 +30,9 @@ def execute(action, job):
         from scripts.test_offline import main as offline
         from scripts.test_boot import main as boot
         offline(output)
-        manifest=json.loads((output/'manifest.json').read_text())
+        from scripts.test_reasoning import main as reasoning
+        reasoning(output)
+        manifest=json.loads((output/'manifest.json').read_text(encoding="utf-8"))
         if manifest.get('proxy') or manifest.get('model_routes'):
             from scripts.test_context import main as context
             context(output)
@@ -46,7 +48,7 @@ def execute(action, job):
 if __name__=='__main__':
     action,path=sys.argv[1],Path(sys.argv[2])
     try:
-        value=execute(action,json.loads(path.read_text()))
+        value=execute(action,json.loads(path.read_text(encoding="utf-8")))
         p.save_json(path.with_suffix('.result.json'),value)
     except Exception as error:
         from monitor import safe_error

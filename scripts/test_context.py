@@ -26,7 +26,7 @@ class ResponsesStub(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        self.server.requests.append({'path': self.path, 'model': body.get('model')})
+        self.server.requests.append({'path': self.path, 'model': body.get('model'), 'effort':body.get('reasoning',{}).get('effort')})
         index = len(self.server.requests)
         usage_tokens=getattr(self.server,'usage_tokens',180000)
         message = {'id':f'msg_{index}', 'type':'message', 'status':'completed', 'role':'assistant',
@@ -86,8 +86,10 @@ class Rpc:
                 return event['result']
             self.pending.append(event)
 
-    def turn(self, tid):
-        result = self.request('turn/start',{'threadId':tid,'input':[{'type':'text','text':'Reply CONTEXT_OK.'}]})
+    def turn(self, tid, effort=None):
+        params={'threadId':tid,'input':[{'type':'text','text':'Reply CONTEXT_OK.'}]}
+        if effort is not None:params['effort']=effort
+        result = self.request('turn/start',params)
         turn_id = result['turn']['id']
         collected = []
         end = time.monotonic()+45
@@ -106,13 +108,13 @@ def main(directory):
     directory, manifest = patch.load_build(Path(directory))
     model_routes=manifest.get('model_routes')
     models = list(model_routes) if model_routes is not None else manifest.get('proxy',{}).get('models',[])
-    evidence = json.loads((directory/'compatibility.json').read_text())['evidence']
+    evidence = json.loads((directory/'compatibility.json').read_text(encoding="utf-8"))['evidence']
     route = evidence['route_js']
     node = ("const fs=require('fs'),vm=require('vm');const x=JSON.parse(fs.readFileSync(0,'utf8'));"
             "const c=vm.createContext({});vm.runInContext(x.route,c);"
             "console.log(JSON.stringify(x.models.map(model=>c.codexPatchAppServerParams('thread/start',{model},'local'))));")
-    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True))
-    expected={m['slug']:m['context_window'] for m in json.loads((directory/'desktop-models.json').read_text())['models']}
+    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True,encoding="utf-8",errors="replace"))
+    expected={m['slug']:m['context_window'] for m in json.loads((directory/'desktop-models.json').read_text(encoding="utf-8"))['models']}
     app = directory/'patched.app' if manifest['status']=='prepared' else Path(manifest['target'])
     server = http.server.ThreadingHTTPServer(('127.0.0.1',0),ResponsesStub)
     server.daemon_threads = True
@@ -132,11 +134,11 @@ def main(directory):
                     +'base_url="http://127.0.0.1:'+str(server.server_port)+'/v1"\n'
                     +'env_key="CONTEXT_TEST_KEY"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n')
             config += config[config.index('[model_providers.easycli-desktop]'):].replace('model_providers.easycli-desktop','model_providers.deepseek-desktop')
-            (base/'home/config.toml').write_text(config)
+            (base/'home/config.toml').write_text(config,encoding="utf-8")
             work=base/'work';work.mkdir()
-            with (directory/'context-probe.log').open('w') as log:
+            with (directory/'context-probe.log').open('w',encoding='utf-8') as log:
                 process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,
-                                         stdout=subprocess.PIPE,stderr=log,text=True,env=env,cwd=work,**launch_options())
+                                         stdout=subprocess.PIPE,stderr=log,text=True,encoding="utf-8",errors="replace",env=env,cwd=work,**launch_options())
                 try:
                     rpc=Rpc(process)
                     rpc.request('initialize',{'clientInfo':{'name':'context_regression','version':'1'},'capabilities':{'experimentalApi':True}})

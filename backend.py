@@ -153,11 +153,14 @@ def build_compatible(args):
     layout = p.app_layout(app)
     original_hash = p.file_sha(layout["asar"])
     p.require(original_hash == prepared["source_asar"], "App changed after compatibility checks")
-    # A disposable CLI home avoids inheriting the catalog from the previous patch.
-    with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
-        raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
-                                      env={**os.environ, "CODEX_HOME": temp}, timeout=90)
-    catalog = model_snapshot['catalog'] if model_snapshot else p.make_catalog(json.loads(raw))
+    if model_snapshot:
+        catalog=model_snapshot['catalog']
+    else:
+        # First installs read bundled metadata without inheriting another catalog.
+        with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
+            raw=subprocess.check_output([str(p.cli_path(app)),"debug","models","--bundled"],
+                stderr=subprocess.PIPE,env={**os.environ,"CODEX_HOME":temp},timeout=90)
+        catalog=p.make_catalog(json.loads(raw))
     if proxy and not model_snapshot:
         import proxy_support as ps
         catalog = ps.add_catalog(catalog, proxy["models"])
@@ -211,6 +214,7 @@ def build_compatible(args):
     if proxy:
         manifest["proxy"] = proxy
     manifest['edition']=p.EDITION
+    manifest['reasoning_probe_required']=True
     if model_snapshot:
         manifest['model_routes']=model_snapshot['routes']
     if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
@@ -248,6 +252,8 @@ def install_compatible(directory, manifest):
     p.require(p.file_sha(directory / "desktop-models.json") == manifest["catalog_sha256"], "Catalog changed")
     p.require(manifest.get("boot_probe") == "passed" and manifest.get("offline_probe") == "passed",
               "Both isolated boot and offline app-server probes must pass before installation")
+    if manifest.get('reasoning_probe_required'):
+        p.require(manifest.get('reasoning_probe')=='passed','Run the reasoning selection probe before installation')
     p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
     if manifest.get('model_routes'):
         p.require(manifest.get('context_probe')=='passed','Run the offline context/compaction probe before installation')
@@ -332,6 +338,8 @@ class MonitorBackend:
         from scripts.test_offline import main as offline
         from scripts.test_boot import main as boot
         offline(output)
+        from scripts.test_reasoning import main as reasoning
+        reasoning(output)
         if built.get("proxy"):
             from scripts.test_context import main as check_context
             check_context(output)
