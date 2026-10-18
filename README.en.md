@@ -2,7 +2,7 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. Existing local GPT chats can switch to DeepSeek and back in the same chat.
 
-**v0.3.3** adds saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
+**v0.3.4** adds saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 

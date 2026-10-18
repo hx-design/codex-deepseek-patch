@@ -127,6 +127,23 @@ class UpdateTests(unittest.TestCase):
             obj.promote.assert_called_once_with(build)
             self.assertFalse((root/'activation-pending.json').exists())
 
+    def test_activation_releases_runtime_working_directory_before_rename(self):
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); runtime = root / 'runtime'; runtime.mkdir()
+            (runtime / 'version').write_text('old')
+            package = root / 'package'; package.mkdir(); (package / 'version').write_text('new')
+            identity = {'edition': 'ds', 'files': ['version'], 'runtime_digest': u.runtime_digest(package, ['version'])}
+            try:
+                u.os.chdir(runtime)
+                with mock.object(u, 'worker', return_value=identity):
+                    u.activate_runtime(package, root, 'ds')
+                self.assertEqual(Path.cwd(), root)
+                self.assertEqual((runtime / 'version').read_text(), 'new')
+                self.assertEqual(next(root.glob('runtime-backup-*')).joinpath('version').read_text(), 'old')
+            finally:
+                u.os.chdir(previous)
+
     def test_release_cannot_omit_required_regression_tests(self):
         release,_=self.release()
         del release['files']['tests/test_updater.py']
