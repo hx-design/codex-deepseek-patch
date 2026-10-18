@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -33,7 +33,7 @@ MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
-                         "model_sync.py", "updater.py", "update_worker.py", "edition.json",
+                         "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
                          "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
@@ -523,6 +523,8 @@ def main():
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=setup_key)
+    p = subs.add_parser("setup-signing", help="Create or verify the persistent local macOS signing identity")
+    p.set_defaults(func=lambda args: print(json.dumps(__import__("macos_signing").ensure_identity(), indent=2)))
     p = subs.add_parser("test-boot", help="Launch only the prepared copy with temporary user data")
     p.add_argument("directory", type=Path)
     p.set_defaults(func=lambda args: __import__("scripts.test_boot", fromlist=["main"]).main(args.directory))

@@ -36,3 +36,5 @@ python3 patch.py verify "/new/build/directory"
 On Windows, use `python` and Windows paths. Run an install/restore cycle against a disposable target before claiming deployment support. Document the platform, exact version, command, result, and evidence layer in `docs/VALIDATION.md`. Distinguish synthetic tests, source/syntax checks, offline app-server routing, isolated GUI startup, install/restore, and live model calls.
 
 Live provider tests require an explicit request and incur API usage. A previous live result must retain its original version/date; it should not be presented as validation of a new runtime.
+
+macOS signing changes must retain the established local certificate and component requirements, preserve ordinary capability entitlements, and pass `python3 scripts/test_macos_signing.py`. Never reset TCC records, grant privacy access silently, or put signing keys in a release.

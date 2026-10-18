@@ -62,6 +62,8 @@ def managed_baseline(directory, account, service):
         import proxy_support as ps
         result["proxy"] = ps.validate(manifest["proxy"])
         result["proxy_provider"] = parsed["model_providers"][ps.PROVIDER]
+    if manifest.get('macos_signing'):
+        result['macos_signing'] = manifest['macos_signing']
     return result
 
 
@@ -211,7 +213,8 @@ def build_compatible(args):
         plist.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
         framework = p.framework_path(stage)
         framework.write_bytes(p.patch_framework_bytes(framework.read_bytes(), old, info["ElectronAsarIntegrity"]))
-        p.run(["/usr/bin/codesign", "--deep", "--force", "--sign", "-", stage], capture_output=True)
+        from macos_signing import sign_app
+        signing = sign_app(stage, previous=(managed or {}).get("macos_signing"))
     patched_hash = p.file_sha(stage_archive)
     p.verify_app(stage, patched_hash)
     count = p.compare_archives(archive, stage_archive, prepared["central"])
@@ -234,6 +237,8 @@ def build_compatible(args):
     manifest['switching_probe_required']=bool(routes)
     if model_snapshot:
         manifest['model_routes']=model_snapshot['routes']
+    if sys.platform == 'darwin':
+        manifest.update(macos_signing=signing, stable_signing_required=True)
     if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
     if install_target:
         manifest.update(source_target=str(app), target=str(install_target), replaced_asar=replaced_asar)
@@ -266,6 +271,9 @@ def install_compatible(directory, manifest):
     if manifest.get("replaced_asar"):
         p.verify_app(app, manifest["replaced_asar"])
     p.verify_app(directory / "patched.app", manifest["patched_asar"])
+    if manifest.get("stable_signing_required"):
+        from macos_signing import verify_app_identity
+        verify_app_identity(directory / "patched.app", manifest["macos_signing"])
     p.require(p.file_sha(directory / "desktop-models.json") == manifest["catalog_sha256"], "Catalog changed")
     p.require(manifest.get("boot_probe") == "passed" and manifest.get("offline_probe") == "passed",
               "Both isolated boot and offline app-server probes must pass before installation")
@@ -290,6 +298,8 @@ def install_compatible(directory, manifest):
     p.atomic_text(directory / "config-installed.toml", updated)
     def commit():
         p.verify_app(app, manifest["patched_asar"])
+        if manifest.get("stable_signing_required"):
+            verify_app_identity(app, manifest["macos_signing"])
         p.require(p.read_config(config) == updated, "Configuration verification failed")
         manifest.update(status="installed", config_existed=existed, installed_config_hash=p.sha(updated.encode()),
                         installed_at=dt.datetime.now(dt.timezone.utc).isoformat())

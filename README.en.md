@@ -2,7 +2,7 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. Existing local GPT chats can switch to DeepSeek and back in the same chat.
 
-**v0.3.4** adds saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
+**v0.3.5** adds saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -18,6 +18,16 @@ Two independent editions: **this main branch is DS-only**. The [extension branch
 Compatible mode verifies the official publisher, resource integrity, unique request contracts, and the behavior of extracted methods. Asset hashes, filenames, and minified identifiers may change. Unknown control flow stops the build. All builds now use the verified compatibility path; the existing `--compatible` flag remains accepted.
 
 As verified on October 18, 2026, `deepseek-flash` is served by DeepSeek-V4.1-Flash-1017. DeepSeek controls alias updates. [Official API documentation](https://api-docs.deepseek.com/quick_start/agent_integrations/)
+
+## macOS updates and permissions
+
+A persistent local signing certificate replaces per-build ad-hoc identities. Its private key stays in the current user's login keychain; public identity metadata lives in `~/Library/Application Support/CodexDeepSeekPatch/signing/`, outside versioned builds. Both editions reuse that local identity while retaining independent update channels.
+
+Updates keep the same designated requirements and ordinary capabilities such as microphone, camera and Apple Events. Only the changed framework, its helpers and the outer app receive local signatures; untouched vendor code retains its official signatures. Installation verifies identity and capabilities. See [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+
+**The first migration from an old ad-hoc signature may require one more macOS permission confirmation. Later patched versions retain the new identity.** Vendor-only application/keychain groups require the vendor's identity and are not claimed by local signatures. The patch does not edit TCC records or clear user keychains.
+
+The first build prepares the identity automatically; `python3 patch.py setup-signing` can do this in advance. Retain the **Codex Model Patch Local Signing** keychain entry. A missing or changed established identity stops the update instead of silently rotating the certificate.
 
 ## macOS installation
 
@@ -147,7 +157,7 @@ Platform/version-specific checks and their scope are recorded in [validation](do
 
 The adapter routes new local DS chats to `deepseek-desktop` and reloads existing GPT/DS chats under the same ID when changing providers. Failed switches attempt to restore the previous model and stop the pending turn. Chats from all providers remain listed. Local prewarm reuse is bypassed to prevent provider mismatches; new chat creation may be slightly slower.
 
-The first build uses bundled GPT metadata. The monitor then refreshes native GPT and enabled provider metadata before validated rebuilds. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use ad-hoc signing; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
+The first build uses bundled GPT metadata. The monitor then refreshes native GPT and enabled provider metadata before validated rebuilds. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use a persistent local signing certificate; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
 
 Generated files contain vendor resources and potentially private configuration. Keep them local. See [NOTICE](NOTICE).
 

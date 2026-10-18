@@ -5,7 +5,7 @@
 
 在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，保留 GPT 模型和默认设置。本机已有 GPT 聊天也能直接切换到 DS，并在同一聊天切回 GPT。
 
-**v0.3.4** 新增已有聊天内 **GPT ↔ DS** 切换，保留聊天记录、工作目录和权限；切换与压缩后沿用对应模型的上下文设置。同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
+**v0.3.5** 新增已有聊天内 **GPT ↔ DS** 切换，保留聊天记录、工作目录和权限；切换与压缩后沿用对应模型的上下文设置。同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
 
 本仓库有两种版本：**当前 main 为独立 DS 版**；[扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) 支持现有 Gemini / Grok / Opus 接口与本地模型，DeepSeek 可选，并支持同一聊天切换模型。两个版本各自更新。
 
@@ -27,6 +27,16 @@
 兼容模式检查官方签名、资源完整性、唯一请求结构和提取方法的运行行为，允许资源哈希、文件名及压缩变量名变化。请求结构发生未知变化时停止并报告，不靠版本号直接放行。所有构建统一使用兼容检查路径；旧命令中的 `--compatible` 参数仍可使用。
 
 2026-10-18 核对时，`deepseek-flash` 对应 **DeepSeek-V4.1-Flash-1017**。后端版本由 DeepSeek 维护，见[官方模型说明](https://api-docs.deepseek.com/quick_start/agent_integrations/)。
+
+## macOS 更新与系统授权
+
+本版在本机创建并复用固定的代码签名证书，私钥保存在当前用户的登录钥匙串中。签名身份记录独立存放于 `~/Library/Application Support/CodexDeepSeekPatch/signing/`，DS 与扩展版共用本机身份，但继续使用各自的更新通道。
+
+应用更新时沿用相同的身份要求，并保留麦克风、相机、Apple Events 等可本地使用的能力声明。只重签修改过的 Framework、其辅助程序与外层应用；未修改的内置 CLI、Sparkle 等保留官方签名。安装前后都会核对身份和能力声明。macOS 通过签名身份识别跨版本的钥匙串与隐私授权，见 [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
+
+**第一次从旧临时签名迁移时，按 macOS 提示重新确认一次所需权限；后续补丁更新保持这个身份。** 原有官方身份的专属应用组和钥匙串组由厂商证书控制，本地补丁不能冒用。更新不会修改 TCC 授权数据库或清空用户钥匙串。
+
+初次构建自动准备签名身份，也可提前运行 `python3 patch.py setup-signing`。请保留登录钥匙串中的 **Codex Model Patch Local Signing** 条目；已有证书丢失或与已安装版本不一致时，更新会停止并提示恢复，不会偷偷换证书。旧版本构建目录可以按恢复需要管理，签名身份不存放在这些目录内。
 
 ## macOS 安装
 
@@ -183,7 +193,7 @@ python3 scripts/test_connection.py "$PATCH_BUILD" --run
 - 新建本机 DS 聊天时设置 `deepseek-desktop`；已有 GPT / DS 聊天在下一回合前按选中模型重新载入同一 ID。切换失败时尝试恢复原模型并停止发送；本机聊天列表显示各服务商的聊天。
 - 跳过本机新建聊天的预热缓存复用，避免提供商混用；新建聊天可能略慢。
 - 首次构建使用内置目录；启用监测后刷新 GPT、DS 模型及规格，验证后重新构建。
-- 保持 ASAR 资源校验启用，更新成员与分块哈希、包头及原生配套摘要。macOS 副本使用 ad-hoc 签名；Windows 副本修改完整性载体。依赖官方签名的系统功能或更新可能受到影响。
+- 保持 ASAR 资源校验启用，更新成员与分块哈希、包头及原生配套摘要。macOS 副本使用固定本机证书签名；Windows 副本修改完整性载体。依赖官方签名的系统功能或更新可能受到影响。
 - `.local/`、构建产物和配置备份包含程序副本或本机信息。请勿上传到仓库或 Issue。
 
 ## 许可证
