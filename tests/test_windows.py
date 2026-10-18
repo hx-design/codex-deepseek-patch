@@ -1,0 +1,167 @@
+import hashlib
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+import struct
+import tempfile
+import unittest
+from unittest import mock
+
+import windows_support as win
+
+
+def pe_fixture(payload, fuse=b"010011001"):
+    """Minimal PE32+ with a named resource type/name and one language leaf."""
+    blob = bytearray(2048)
+    blob[:2] = b"MZ"
+    struct.pack_into("<I", blob, 0x3c, 0x80)
+    blob[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", blob, 0x86, 1)
+    struct.pack_into("<H", blob, 0x94, 240)
+    struct.pack_into("<H", blob, 0x98, 0x20b)
+    struct.pack_into("<II", blob, 0x98 + 112 + 16, 0x1000, 0x500)
+    section = 0x98 + 240
+    blob[section:section + 8] = b".rsrc\0\0\0"
+    struct.pack_into("<IIII", blob, section + 8, 0x500, 0x1000, 0x500, 0x200)
+    base = 0x200
+    for relative, named, numbered, key, value in (
+        (0, 1, 0, 0x80000080, 0x80000020),
+        (0x20, 1, 0, 0x800000a0, 0x80000040),
+        (0x40, 0, 1, 1033, 0x60),
+    ):
+        struct.pack_into("<HH", blob, base + relative + 12, named, numbered)
+        struct.pack_into("<II", blob, base + relative + 16, key, value)
+    for relative, name in ((0x80, "Integrity"), (0xa0, "ElectronAsar")):
+        encoded = name.encode("utf-16le")
+        struct.pack_into("<H", blob, base + relative, len(name))
+        blob[base + relative + 2:base + relative + 2 + len(encoded)] = encoded
+    struct.pack_into("<IIII", blob, base + 0x60, 0x1100, len(payload), 0, 0)
+    blob[base + 0x100:base + 0x100 + len(payload)] = payload
+    wire = win.FUSE_SENTINEL + bytes((1, len(fuse))) + fuse
+    blob[0x700:0x700 + len(wire)] = wire
+    return bytes(blob)
+
+
+def write_asar(path):
+    package = json.dumps({"name": "openai-codex-electron", "productName": "Codex", "version": "26.1", "codexBuildNumber": "42"}).encode()
+    raw = json.dumps({"files": {"package.json": {"offset": "0", "size": len(package), "integrity": {"algorithm": "SHA256", "hash": hashlib.sha256(package).hexdigest()}}}}, separators=(",", ":")).encode()
+    payload = struct.pack("<I", len(raw)) + raw
+    payload += b"\0" * (-len(payload) % 4)
+    header = struct.pack("<I", len(payload)) + payload
+    path.parent.mkdir(parents=True)
+    path.write_bytes(struct.pack("<II", 4, len(header)) + header + package)
+    return hashlib.sha256(raw).hexdigest()
+
+
+class ResourceTests(unittest.TestCase):
+    def test_extracts_named_resource_exact_range(self):
+        payload = b'[{"file":"resources/app.asar","alg":"sha256","value":"' + b"a" * 64 + b'"}]'
+        blob = pe_fixture(payload)
+        leaves = win.pe_resources(blob)
+        self.assertEqual(len(leaves), 1)
+        self.assertEqual(leaves[0]["path"], ("Integrity", "ElectronAsar", 1033))
+        self.assertEqual(leaves[0]["data"], payload)
+        self.assertEqual(win._fuses(blob), "010011001")
+
+    def test_rejects_truncated_resources(self):
+        for blob in (b"", b"MZ", pe_fixture(b"[]")[:800]):
+            with self.assertRaises(win.WindowsSupportError):
+                win.pe_resources(blob)
+
+    def test_rejects_cycle(self):
+        blob = bytearray(pe_fixture(b"[]"))
+        struct.pack_into("<I", blob, 0x200 + 20, 0x80000000)
+        with self.assertRaisesRegex(win.WindowsSupportError, "Cyclic"):
+            win.pe_resources(blob)
+
+    def test_rejects_ambiguous_integrity_entry(self):
+        item = {"file": "resources/app.asar", "alg": "SHA256", "value": "a" * 64}
+        with self.assertRaises(win.WindowsSupportError):
+            win._integrity_entry([item, item])
+
+    def test_update_changes_only_existing_hash_and_preserves_fuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            digest = write_asar(app / "resources/app.asar")
+            (app / "resources/codex.exe").write_bytes(b"cli")
+            metadata = [{"file": "resources\\app.asar", "alg": "SHA256", "value": "a" * 64}]
+            original = pe_fixture(json.dumps(metadata).encode())
+            exe = app / "ChatGPT.exe"
+            exe.write_bytes(original)
+            result = win.update_integrity(app, digest)
+            expected = original.replace(b"a" * 64, digest.encode())
+            self.assertEqual(exe.read_bytes(), expected)
+            self.assertEqual(result["header_hash"], digest)
+            self.assertEqual(result["fuses"], "010011001")
+            self.assertEqual(win.verify_integrity(app)["header_hash"], digest)
+            with self.assertRaisesRegex(win.WindowsSupportError, "archive changed"):
+                win.verify_integrity(app, "b" * 64)
+
+    def test_no_mutation_when_header_or_schema_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            digest = write_asar(app / "resources/app.asar")
+            (app / "resources/codex.exe").write_bytes(b"cli")
+            original = pe_fixture(b"[]")
+            exe = app / "ChatGPT.exe"
+            exe.write_bytes(original)
+            with self.assertRaises(win.WindowsSupportError):
+                win.update_integrity(app, digest)
+            self.assertEqual(exe.read_bytes(), original)
+
+    def test_store_source_is_read_only(self):
+        with mock.patch.object(win, "_app_root", return_value=Path("/WindowsApps/Codex/app")):
+            with self.assertRaisesRegex(win.WindowsSupportError, "protected Store"):
+                win.update_integrity(Path("ignored"), "a" * 64)
+
+    def test_rejects_disabled_integrity_before_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            digest = write_asar(app / "resources/app.asar")
+            (app / "resources/codex.exe").write_bytes(b"cli")
+            original = pe_fixture(json.dumps([{"file": "resources/app.asar", "alg": "SHA256", "value": "a" * 64}]).encode(), b"010001001")
+            exe = app / "ChatGPT.exe"
+            exe.write_bytes(original)
+            with self.assertRaisesRegex(win.WindowsSupportError, "remain enabled"):
+                win.update_integrity(app, digest)
+            self.assertEqual(exe.read_bytes(), original)
+
+    def test_build_number_uses_shipped_codex_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp)
+            write_asar(app / "resources/app.asar")
+            (app / "resources/codex.exe").write_bytes(b"cli")
+            (app / "ChatGPT.exe").write_bytes(b"exe")
+            self.assertEqual(win.inspect_app(app)["build"], "42")
+
+    @unittest.skipUnless(sys.platform == "win32", "native Windows long-path regression")
+    def test_clone_preserves_files_beyond_legacy_max_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            source, target = base / "source", base / "target"
+            (source / "resources").mkdir(parents=True)
+            (source / "resources/app.asar").write_bytes(b"fixture")
+            relative = Path(*(["nested-component-0123456789"] * 12)) / "preserved.txt"
+            source_file = "\\\\?\\" + str((source / relative).resolve())
+            os.makedirs(os.path.dirname(source_file))
+            with open(source_file, "wb") as handle:
+                handle.write(b"deep package file")
+            try:
+                win.clone_app(source, target)
+                with open("\\\\?\\" + str((target / relative).resolve()), "rb") as handle:
+                    self.assertEqual(handle.read(), b"deep package file")
+            finally:
+                for path in (source, target):
+                    if path.exists():
+                        shutil.rmtree("\\\\?\\" + str(path.resolve()))
+
+    def test_credentials_reject_non_windows(self):
+        with mock.patch.object(win.sys, "platform", "darwin"):
+            with self.assertRaisesRegex(win.WindowsSupportError, "requires Windows"):
+                win.credential_set("test", "user", "secret")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version-gated, source-only DeepSeek model picker patch for macOS Codex."""
+"""Source-only DeepSeek model picker patch for macOS and Windows Codex."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -31,6 +31,9 @@ PROVIDER = "deepseek-desktop"
 MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
+SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
+                         "windows_support.py", "windows_install.py", "scripts/__init__.py",
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -66,8 +69,20 @@ def run(args, **kwargs):
 
 
 def mac_only():
-    require(sys.platform == "darwin" and platform.machine() == "arm64",
-            "This release supports Apple Silicon macOS only.")
+    require((sys.platform == "darwin" and platform.machine() == "arm64") or sys.platform == "win32",
+            "This release supports Apple Silicon macOS and Windows.")
+
+
+def app_layout(app):
+    app = Path(app).resolve()
+    if sys.platform == "win32":
+        from windows_support import inspect_app
+        return inspect_app(app)
+    info = app_info(app)
+    return {"app": app, "asar": app / "Contents/Resources/app.asar",
+            "exe": app / "Contents/MacOS" / info["CFBundleExecutable"],
+            "cli": app / "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "version": info["CFBundleShortVersionString"], "build": info["CFBundleVersion"]}
 
 
 def app_info(app):
@@ -159,7 +174,7 @@ def repack(source, destination, replacements):
     return sha(raw)
 
 
-def compare_archives(original, patched):
+def compare_archives(original, patched, central=CENTRAL):
     oh, ob, _ = archive_header(original)
     ph, pb, _ = archive_header(patched)
     a, b = dict(entries(oh)), dict(entries(ph))
@@ -170,14 +185,14 @@ def compare_archives(original, patched):
         if "offset" not in item or item.get("unpacked"):
             require(item == other, "Link/unpacked metadata changed: " + path)
             continue
-        if path != CENTRAL:
+        if path != central:
             require(item == other, "Unrelated member metadata changed: " + path)
         old = read_member(original, item, ob)
         new = read_member(patched, other, pb)
         if old != new:
             changed.append(path)
             check_member(new, other)
-    require(changed == [CENTRAL], "Unexpected changed members: " + repr(changed))
+    require(changed == [central], "Unexpected changed members: " + repr(changed))
     return len(a)
 
 
@@ -206,6 +221,9 @@ def patch_framework_bytes(blob, old_integrity, new_integrity):
 
 
 def verify_app(app, expected_asar=None):
+    if sys.platform == "win32":
+        from windows_support import verify_integrity
+        return verify_integrity(app, expected_asar)
     info = app_info(app)
     require(info.get("CFBundleIdentifier") == "com.openai.codex", "Wrong application identity")
     archive = app / "Contents/Resources/app.asar"
@@ -244,21 +262,28 @@ def make_catalog(original):
     return catalog
 
 
-def provider_config(account, service):
+def provider_config(account, service, helper=None):
     args = ["find-generic-password", "-a", account, "-s", service, "-w"]
+    command = "/usr/bin/security"
+    if sys.platform == "win32":
+        command = sys.executable
+        args = [str(helper or (ROOT / "windows_support.py")), "credential-get", "--target", service]
     return (f'\n[model_providers.{PROVIDER}]\nname = "DeepSeek"\n'
             'base_url = "https://api.deepseek.com/"\nwire_api = "responses"\n'
             f'requires_openai_auth = false\n\n[model_providers.{PROVIDER}.auth]\n'
-            'command = "/usr/bin/security"\nargs = ' + json.dumps(args) + '\nrefresh_interval_ms = 0\n')
+            'command = ' + json.dumps(command) + '\nargs = ' + json.dumps(args) + '\nrefresh_interval_ms = 0\n')
 
 
-def prepared_config(current, catalog, account, service):
+def prepared_config(current, catalog, account, service, managed=None, helper=None):
     parsed = tomllib.loads(current)
+    if managed:
+        from backend import refresh_config
+        return refresh_config(current, catalog, managed)
     require(parsed.get("model_provider", "openai") == "openai", "A different default provider is configured")
     require("model_catalog_json" not in parsed and PROVIDER not in parsed.get("model_providers", {}),
             "A custom catalog or desktop DeepSeek provider already exists; review it before installing")
     updated = ('model_catalog_json = ' + json.dumps(str(catalog)) + '\n' + current
-               + ("" if current.endswith("\n") else "\n") + provider_config(account, service))
+               + ("" if current.endswith("\n") else "\n") + provider_config(account, service, helper))
     check = tomllib.loads(updated)
     check.pop("model_catalog_json")
     check["model_providers"].pop(PROVIDER)
@@ -271,8 +296,9 @@ def prepared_config(current, catalog, account, service):
 def atomic_text(path, text):
     fd, name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
-        os.fchmod(fd, path.stat().st_mode & 0o777 if path.exists() else 0o600)
-        with os.fdopen(fd, "w") as handle:
+        if os.name != "nt":
+            os.fchmod(fd, path.stat().st_mode & 0o777 if path.exists() else 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -287,6 +313,9 @@ def save_json(path, data):
 
 
 def clone_app(source, target):
+    if sys.platform == "win32":
+        from windows_support import clone_app as clone
+        return clone(source, target)
     require(not target.exists(), "Refusing to overwrite " + str(target))
     # APFS clones avoid duplicating gigabytes. Fail rather than partially overwrite.
     run(["/bin/cp", "-cR", source, target])
@@ -303,6 +332,9 @@ def exchange(a, b):
 
 
 def require_stopped(app):
+    if sys.platform == "win32":
+        from windows_support import require_stopped as stopped
+        return stopped(app)
     commands = subprocess.check_output(["/bin/ps", "-axo", "command="], text=True).splitlines()
     roots = {str(app), str(app.resolve())}
     require(not any(c.strip().startswith(root + "/Contents/") for c in commands for root in roots),
@@ -311,16 +343,19 @@ def require_stopped(app):
 
 def read_config(path):
     require(not path.is_symlink(), "Config symlink detected; resolve it explicitly before installation")
-    return path.read_text() if path.exists() else ""
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def cli_path(app):
-    path = app / "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+    path = app_layout(app)["cli"]
     require(path.is_file(), "Bundled Codex CLI is missing")
     return path
 
 
 def build(args):
+    if getattr(args, "compatible", False) or sys.platform == "win32":
+        from backend import build_compatible
+        return build_compatible(args)
     mac_only()
     app, home, output = args.app.resolve(), args.codex_home.resolve(), args.output.resolve()
     require(not output.exists(), "Choose a new output directory; existing builds are never overwritten")
@@ -378,7 +413,7 @@ def build(args):
 
 def load_build(directory):
     directory = directory.resolve()
-    manifest = json.loads((directory / "manifest.json").read_text())
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     require(manifest.get("format") == 1, "Unknown manifest format")
     return directory, manifest
 
@@ -403,6 +438,9 @@ def install_transaction(app, staged, config, before, after, commit):
 def install(args):
     mac_only()
     directory, manifest = load_build(args.directory)
+    if manifest.get("adaptive"):
+        from backend import install_compatible
+        return install_compatible(directory, manifest)
     app = Path(manifest["target"])
     config = Path(manifest["codex_home"]) / "config.toml"
     require(manifest["status"] == "prepared", "Build is not in prepared state; inspect status first")
@@ -432,6 +470,9 @@ def install(args):
 def restore(args):
     mac_only()
     directory, manifest = load_build(args.directory)
+    if manifest.get("deployment_target"):
+        from backend import restore_windows
+        return restore_windows(directory, manifest)
     require(manifest["status"] == "installed", "Build is not installed")
     app, config = Path(manifest["target"]), Path(manifest["codex_home"]) / "config.toml"
     require_stopped(app)
@@ -441,7 +482,7 @@ def restore(args):
     verify_app(app, manifest["patched_asar"])
     # After installation, patched.app contains the exact original target.
     verify_app(directory / "patched.app", manifest["original_asar"])
-    before = (directory / "config-before.toml").read_text()
+    before = (directory / "config-before.toml").read_text(encoding="utf-8")
     def commit():
         verify_app(app, manifest["original_asar"])
         if not manifest["config_existed"]:
@@ -454,6 +495,11 @@ def restore(args):
 
 def setup_key(args):
     mac_only()
+    if sys.platform == "win32":
+        from windows_support import credential_set
+        credential_set(args.keychain_service, args.keychain_account, getpass.getpass("DeepSeek API key: "))
+        print("Saved in Windows Credential Manager.")
+        return
     print("Enter the DeepSeek API key at the macOS security tool's password prompt.")
     # No key is placed in the process arguments, a repository file or shell history.
     run(["/usr/bin/security", "add-generic-password", "-U", "-a", args.keychain_account,
@@ -463,9 +509,10 @@ def setup_key(args):
 def status(args):
     directory, manifest = load_build(args.directory)
     print(json.dumps({key: manifest.get(key) for key in ("tool_version", "app_version", "status", "boot_probe", "target")}, indent=2))
-    if sys.platform == "darwin":
+    if sys.platform in ("darwin", "win32"):
         expected = manifest["patched_asar"] if manifest["status"] == "installed" else manifest["original_asar"]
-        verify_app(Path(manifest["target"]), expected)
+        target = manifest.get("deployment_target", manifest["target"]) if manifest["status"] == "installed" else manifest["target"]
+        verify_app(Path(target), expected)
         print("Target signature and resource integrity verified.")
 
 
@@ -477,10 +524,14 @@ def main():
     default_app = Path("/Applications/ChatGPT.app")
     if not default_app.exists():
         default_app = Path("/Applications/Codex.app")
+    if sys.platform == "win32":
+        default_app = None
     p.add_argument("--app", type=Path, default=default_app)
     p.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--bundled-catalog", action="store_true", help="Use the offline bundled GPT catalog instead of refreshing")
+    p.add_argument("--compatible", action="store_true", help="Check signed source and supported request contracts across app updates")
+    p.add_argument("--baseline", type=Path, help="Existing patch build whose managed catalog should be refreshed")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)
@@ -498,10 +549,15 @@ def main():
     args = parser.parse_args()
     try:
         args.func(args)
-    except (PatchError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         return 1
     return 0
+
+
+def MonitorBackend(settings):
+    from backend import MonitorBackend as Backend
+    return Backend(settings)
 
 
 if __name__ == "__main__":

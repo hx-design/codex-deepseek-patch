@@ -115,7 +115,12 @@ class ConfigTests(unittest.TestCase):
         parsed = patch.tomllib.loads(result)
         self.assertEqual(parsed["model"], "gpt-example")
         self.assertEqual(parsed["model_providers"]["other"], {"name": "Other"})
-        self.assertEqual(parsed["model_providers"][patch.PROVIDER]["auth"]["args"][2], 'an "account"')
+        auth = parsed["model_providers"][patch.PROVIDER]["auth"]
+        if patch.sys.platform == "win32":
+            self.assertEqual(auth["command"], patch.sys.executable)
+            self.assertEqual(auth["args"], [str(patch.ROOT / "windows_support.py"), "credential-get", "--target", "service"])
+        else:
+            self.assertEqual(auth["args"][2], 'an "account"')
         self.assertNotIn("api_key", result)
 
     def test_conflicting_config_rejected(self):

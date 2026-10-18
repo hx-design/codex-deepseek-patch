@@ -9,6 +9,10 @@ ALLOWED = {
     "CONTRIBUTING.md", "patch.py", "route.js", "docs/ARCHITECTURE.md", "docs/VALIDATION.md",
     "scripts/__init__.py", "scripts/test_boot.py", "scripts/test_connection.py", "scripts/check_release.py",
     "tests/test_patch.py", "tests/route.test.cjs",
+    "backend.py", "compatibility.py", "monitor.py", "windows_support.py", "windows_install.py",
+    "scripts/test_offline.py", "scripts/check_compatibility.cjs",
+    "tests/test_backend.py", "tests/test_compatibility.py", "tests/test_monitor.py",
+    "tests/test_offline.py", "tests/test_windows.py", "tests/test_windows_install.py",
 }
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]
