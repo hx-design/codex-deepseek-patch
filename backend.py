@@ -182,7 +182,7 @@ def install_compatible(directory, manifest):
     app = Path(manifest.get("deployment_target", manifest["target"]))
     config = Path(manifest["codex_home"]) / "config.toml"
     p.require(manifest["status"] == "prepared", "Build is not prepared")
-    p.require_stopped(source)
+    p.require_stopped(source, read_only_source=sys.platform == "win32")
     if app != source and app.exists():
         p.require_stopped(app)
     p.verify_app(source, manifest["original_asar"])
@@ -272,7 +272,7 @@ class MonitorBackend:
 
     def is_running(self):
         try:
-            p.require_stopped(self.app)
+            p.require_stopped(self.app, read_only_source=sys.platform == "win32")
             if sys.platform == "win32":
                 target = Path(os.environ["LOCALAPPDATA"]) / "CodexDeepSeekPatch/app"
                 if target.exists():

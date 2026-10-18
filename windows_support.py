@@ -300,14 +300,20 @@ def clone_app(source, target):
     shutil.copytree(extended(source), extended(target), symlinks=True)
 
 
-def require_stopped(app):
+def require_stopped(app, *, read_only_source=False):
     app = str(_app_root(app)).rstrip("\\/").casefold() + "\\"
     raw = _powershell("[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
                       "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath) | ConvertTo-Json -Compress")
     processes = json.loads(raw) if raw else []
     if isinstance(processes, dict):
         processes = [processes]
-    _require(not any(str(p.get("ExecutablePath") or "").casefold().startswith(app) for p in processes),
+    shared_service = app + "resources\\codex-windows-sandbox-service.exe"
+    # The official source is never renamed or modified. Its registered sandbox
+    # service can outlive the GUI; keep it running for other Codex clients.
+    # A managed deployment being replaced must still have no active binaries.
+    active = [str(p.get("ExecutablePath") or "").casefold() for p in processes]
+    _require(not any(path.startswith(app) and not (read_only_source and path == shared_service)
+                     for path in active),
              "Quit the target app normally before installation. No process was stopped.")
 
 

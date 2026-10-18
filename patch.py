@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -267,6 +267,10 @@ def provider_config(account, service, helper=None):
     command = "/usr/bin/security"
     if sys.platform == "win32":
         command = sys.executable
+        if Path(command).name.lower() == "pythonw.exe":
+            console = Path(command).with_name("python.exe")
+            require(console.is_file(), "A console Python executable is required for the credential helper")
+            command = str(console)
         args = [str(helper or (ROOT / "windows_support.py")), "credential-get", "--target", service]
     return (f'\n[model_providers.{PROVIDER}]\nname = "DeepSeek"\n'
             'base_url = "https://api.deepseek.com/"\nwire_api = "responses"\n'
@@ -331,10 +335,10 @@ def exchange(a, b):
         raise OSError(code, os.strerror(code))
 
 
-def require_stopped(app):
+def require_stopped(app, *, read_only_source=False):
     if sys.platform == "win32":
         from windows_support import require_stopped as stopped
-        return stopped(app)
+        return stopped(app, read_only_source=read_only_source)
     commands = subprocess.check_output(["/bin/ps", "-axo", "command="], text=True).splitlines()
     roots = {str(app), str(app.resolve())}
     require(not any(c.strip().startswith(root + "/Contents/") for c in commands for root in roots),

@@ -3,13 +3,31 @@ import json
 import os
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import struct
 import tempfile
 import unittest
 from unittest import mock
 
 import windows_support as win
+
+
+class RunningProcessTests(unittest.TestCase):
+    def check(self, names, read_only_source):
+        app = PureWindowsPath("C:/Codex/app")
+        rows = [{"ProcessId": i + 1, "ExecutablePath": str(app / name)} for i, name in enumerate(names)]
+        with mock.patch.object(win, "_app_root", return_value=app), mock.patch.object(win, "_powershell", return_value=json.dumps(rows)):
+            win.require_stopped(app, read_only_source=read_only_source)
+
+    def test_shared_service_can_run_only_in_read_only_source(self):
+        self.check(["resources/codex-windows-sandbox-service.exe"], True)
+        with self.assertRaises(win.WindowsSupportError):
+            self.check(["resources/codex-windows-sandbox-service.exe"], False)
+
+    def test_gui_and_other_backends_still_block_installation(self):
+        for name in ("ChatGPT.exe", "resources/codex.exe", "other/codex-windows-sandbox-service.exe"):
+            with self.subTest(name=name), self.assertRaises(win.WindowsSupportError):
+                self.check(["resources/codex-windows-sandbox-service.exe", name], True)
 
 
 def pe_fixture(payload, fuse=b"010011001"):

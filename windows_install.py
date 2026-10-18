@@ -91,7 +91,7 @@ def _paths(manifest, directory):
 
 
 def _stopped(source, target):
-    win.require_stopped(source)
+    win.require_stopped(source, read_only_source=True)
     if target.exists():
         win.require_stopped(target)
 

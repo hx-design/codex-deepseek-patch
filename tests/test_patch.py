@@ -108,6 +108,15 @@ class IntegrityTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_windowless_installer_uses_console_credential_helper(self):
+        with tempfile.TemporaryDirectory() as temp:
+            executable = Path(temp) / "pythonw.exe"
+            console = Path(temp) / "python.exe"
+            console.touch()
+            with mock.object(patch.sys, "platform", "win32"), mock.object(patch.sys, "executable", str(executable)):
+                parsed = patch.tomllib.loads(patch.provider_config("user", "service"))
+            self.assertEqual(parsed["model_providers"][patch.PROVIDER]["auth"]["command"], str(console))
+
     def test_preserves_values_comments_and_existing_providers(self):
         source = '# keep this\nmodel="gpt-example"\n[model_providers.other]\nname="Other"\n[desktop]\nsize=16\n'
         result = patch.prepared_config(source, Path("/tmp/catalog.json"), 'an "account"', "service")

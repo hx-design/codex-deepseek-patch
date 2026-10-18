@@ -2,7 +2,7 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API.
 
-**v0.2.0** adds compatibility checks across app updates and an optional monitor. It rebuilds and installs only after compatibility, offline routing, and isolated startup checks pass; unknown structures or failures produce a notification.
+**v0.2.1** includes compatibility checks across app updates and an optional monitor. It rebuilds and installs only after compatibility, offline routing, and isolated startup checks pass; unknown structures or failures produce a notification. This release fixes installation blocked by Windows's persistent sandbox service and credential helpers launched from windowless Python.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
