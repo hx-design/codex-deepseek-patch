@@ -7,6 +7,8 @@
 
 **v0.3.1** 同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
 
+本仓库有两种版本：**当前 main 为独立 DS 版**；[扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) 支持现有 Gemini / Grok / Opus 接口与本地模型，DeepSeek 可选，并支持同一聊天切换模型。两个版本各自更新。
+
 这是非官方、本地安装的补丁。仓库只提供补丁源码，不提供 ChatGPT/Codex 应用、提取后的程序、模型系统提示词或 API 密钥。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md)
@@ -116,9 +118,9 @@ DeepSeek Flash 提供 **low / high / max**。本版继续使用 DeepSeek 直连�
 | 通道 | 跟随分支 | 模型来源 |
 | --- | --- | --- |
 | 独立 DS 版 | `main` | 原生 GPT + DeepSeek 官方接口 |
-| 现有代理扩展版 | `codex/existing-proxy-models` | 原生 GPT + DeepSeek + 已配置代理 |
+| 多模型扩展版 | `codex/existing-proxy-models` | 原生 GPT + 可选 DS / 现有代理 / 本地模型 |
 
-两个通道分别发布 `update.json`，锁定版本、提交和文件摘要。安装时登记的通道保持固定，拒绝跨通道更新、倒退版本和摘要不符的文件。扩展版需要现有 EasyCLIProxyAPI；DS 版不需要。
+两个通道分别发布 `update.json`，锁定版本、提交和文件摘要。安装时登记的通道保持固定，拒绝跨通道更新、倒退版本和摘要不符的文件。扩展版可按需接入本地或已有兼容接口；使用订阅代理时才需要 EasyCLIProxyAPI。DS 版直接连接 DeepSeek。
 
 ```sh
 python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"

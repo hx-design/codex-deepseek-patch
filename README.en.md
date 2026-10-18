@@ -6,6 +6,8 @@ Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retai
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
+Two independent editions: **this main branch is DS-only**. The [extension branch](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) supports existing cloud endpoints and local models, optional DS, and switching models within the same chat. Each edition updates independently.
+
 ## Compatibility
 
 - Apple Silicon macOS; app and build directory on the same APFS volume.
@@ -105,7 +107,7 @@ python3 monitor.py run-once --sync-now
 
 Windows uses `python`, the official Store source for `--app`, and the installed build for `--baseline`. Existing users must run `enable` once with this release to upgrade their saved monitor runtime.
 
-The DS edition follows `main`; the proxy edition follows `codex/existing-proxy-models`. Each publishes its own `update.json` pinned to an immutable commit and SHA-256 file inventory. The monitor rejects cross-edition packages, rollbacks, and changed hashes. Only the proxy edition depends on an existing EasyCLIProxyAPI setup.
+The DS edition follows `main`; the proxy edition follows `codex/existing-proxy-models`. Each publishes its own `update.json` pinned to an immutable commit and SHA-256 file inventory. The monitor rejects cross-edition packages, rollbacks, and changed hashes. The extension can use local or existing compatible endpoints; EasyCLIProxyAPI is needed only for its subscription-proxy integration.
 
 Application checks run every five minutes; code and model checks run hourly. Downloaded code passes isolated regression tests before a compatible app is rebuilt, checked with offline routing/context probes, and launched in isolation. Installation waits for normal application exit. Runtime activation has a persistent recovery journal. Failures and unknown structures are reported once per issue; unchanged checks are quiet. Checks do not submit inference turns to providers.
 
