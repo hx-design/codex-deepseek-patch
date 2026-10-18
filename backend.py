@@ -23,6 +23,10 @@ def refresh_config(current, catalog, managed):
     p.require(parsed.get("model_catalog_json") == managed["catalog"], "The managed model catalog was changed; review the configuration")
     p.require(parsed.get("model_providers", {}).get(p.PROVIDER) == managed["provider"],
               "The DeepSeek provider was changed; review the configuration")
+    if managed.get("proxy_provider") is not None:
+        import proxy_support as ps
+        p.require(parsed.get("model_providers", {}).get(ps.PROVIDER) == managed["proxy_provider"],
+                  "The managed proxy provider was changed; review the configuration")
     lines = current.splitlines(keepends=True)
     matches = []
     for i, line in enumerate(lines):
@@ -53,7 +57,12 @@ def managed_baseline(directory, account, service):
         catalog = str(directory / "desktop-models.json")
         provider = p.tomllib.loads(p.provider_config(account, service))["model_providers"][p.PROVIDER]
     p.require(Path(catalog).is_file(), "The previous managed catalog is missing")
-    return {"catalog": catalog, "provider": provider, "baseline": str(directory)}
+    result = {"catalog": catalog, "provider": provider, "baseline": str(directory)}
+    if manifest.get("proxy"):
+        import proxy_support as ps
+        result["proxy"] = ps.validate(manifest["proxy"])
+        result["proxy_provider"] = parsed["model_providers"][ps.PROVIDER]
+    return result
 
 
 def verify_official(app):
@@ -104,9 +113,27 @@ def build_compatible(args):
     managed = getattr(args, "managed", None)
     if getattr(args, "baseline", None):
         managed = managed_baseline(args.baseline, args.keychain_account, args.keychain_service)
+    proxy = managed.get("proxy") if managed else None
+    if getattr(args, "proxy_config", None):
+        import proxy_support as ps
+        proxy = ps.validate({"config": str(args.proxy_config.resolve()), "base_url": args.proxy_base_url,
+                             "models": args.proxy_models or list(ps.MODELS)})
+        ps.read_api_key(proxy["config"])
+    install_target = getattr(args, "install_target", None)
+    replaced_asar = None
+    if install_target:
+        p.require(sys.platform == "darwin" and managed, "Refreshing an installed app requires a macOS managed baseline")
+        install_target = install_target.resolve()
+        baseline_manifest = json.loads((Path(managed["baseline"]) / "manifest.json").read_text(encoding="utf-8"))
+        p.require(install_target != app and not output.is_relative_to(install_target) and not install_target.is_relative_to(output),
+                  "Install target overlaps the source or output")
+        if baseline_manifest.get("target"):
+            p.require(install_target == Path(baseline_manifest["target"]).resolve(), "Install target differs from the baseline")
+        replaced_asar = baseline_manifest["patched_asar"]
+        p.verify_app(install_target, replaced_asar)
     current = p.read_config(home / "config.toml")
     p.prepared_config(current, output / "desktop-models.json", args.keychain_account, args.keychain_service,
-                      managed=managed, helper=output / "windows_support.py")
+                      managed=managed, helper=output / "windows_support.py", proxy=proxy)
     prepared = getattr(args, "inspection", None) or inspect_source(app, getattr(args, "node_path", None))
     layout = p.app_layout(app)
     original_hash = p.file_sha(layout["asar"])
@@ -116,12 +143,17 @@ def build_compatible(args):
         raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
                                       env={**os.environ, "CODEX_HOME": temp}, timeout=90)
     catalog = p.make_catalog(json.loads(raw))
+    if proxy:
+        import proxy_support as ps
+        catalog = ps.add_catalog(catalog, proxy["models"])
     output.mkdir(parents=True, mode=0o700)
     patched = prepared["patched"].encode()
     source = output / "patched-client.mjs"
     source.write_bytes(patched)
     p.run([getattr(args, "node_path", None) or shutil.which("node"), "--check", source], capture_output=True, timeout=60)
     p.save_json(output / "desktop-models.json", catalog)
+    if proxy:
+        shutil.copy2(p.ROOT / "proxy_support.py", output / "proxy_support.py")
     p.save_json(output / "compatibility.json", {k: v for k, v in prepared.items() if k not in ("patched",)})
     if sys.platform == "win32":
         shutil.copy2(p.ROOT / "windows_support.py", output / "windows_support.py")
@@ -160,6 +192,10 @@ def build_compatible(args):
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if sys.platform == "win32":
         manifest["deployment_target"] = str(Path(os.environ["LOCALAPPDATA"]) / "CodexDeepSeekPatch/app")
+    if proxy:
+        manifest["proxy"] = proxy
+    if install_target:
+        manifest.update(source_target=str(app), target=str(install_target), replaced_asar=replaced_asar)
     p.save_json(output / "manifest.json", manifest)
     print("Prepared and verified:", output, flush=True)
     return manifest
@@ -178,7 +214,7 @@ def credential_available(manifest):
 
 
 def install_compatible(directory, manifest):
-    source = Path(manifest["target"])
+    source = Path(manifest.get("source_target", manifest["target"]))
     app = Path(manifest.get("deployment_target", manifest["target"]))
     config = Path(manifest["codex_home"]) / "config.toml"
     p.require(manifest["status"] == "prepared", "Build is not prepared")
@@ -186,15 +222,20 @@ def install_compatible(directory, manifest):
     if app != source and app.exists():
         p.require_stopped(app)
     p.verify_app(source, manifest["original_asar"])
+    if manifest.get("replaced_asar"):
+        p.verify_app(app, manifest["replaced_asar"])
     p.verify_app(directory / "patched.app", manifest["patched_asar"])
     p.require(p.file_sha(directory / "desktop-models.json") == manifest["catalog_sha256"], "Catalog changed")
     p.require(manifest.get("boot_probe") == "passed" and manifest.get("offline_probe") == "passed",
               "Both isolated boot and offline app-server probes must pass before installation")
     p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
+    if manifest.get("proxy"):
+        import proxy_support as ps
+        ps.read_api_key(manifest["proxy"]["config"])
     current = p.read_config(config)
     updated = p.prepared_config(current, directory / "desktop-models.json", manifest["keychain_account"],
                                 manifest["keychain_service"], managed=manifest.get("managed"),
-                                helper=directory / "windows_support.py")
+                                helper=directory / "windows_support.py", proxy=manifest.get("proxy"))
     existed = config.exists()
     p.atomic_text(directory / "config-before.toml", current)
     p.atomic_text(directory / "config-installed.toml", updated)

@@ -1,8 +1,10 @@
-# Codex DeepSeek Patch
+# Codex DeepSeek Patch · Existing Proxy Edition
 
-Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API.
+This is **`codex/existing-proxy-models`**, an optional extension based on v0.2.1, versioned `0.2.1-proxy.1`. Grok / Gemini / Claude require an existing running EasyCLIProxyAPI setup. The standalone DeepSeek edition remains on [main](https://github.com/limyum-creator/codex-deepseek-patch/tree/main).
 
-**v0.2.1** includes compatibility checks across app updates and an optional monitor. It rebuilds and installs only after compatibility, offline routing, and isolated startup checks pass; unknown structures or failures produce a notification. This release fixes installation blocked by Windows's persistent sandbox service and credential helpers launched from windowless Python.
+Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API. Optionally add **Grok 4.5 / 4.7, Gemini 3.8 Flash, and Claude Opus 4.6 Thinking** through an existing EasyCLIProxyAPI endpoint.
+
+**The proxy edition** adds optional existing-proxy integration. Native GPT and direct DeepSeek connections remain intact, with compatibility checks, automatic reinstallation, notifications, and restoration.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -22,7 +24,7 @@ As verified on October 18, 2026, `deepseek-flash` is served by DeepSeek-V4.1-Fla
 Install and sign in to the official app first. Choose a new build directory that you can retain.
 
 ```sh
-git clone https://github.com/limyum-creator/codex-deepseek-patch.git
+git clone --branch codex/existing-proxy-models https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
 python3 --version
 node --version
@@ -84,6 +86,16 @@ python3 patch.py install "$NEW_PATCH_BUILD"
 
 Use matching `--keychain-account` and `--keychain-service` values with `setup-key` and `build` to customize the credential lookup. Defaults are the current username and `Codex DeepSeek API Key`.
 
+## Optional existing proxy integration
+
+Configure and run [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) first. Add `--proxy-config "/path/to/existing/config.yaml" --proxy-base-url "http://127.0.0.1:8317/v1" --proxy-models grok-4.5 grok-4.7 gemini-3.8-flash-high claude-opus-4-6-thinking` to `build --compatible`. Choose only models available from your endpoint.
+
+The helper reads client `access.api-keys` (or legacy root `api-keys`) from the existing configuration. It does not copy keys or import OAuth credentials. Keep the proxy running and that file in place. Remote endpoints require HTTPS; loopback HTTP is supported. The presets use text input, shell tools, conservative 128k context, and provider reasoning presets.
+
+Run offline/startup tests and `python3 scripts/test_connection.py BUILD --model MODEL_ID --run` for each selected model before installation. Live tests consume provider usage. Start a new local chat when switching providers. Re-enable monitoring with the installed baseline; later builds retain its selected models and settings without inference calls.
+
+To refresh a patched Mac from a retained signed original backup, combine `--app ORIGINAL_APP --baseline PREVIOUS_BUILD --install-target /Applications/ChatGPT.app`. The target must match the baseline; restore returns to the prior app and configuration. Windows uses its existing separate-deployment workflow with a local proxy configuration path.
+
 ## Optional automatic reinstallation after updates
 
 After one successful installation, enable the monitor. macOS:
@@ -126,7 +138,7 @@ python3 -m unittest discover -s tests -v
 node tests/route.test.cjs
 ```
 
-macOS restore recovers the original signed app and prior configuration. Windows restore recovers the previous managed copy, shortcut, and configuration; the first installation removes its managed copy on restore. Restore stops when configuration or the target has changed since installation.
+macOS restore recovers the previous app and prior configuration. Windows restore recovers the previous managed copy, shortcut, and configuration; the first installation removes its managed copy on restore. Restore stops when configuration or the target has changed since installation.
 
 Keep build directories: installed configuration references their catalogs, and recovery depends on their contents. Compatible builds save `compatibility.json` with source digests, insertion locations, extracted methods, and behavior-check results for local review.
 

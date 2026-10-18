@@ -29,6 +29,26 @@ for (const [method, params, host] of [
   ['thread/start', null, 'local'],
 ]) assert.equal(route(method, params, host), params);
 assert.equal(route('thread/list', {}, 'local').modelProviders.length, 0);
+for (const model of ['grok-4.5', 'grok-4.7', 'gemini-3.8-flash-high', 'claude-opus-4-6-thinking']) {
+  for (const modelProvider of [undefined, null, 'openai']) {
+    const params = {model, modelProvider, config: {keep: 42}, serviceTier: 'priority'};
+    const result = route('thread/start', params, 'local');
+    assert.equal(result.modelProvider, 'easycli-desktop');
+    assert.equal(result.model, model);
+    assert.equal(result.serviceTier, null);
+    assert.equal(result.config.keep, 42);
+    assert.equal(result.config.web_search, 'disabled');
+    assert.equal(params.modelProvider, modelProvider);
+    for (const method of ['thread/resume', 'turn/start']) assert.equal(route(method, params, 'local'), params);
+    assert.equal(route('thread/start', params, 'remote'), params);
+  }
+  const explicit = {model, modelProvider: 'custom'};
+  assert.equal(route('thread/start', explicit, 'local'), explicit);
+}
+for (const model of ['__proto__', 'constructor', 'gemini-4', 'claude-opus-5-5']) {
+  const params = {model};
+  assert.equal(route('thread/start', params, 'local'), params);
+}
 
 async function actualBundleTest(filename) {
   const source = fs.readFileSync(filename, 'utf8');

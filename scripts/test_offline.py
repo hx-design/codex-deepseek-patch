@@ -39,13 +39,19 @@ def isolated_environment(base):
     return environment
 
 
-def offline_config(catalog):
-    return ("model = " + json.dumps(patch.MODEL) + "\nmodel_provider = " + json.dumps(patch.PROVIDER) +
+def offline_config(catalog, proxy_models=()):
+    result = ("model = " + json.dumps(patch.MODEL) + "\nmodel_provider = " + json.dumps(patch.PROVIDER) +
             "\nmodel_catalog_json = " + json.dumps(str(Path(catalog).resolve())) + "\n" +
             "web_search = \"disabled\"\n[features]\nmemories = false\n" +
             "\n[model_providers." + patch.PROVIDER + "]\nname = \"DeepSeek offline routing probe\"\n" +
             "base_url = " + json.dumps(LOOPBACK_BASE_URL) + "\nwire_api = \"responses\"\n" +
             "env_key = " + json.dumps(DUMMY_KEY_VARIABLE) + "\nrequires_openai_auth = false\n")
+    if proxy_models:
+        import proxy_support as ps
+        result += ('\n[model_providers.' + ps.PROVIDER + ']\nname = "Proxy offline probe"\n'
+                   + 'base_url = ' + json.dumps(LOOPBACK_BASE_URL) + '\nwire_api = "responses"\n'
+                   + 'env_key = ' + json.dumps(DUMMY_KEY_VARIABLE) + '\nrequires_openai_auth = false\n')
+    return result
 
 
 def stop_probe(process, timeout=5):
@@ -137,7 +143,7 @@ class RpcClient:
             return event["result"]
 
 
-def check_session(client, work):
+def check_session(client, work, proxy_models=()):
     client.receive(client.send("initialize", {"clientInfo": {"name": "deepseek_patch_offline_probe", "version": "1.0"},
                                               "capabilities": {"experimentalApi": True}}))
     client.send("initialized", notification=True)
@@ -167,7 +173,19 @@ def check_session(client, work):
     patch.require(result.get("model") == patch.MODEL, "Offline thread selected a different model")
     patch.require(result.get("modelProvider") == patch.PROVIDER, "Offline thread selected a different provider")
     patch.require(bool(result.get("thread", {}).get("id")), "Offline thread was not created")
+    import proxy_support as ps
+    found = [m.get("model") for m in models if m.get("model") in ps.MODELS]
+    patch.require(sorted(found) == sorted(proxy_models), "Proxy catalog differs from the selected model IDs")
+    checked = []
+    for model in proxy_models:
+        thread = client.receive(client.send("thread/start", {"model": model, "modelProvider": ps.PROVIDER,
+                                "cwd": str(work), "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only",
+                                "config": {"web_search": "disabled", "features.memories": False}}))
+        patch.require(thread.get("model") == model and thread.get("modelProvider") == ps.PROVIDER
+                      and thread.get("thread", {}).get("id"), "Incorrect proxy thread model/provider")
+        checked.append({"model": model, "provider": ps.PROVIDER})
     return {"model": patch.MODEL, "provider": patch.PROVIDER, "deepseek_models": len(deepseek),
+            "proxy_models": checked,
             "catalog_models": len(models), "ephemeral_thread": True, "inference_turns": 0,
             "provider_base_url": LOOPBACK_BASE_URL, "methods": client.methods}
 
@@ -187,14 +205,15 @@ def main(directory):
             environment[DUMMY_KEY_VARIABLE] = DUMMY_KEY
             work = base / "work"
             work.mkdir()
-            (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json"), encoding="utf-8")
+            proxy_models = manifest.get("proxy", {}).get("models", [])
+            (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json", proxy_models), encoding="utf-8")
             with (directory / "offline-stderr.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen([str(patch.cli_path(app)), "app-server", "--listen", "stdio://"],
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                                            text=True, encoding="utf-8", errors="replace", env=environment,
                                            cwd=work, **launch_options())
                 try:
-                    evidence.update(check_session(RpcClient(process), work))
+                    evidence.update(check_session(RpcClient(process), work, proxy_models))
                     evidence["status"] = "passed"
                 finally:
                     stop_probe(process)

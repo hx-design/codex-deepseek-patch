@@ -13,6 +13,7 @@ ALLOWED = {
     "scripts/test_offline.py", "scripts/check_compatibility.cjs",
     "tests/test_backend.py", "tests/test_compatibility.py", "tests/test_monitor.py",
     "tests/test_offline.py", "tests/test_windows.py", "tests/test_windows_install.py",
+    "proxy_support.py", "tests/test_proxy.py",
 }
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]

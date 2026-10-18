@@ -1,11 +1,13 @@
-# Codex DeepSeek Patch
+# Codex DeepSeek Patch · 现有代理扩展版
+
+本分支为 **`codex/existing-proxy-models`**，基于 v0.2.1 的可选多模型扩展，版本标记 `0.2.1-proxy.1`。使用 Grok / Gemini / Claude 需要自行配置并运行 EasyCLIProxyAPI。独立 DS 补丁继续在 [main 分支](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) 维护。
 
 [![Tests](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml/badge.svg)](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，保留 GPT 模型和默认设置。选择 DS 后，新建的本机聊天使用 DeepSeek API。
+在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，可选接入现成 EasyCLIProxyAPI 提供的 **Grok 4.5 / 4.7、Gemini 3.8 Flash、Claude Opus 4.6 Thinking**，保留 GPT 模型和默认设置。按所选模型，为新建本机聊天选择对应服务商。
 
-**v0.2.1** 提供跨版本兼容检查和可选更新监测：官方应用更新后，检查通过才构建、测试并重新安装补丁；遇到未知结构或失败时通知你处理。本版修正 Windows 常驻沙箱服务阻塞安装和无窗口启动时的凭据读取问题。
+**代理扩展版** 新增可选的现有代理接入。GPT 保留原生连接，DeepSeek 保留直连接口，四个可选模型使用已有代理。跨版本兼容检查、更新后自动补装、异常通知和恢复能力继续保留。
 
 这是非官方、本地安装的补丁。仓库只提供补丁源码，不提供 ChatGPT/Codex 应用、提取后的程序、模型系统提示词或 API 密钥。
 
@@ -19,7 +21,7 @@
 | Windows | 官方 Codex 应用；Store 安装作为只读来源，补丁安装到独立的用户目录 |
 | 已检查的基线应用 | `26.1013.40934`，build `20770`；具体平台验证见验证记录 |
 | 历史已验证 CLI | `0.163.0-alpha.10.2` |
-| 新增模型 | `deepseek-flash`，显示为 **DeepSeek 4.1 Flash** |
+| 默认新增模型 | `deepseek-flash`，显示为 **DeepSeek 4.1 Flash** |
 | 依赖 | Python **3.11+**、Node.js **18+**；无需第三方 Python/npm 包 |
 
 兼容模式检查官方签名、资源完整性、唯一请求结构和提取方法的运行行为，允许资源哈希、文件名及压缩变量名变化。请求结构发生未知变化时停止并报告，不靠版本号直接放行。v0.1.0 的固定版本构建入口仍保留，用于原基线；新安装与更新建议使用 `--compatible`。
@@ -31,7 +33,7 @@
 先安装官方应用并完成正常登录。构建目录保存应用备份和模型目录，请选择可长期保留的位置。
 
 ```sh
-git clone https://github.com/limyum-creator/codex-deepseek-patch.git
+git clone --branch codex/existing-proxy-models https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
 python3 --version
 node --version
@@ -98,6 +100,30 @@ python3 patch.py install "$NEW_PATCH_BUILD"
 
 凭据默认使用当前用户名和 `Codex DeepSeek API Key`；可用 `--keychain-account`、`--keychain-service` 自定义，`setup-key` 与 `build` 使用相同参数。
 
+## 可选：接入现成的 Gemini / Grok / Opus 代理
+
+先在 [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) 中配置并启动接口。补丁复用其 Responses 接口，由现有代理管理订阅登录和凭据刷新。
+
+在兼容构建命令中增加以下参数（配置路径换成本机路径；Windows 使用 `python`，各参数放在同一行）：
+
+```sh
+--proxy-config "/path/to/existing/config.yaml" \
+--proxy-base-url "http://127.0.0.1:8317/v1" \
+--proxy-models grok-4.5 grok-4.7 gemini-3.8-flash-high claude-opus-4-6-thinking
+```
+
+默认仍只安装 DeepSeek，可省略不需要的代理模型。所选 ID 必须由自己的接口提供。凭据 helper 只读取现有配置的客户端 `access.api-keys`（兼容旧版根级 `api-keys`），不会复制密钥或导入订阅 OAuth 文件。保留配置文件位置，并在使用这些模型时运行 EasyCLIProxyAPI。远程接口要求 HTTPS，本机回环接口支持 HTTP。
+
+Mac 已安装旧补丁时，可使用保留的官方签名原版备份，增加 `--baseline "旧构建目录" --install-target "/Applications/ChatGPT.app" --app "/path/to/original/ChatGPT.app"`。安装前核对当前应用匹配 baseline；恢复回到安装前的应用和配置。
+
+执行离线和启动测试后，对每个选中模型运行实际回复与读文件工具测试，再正常退出应用并安装：
+
+```sh
+python3 scripts/test_connection.py "$NEW_PATCH_BUILD" --model grok-4.7 --run
+```
+
+联网测试使用对应账户额度。四个模型采用文本与工具调用配置、128k 保守上下文上限和提供商推理预设。安装后重新启用监测并指定新 baseline；后续自动补装继承这组模型与接口，不发送联网推理测试。切换服务商时请新建本机聊天。
+
 ## 可选：官方更新后自动重新安装
 
 先完成一次安装，再启用监测。macOS 示例：
@@ -141,7 +167,7 @@ python3 patch.py status "$PATCH_BUILD"
 python3 patch.py restore "$PATCH_BUILD"
 ```
 
-macOS 恢复原版应用和安装前配置。Windows 恢复此前的受管副本、快捷方式和配置，首次安装则移除本次受管副本。安装后若配置或目标被修改，恢复操作会停止供核对。`config-before.toml` 保存安装前配置。
+macOS 恢复安装前的应用和配置。Windows 恢复此前的受管副本、快捷方式和配置，首次安装则移除本次受管副本。安装后若配置或目标被修改，恢复操作会停止供核对。`config-before.toml` 保存安装前配置。
 
 **保留构建目录**：配置仍引用其中的模型目录，目录中也保存恢复所需文件。
 
@@ -168,7 +194,7 @@ python3 scripts/test_connection.py "$PATCH_BUILD" --run
 
 - 新建本机 DS 聊天时将 `thread/start` 提供商设为 `deepseek-desktop`，保留其他请求字段；本机聊天列表显示各服务商的聊天。
 - 跳过本机新建聊天的预热缓存复用，避免提供商混用；新建聊天可能略慢。
-- GPT 模型来自构建时内置 CLI 的离线模型目录，再添加一个 Flash 项。模型菜单随重新构建刷新。
+- GPT 模型来自构建时内置 CLI 的离线模型目录，再添加 Flash 和显式选择的代理模型。模型菜单随重新构建刷新。
 - 保持 ASAR 资源校验启用，更新成员与分块哈希、包头及原生配套摘要。macOS 副本使用 ad-hoc 签名；Windows 副本修改完整性载体。依赖官方签名的系统功能或更新可能受到影响。
 - `.local/`、构建产物和配置备份包含程序副本或本机信息。请勿上传到仓库或 Issue。
 

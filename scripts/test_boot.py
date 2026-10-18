@@ -12,7 +12,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import patch
-from scripts.test_offline import isolated_environment, launch_options, stop_probe
+from scripts.test_offline import isolated_environment, launch_options, stop_probe, offline_config, DUMMY_KEY_VARIABLE, DUMMY_KEY
 
 
 def process_table():
@@ -69,6 +69,12 @@ def main(directory, timeout=60):
         with tempfile.TemporaryDirectory(prefix="codex-deepseek-boot-") as temporary:
             base = Path(temporary)
             environment = isolated_environment(base)
+            environment[DUMMY_KEY_VARIABLE] = DUMMY_KEY
+            # The desktop keeps its native default provider; proxy providers are
+            # selected by the patched thread route, not as a global GUI default.
+            config = offline_config(directory / "desktop-models.json", manifest.get("proxy", {}).get("models", []))
+            config = "\n".join(config.splitlines()[2:]) + "\n"
+            (base / "home/config.toml").write_text(config, encoding="utf-8")
             browser = base / "browser"
             started = time.monotonic()
             with (directory / "boot.log").open("w", encoding="utf-8") as log:
