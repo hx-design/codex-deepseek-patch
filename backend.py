@@ -77,14 +77,19 @@ def verify_official(app):
     return {"team": "2DC432GLL2"}
 
 
-def inspect_source(app, node=None):
+def inspect_source(app, node=None, routes=None):
     from compatibility import locate_bundle, apply_source
     p.mac_only()
     layout = p.app_layout(app)
     publisher = verify_official(layout["app"])
     source_hash = p.file_sha(layout["asar"])
     central, source, _ = locate_bundle(layout["asar"])
-    patched, evidence = apply_source(source, (p.ROOT / "route.js").read_text(encoding="utf-8"))
+    route_source=(p.ROOT / "route.js").read_text(encoding="utf-8")
+    if routes is not None:
+        from model_sync import render_route
+        route_source=render_route(route_source,routes)
+    patched, evidence = apply_source(source, route_source)
+    if routes is not None:evidence['model_routes']=routes
     node = node or shutil.which("node")
     p.require(node, "Node.js is required for offline compatibility checks")
     with tempfile.TemporaryDirectory(prefix="codex-ds-contract-") as temp:
@@ -114,6 +119,16 @@ def build_compatible(args):
     if getattr(args, "baseline", None):
         managed = managed_baseline(args.baseline, args.keychain_account, args.keychain_service)
     proxy = managed.get("proxy") if managed else None
+    model_snapshot=getattr(args,'model_snapshot',None)
+    if isinstance(model_snapshot,Path):model_snapshot=json.loads(model_snapshot.read_text())
+    if model_snapshot:
+        p.require(model_snapshot.get('edition')==p.EDITION,'Model snapshot belongs to another edition')
+        digest=p.sha(json.dumps({'catalog':model_snapshot['catalog'],'routes':model_snapshot['routes']},sort_keys=True,separators=(',',':')).encode())
+        p.require(digest==model_snapshot['digest'],'Model snapshot digest mismatch')
+        if proxy:
+            proxy={**proxy,'models':[model for model,route in model_snapshot['routes'].items() if route['provider']=='easycli-desktop']}
+        else:
+            p.require(all(route['provider']=='deepseek-desktop' for route in model_snapshot['routes'].values()),'DS edition cannot install proxy routes')
     if getattr(args, "proxy_config", None):
         import proxy_support as ps
         proxy = ps.validate({"config": str(args.proxy_config.resolve()), "base_url": args.proxy_base_url,
@@ -134,7 +149,7 @@ def build_compatible(args):
     current = p.read_config(home / "config.toml")
     p.prepared_config(current, output / "desktop-models.json", args.keychain_account, args.keychain_service,
                       managed=managed, helper=output / "windows_support.py", proxy=proxy)
-    prepared = getattr(args, "inspection", None) or inspect_source(app, getattr(args, "node_path", None))
+    prepared = (getattr(args, "inspection", None) if not model_snapshot else None) or inspect_source(app, getattr(args, "node_path", None), model_snapshot['routes'] if model_snapshot else None)
     layout = p.app_layout(app)
     original_hash = p.file_sha(layout["asar"])
     p.require(original_hash == prepared["source_asar"], "App changed after compatibility checks")
@@ -142,8 +157,8 @@ def build_compatible(args):
     with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
         raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
                                       env={**os.environ, "CODEX_HOME": temp}, timeout=90)
-    catalog = p.make_catalog(json.loads(raw))
-    if proxy:
+    catalog = model_snapshot['catalog'] if model_snapshot else p.make_catalog(json.loads(raw))
+    if proxy and not model_snapshot:
         import proxy_support as ps
         catalog = ps.add_catalog(catalog, proxy["models"])
     output.mkdir(parents=True, mode=0o700)
@@ -152,6 +167,7 @@ def build_compatible(args):
     source.write_bytes(patched)
     p.run([getattr(args, "node_path", None) or shutil.which("node"), "--check", source], capture_output=True, timeout=60)
     p.save_json(output / "desktop-models.json", catalog)
+    if model_snapshot:p.save_json(output/'synced-models.json',model_snapshot)
     if proxy:
         shutil.copy2(p.ROOT / "proxy_support.py", output / "proxy_support.py")
     p.save_json(output / "compatibility.json", {k: v for k, v in prepared.items() if k not in ("patched",)})
@@ -194,6 +210,10 @@ def build_compatible(args):
         manifest["deployment_target"] = str(Path(os.environ["LOCALAPPDATA"]) / "CodexDeepSeekPatch/app")
     if proxy:
         manifest["proxy"] = proxy
+    manifest['edition']=p.EDITION
+    if model_snapshot:
+        manifest['model_routes']=model_snapshot['routes']
+    if getattr(args,'update_metadata',None):manifest['update']=args.update_metadata
     if install_target:
         manifest.update(source_target=str(app), target=str(install_target), replaced_asar=replaced_asar)
     p.save_json(output / "manifest.json", manifest)
@@ -229,10 +249,13 @@ def install_compatible(directory, manifest):
     p.require(manifest.get("boot_probe") == "passed" and manifest.get("offline_probe") == "passed",
               "Both isolated boot and offline app-server probes must pass before installation")
     p.require(credential_available(manifest), "DeepSeek credential is unavailable; run setup-key")
+    if manifest.get('model_routes'):
+        p.require(manifest.get('context_probe')=='passed','Run the offline context/compaction probe before installation')
     if manifest.get("proxy"):
         import proxy_support as ps
         p.require(manifest.get("context_probe") == "passed", "Run the offline context/compaction probe before installing proxy models")
         ps.read_api_key(manifest["proxy"]["config"])
+    p.require(manifest.get('edition',p.EDITION)==p.EDITION,'Build belongs to a different edition')
     current = p.read_config(config)
     updated = p.prepared_config(current, directory / "desktop-models.json", manifest["keychain_account"],
                                 manifest["keychain_service"], managed=manifest.get("managed"),

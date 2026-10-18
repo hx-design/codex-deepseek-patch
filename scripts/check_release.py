@@ -5,6 +5,8 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "model_sync.py", "updater.py", "update_worker.py", "edition.json", "update.json",
+    "scripts/release_manifest.py", "scripts/test_context.py", "tests/test_model_sync.py", "tests/test_updater.py",
     ".gitignore", ".github/workflows/tests.yml", "LICENSE", "NOTICE", "README.md", "README.en.md",
     "CONTRIBUTING.md", "patch.py", "route.js", "docs/ARCHITECTURE.md", "docs/VALIDATION.md",
     "scripts/__init__.py", "scripts/test_boot.py", "scripts/test_connection.py", "scripts/check_release.py",
@@ -18,7 +20,7 @@ ALLOWED = {
 }
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]
-if set(files) != ALLOWED:
+if (set(files) | {"update.json"}) != ALLOWED:
     raise SystemExit("Release file allowlist mismatch: " + repr(set(files) ^ ALLOWED))
 patterns = [re.compile("/" + "Users" + r"/[^\s/]+/"), re.compile(r"gh[pousr]_[A-Za-z0-9]{25,}"),
             re.compile(r"sk-[A-Za-z0-9_-]{20,}"), re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")]

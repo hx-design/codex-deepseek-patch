@@ -99,7 +99,8 @@ def validate(settings):
     if url.scheme == "http" and url.hostname not in ("127.0.0.1", "localhost", "::1"):
         raise ValueError("Remote proxy connections require HTTPS")
     models = settings["models"]
-    if not isinstance(models, list) or not models or len(set(models)) != len(models) or any(m not in MODELS for m in models):
+    import model_sync
+    if not isinstance(models, list) or len(set(models)) != len(models) or any(m not in MODELS and model_sync.family(m) not in ('grok','gemini-flash','opus') for m in models):
         raise ValueError("Choose unique supported proxy model IDs")
     if not Path(settings["config"]).is_absolute():
         raise ValueError("Proxy configuration path must be absolute")
@@ -125,7 +126,8 @@ def provider_config(settings, helper):
 def add_catalog(catalog, models):
     """Provider context maxima; leave all bundled GPT and DS entries intact."""
     result = copy.deepcopy(catalog)
-    template = next(m for m in result["models"] if m["slug"] == "gpt-6.1-sol")
+    import patch
+    template = patch.catalog_template(result)
     result["models"] = [m for m in result["models"] if m["slug"] not in MODELS]
     for priority, model in enumerate(models, start=91):
         if model not in MODELS:

@@ -20,7 +20,8 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.2.1-proxy.2"
+VERSION = "0.3.0-proxy.1"
+EDITION = "proxy"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -32,6 +33,7 @@ MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py",
+                         "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
                          "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/check_compatibility.cjs")
 
@@ -237,11 +239,15 @@ def verify_app(app, expected_asar=None):
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
 
 
+def catalog_template(catalog):
+    models=[m for m in catalog['models'] if m.get('slug','').startswith('gpt-') and m.get('visibility','list')=='list']
+    require(models,'The native catalog has no usable GPT metadata template')
+    return next((m for m in models if m['slug']=='gpt-6.1-sol'),models[0])
+
+
 def make_catalog(original):
     catalog = copy.deepcopy(original)
-    templates = [m for m in catalog["models"] if m["slug"] == "gpt-6.1-sol"]
-    require(len(templates) == 1, "The supported catalog template is missing")
-    flash = copy.deepcopy(templates[0])
+    flash = copy.deepcopy(catalog_template(catalog))
     # Prompt text remains local: inherit it from the user's installed catalog.
     flash.update(
         slug=MODEL, display_name="DeepSeek 4.1 Flash", description="DeepSeek 4.1 Flash · DeepSeek API",
@@ -252,7 +258,7 @@ def make_catalog(original):
         shell_type="shell_command", visibility="list", supported_in_api=True, priority=90,
         additional_speed_tiers=[], service_tiers=[], default_service_tier=None,
         available_access_programs=None, availability_nux=None, upgrade=None,
-        context_window=1048576, max_context_window=1048576,
+        context_window=1048576, max_context_window=1048576, effective_context_window_percent=100,
         prefer_websockets=False, use_responses_lite=False, tool_mode=None,
         experimental_supported_tools=[], multi_agent_reasoning_effort="high",
         web_search_tool_type="text", supports_search_tool=True,
@@ -300,7 +306,8 @@ def prepared_config(current, catalog, account, service, managed=None, helper=Non
             require(managed and managed.get("proxy_provider") == existing,
                     "An unmanaged proxy provider exists; review the configuration")
             # A baseline keeps the helper in its retained build directory.
-            require(managed.get("proxy") == proxy, "The managed proxy settings changed; review before migrating")
+            require({k:v for k,v in managed.get("proxy",{}).items() if k!='models'} == {k:v for k,v in proxy.items() if k!='models'},
+                    "The managed proxy connection changed; review before migrating")
         else:
             addition = ps.provider_config(proxy, Path(catalog).parent / "proxy_support.py")
             updated += ("" if updated.endswith("\n") else "\n") + addition
@@ -557,6 +564,7 @@ def main():
     p.add_argument("--proxy-base-url", default="http://127.0.0.1:8317/v1")
     p.add_argument("--proxy-models", nargs="+", choices=__import__("proxy_support").MODELS,
                    help="Explicit model IDs to expose through the existing proxy")
+    p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)

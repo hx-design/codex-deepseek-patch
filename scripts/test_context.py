@@ -15,7 +15,6 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import patch
-import proxy_support as ps
 from scripts.test_offline import isolated_environment, launch_options, stop_probe
 
 
@@ -29,12 +28,13 @@ class ResponsesStub(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append({'path': self.path, 'model': body.get('model')})
         index = len(self.server.requests)
+        usage_tokens=getattr(self.server,'usage_tokens',180000)
         message = {'id':f'msg_{index}', 'type':'message', 'status':'completed', 'role':'assistant',
                    'content':[{'type':'output_text','text':'CONTEXT_OK','annotations':[]}]}
         response = {'id':f'resp_{index}', 'object':'response','created_at':int(time.time()),'status':'completed',
                     'model':body['model'], 'output':[message],
-                    'usage':{'input_tokens':180000,'input_tokens_details':{'cached_tokens':0},
-                             'output_tokens':3,'output_tokens_details':{'reasoning_tokens':0},'total_tokens':180003}}
+                    'usage':{'input_tokens':usage_tokens,'input_tokens_details':{'cached_tokens':0},
+                             'output_tokens':3,'output_tokens_details':{'reasoning_tokens':0},'total_tokens':usage_tokens+3}}
         created = {**response, 'status':'in_progress','output':[], 'usage':None}
         events = [
             {'type':'response.created','response':created},
@@ -104,14 +104,15 @@ class Rpc:
 
 def main(directory):
     directory, manifest = patch.load_build(Path(directory))
-    models = manifest.get('proxy',{}).get('models',[])
-    patch.require(bool(models),'This probe is for the optional proxy edition')
+    model_routes=manifest.get('model_routes')
+    models = list(model_routes) if model_routes is not None else manifest.get('proxy',{}).get('models',[])
     evidence = json.loads((directory/'compatibility.json').read_text())['evidence']
     route = evidence['route_js']
     node = ("const fs=require('fs'),vm=require('vm');const x=JSON.parse(fs.readFileSync(0,'utf8'));"
             "const c=vm.createContext({});vm.runInContext(x.route,c);"
             "console.log(JSON.stringify(x.models.map(model=>c.codexPatchAppServerParams('thread/start',{model},'local'))));")
     routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True))
+    expected={m['slug']:m['context_window'] for m in json.loads((directory/'desktop-models.json').read_text())['models']}
     app = directory/'patched.app' if manifest['status']=='prepared' else Path(manifest['target'])
     server = http.server.ThreadingHTTPServer(('127.0.0.1',0),ResponsesStub)
     server.daemon_threads = True
@@ -130,6 +131,7 @@ def main(directory):
                     +'[model_providers.easycli-desktop]\nname="Local context test"\nwire_api="responses"\n'
                     +'base_url="http://127.0.0.1:'+str(server.server_port)+'/v1"\n'
                     +'env_key="CONTEXT_TEST_KEY"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n')
+            config += config[config.index('[model_providers.easycli-desktop]'):].replace('model_providers.easycli-desktop','model_providers.deepseek-desktop')
             (base/'home/config.toml').write_text(config)
             work=base/'work';work.mkdir()
             with (directory/'context-probe.log').open('w') as log:
@@ -139,7 +141,10 @@ def main(directory):
                     rpc=Rpc(process)
                     rpc.request('initialize',{'clientInfo':{'name':'context_regression','version':'1'},'capabilities':{'experimentalApi':True}})
                     for parameters in routed:
-                        model=parameters['model'];maximum=ps.MODEL_CONTEXT_WINDOWS[model]
+                        model=parameters['model'];maximum=expected[model]
+                        if parameters['config']['model_auto_compact_token_limit'] <= 180003:
+                            server.usage_tokens=max(1000,parameters['config']['model_auto_compact_token_limit']//3)
+                        else:server.usage_tokens=180000
                         parameters.update(cwd=str(work),ephemeral=True,approvalPolicy='never',sandbox='read-only',
                                           baseInstructions='You are a local transport test. Reply concisely.')
                         parameters['config']['features.memories']=False
@@ -153,8 +158,9 @@ def main(directory):
                         patch.require(not compactions and len(server.requests)-start==2,'Unexpected repeated compaction: '+model)
                         report['models'].append({'model':model,'runtime_context_window':maximum,
                                                  'auto_compact_token_limit':parameters['config']['model_auto_compact_token_limit'],
+                                                 'synthetic_usage_tokens':server.usage_tokens+3,
                                                  'turns':2,'compactions':len(compactions),'requests':len(server.requests)-start})
-                        print('PASS:',model,'window',maximum,'two 180k-usage turns, no compaction',flush=True)
+                        print('PASS:',model,'window',maximum,'two synthetic turns, no compaction',flush=True)
                     report['status']='passed'
                 finally:
                     stop_probe(process)

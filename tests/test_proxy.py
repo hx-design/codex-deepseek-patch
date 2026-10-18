@@ -59,7 +59,7 @@ class ProxyTests(unittest.TestCase):
             original = self.settings(Path(tmp))
             for field, value in [('base_url','http://secret@127.0.0.1/v1'), ('base_url','http://server/v1'),
                                  ('base_url','https://server/v1?key=secret'), ('models',['gemini-4']),
-                                 ('models',['grok-4.5','grok-4.5']), ('models',[]), ('config','relative.yaml')]:
+                                 ('models',['grok-4.5','grok-4.5']), ('config','relative.yaml')]:
                 with self.assertRaises(ValueError):
                     ps.validate({**original,field:value})
 
@@ -105,8 +105,8 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(patch.tomllib.loads(refreshed)['user'],{'keep':12})
             with self.assertRaises(patch.PatchError):
                 backend.refresh_config(updated.replace('8317','9999'),root/'future.json',next_managed)
-            with self.assertRaises(patch.PatchError):
-                patch.prepared_config(updated,root/'future.json','account','service',managed=next_managed,proxy={**settings,'models':['grok-4.5']})
+            selection = patch.prepared_config(updated,root/'future.json','account','service',managed=next_managed,proxy={**settings,'models':['grok-4.5']})
+            self.assertEqual(patch.tomllib.loads(selection)['model_providers'],parsed['model_providers'])
 
     def test_unmanaged_same_named_provider_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

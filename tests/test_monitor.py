@@ -395,7 +395,7 @@ class SchedulerTests(unittest.TestCase):
             (directory / "runtime").mkdir()
             (directory / "runtime/old-marker").write_text("old")
             with mock.object(monitor.sys, "platform", "darwin"), \
-                 mock.object(monitor, "CoreBackend", return_value=FakeBackend()), \
+                 mock.object(patch, "MonitorBackend", return_value=FakeBackend()), \
                  mock.object(monitor, "Scheduler") as scheduler, \
                  mock.object(monitor.shutil, "which", return_value="/usr/local/bin/node"), \
                  mock.object(patch, "SERVICE_RUNTIME_FILES", ("monitor.py", "patch.py", "route.js"), create=True):
@@ -414,7 +414,7 @@ class SchedulerTests(unittest.TestCase):
             monitor.atomic_json(directory / "settings.json", {"app": "/old/Codex.app", "baseline": "/old/build"})
             monitor.atomic_json(directory / "state.json", {"format": 1, "installed": {"baseline": "/old/build"}})
             with mock.object(monitor.sys, "platform", "darwin"), \
-                 mock.object(monitor, "CoreBackend", return_value=FakeBackend()), \
+                 mock.object(patch, "MonitorBackend", return_value=FakeBackend()), \
                  mock.object(monitor, "Scheduler") as scheduler, \
                  mock.object(monitor.shutil, "which", return_value="/usr/local/bin/node"), \
                  mock.object(patch, "SERVICE_RUNTIME_FILES", ("monitor.py", "patch.py", "route.js"), create=True):
