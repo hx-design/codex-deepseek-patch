@@ -103,7 +103,7 @@ class CompatibilityTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js required for behavior contract')
     def test_behavior_probe_rejects_changed_route_semantics(self):
-        route = (ROOT / 'route.js').read_text().replace("modelProvider: 'deepseek-desktop'", "modelProvider: 'wrong-provider'")
+        route = (ROOT / 'route.js').read_text().replace('"provider":"deepseek-desktop"', '"provider":"wrong-provider"')
         _, evidence = c.apply_source(fixture(), route)
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'evidence.json'

@@ -2,7 +2,7 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. New local chats selecting `deepseek-flash` use the DeepSeek API.
 
-**v0.2.1** includes compatibility checks across app updates and an optional monitor. It rebuilds and installs only after compatibility, offline routing, and isolated startup checks pass; unknown structures or failures produce a notification. This release fixes installation blocked by Windows's persistent sandbox service and credential helpers launched from windowless Python.
+**v0.3.0** adds edition-pinned patch self-updates and model/specification synchronization, preserving explicit smaller context settings alongside application-update compatibility checks and automatic reinstallation.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -84,36 +84,36 @@ python3 patch.py install "$NEW_PATCH_BUILD"
 
 Use matching `--keychain-account` and `--keychain-service` values with `setup-key` and `build` to customize the credential lookup. Defaults are the current username and `Codex DeepSeek API Key`.
 
-## Optional automatic reinstallation after updates
+## Automatic updates and model synchronization
 
-After one successful installation, enable the monitor. macOS:
+After the first installation, enable all three functions: application-update reinstallation, patch self-updates, and model/specification refresh.
 
 ```sh
 python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"
 python3 monitor.py status
+python3 monitor.py run-once --sync-now
 ```
 
-Windows PowerShell, with the official app as source and the installed build as baseline:
+Windows uses `python`, the official Store source for `--app`, and the installed build for `--baseline`. Existing users must run `enable` once with this release to upgrade their saved monitor runtime.
 
-```powershell
-$CodexApp = Join-Path (Get-AppxPackage -Name OpenAI.Codex | Select-Object -First 1 -ExpandProperty InstallLocation) "app"
-python monitor.py enable --app "$CodexApp" --baseline "$PatchBuild"
-python monitor.py status
-```
+The DS edition follows `main`; the proxy edition follows `codex/existing-proxy-models`. Each publishes its own `update.json` pinned to an immutable commit and SHA-256 file inventory. The monitor rejects cross-edition packages, rollbacks, and changed hashes. Only the proxy edition depends on an existing EasyCLIProxyAPI setup.
 
-Existing macOS builds from the earlier local installer can also be passed as the baseline. The monitor verifies and adopts the installed patch before watching for updates.
+Application checks run every five minutes; code and model checks run hourly. Downloaded code passes isolated regression tests before a compatible app is rebuilt, checked with offline routing/context probes, and launched in isolation. Installation waits for normal application exit. Runtime activation has a persistent recovery journal. Failures and unknown structures are reported once per issue; unchanged checks are quiet. Checks do not submit inference turns to providers.
 
-The service uses launchd on macOS and a per-user Task Scheduler task on Windows. It checks at login and every **five minutes** by default. After a stable app change, it verifies the signature and source contracts, builds a copy, runs offline routing checks, and briefly opens an isolated startup window. Passing builds wait for you to quit normally before installation. It never terminates your running chats.
+Native GPT metadata refreshes through the bundled CLI. DeepSeek metadata comes from its official model endpoint. Proxy IDs come from the configured proxy, with specifications resolved from xAI, Google, and Anthropic documentation. Newly appearing **Grok, Gemini Flash, and Opus** versions are automatically added; DS follows the Flash family. The first successful check records existing IDs without resurrecting older excluded models. Missing models are removed after two successful absent observations and restored if they reappear. New models without verified specifications wait with a notification instead of receiving an arbitrary small context window.
 
-Unknown structures and failures retain evidence and produce a notification deduplicated for that problem. Unchanged checks stay quiet. Builds and recovery data are retained. The monitor does not download new patch code, refresh a catalog over the network, or invoke paid model APIs.
+Context defaults follow each model's maximum at 100% effective capacity. Explicit lower per-model preferences and existing GPT/DS global settings survive refreshes; proxy models use their own limits. Automatic compaction defaults to 90% of the configured window, retaining lower user thresholds.
 
 ```sh
-python3 monitor.py status
+python3 monitor.py model-options --model deepseek-flash --context-window 262144
+python3 monitor.py model-options --model deepseek-flash --reset-context
+python3 monitor.py model-options --model deepseek-flash --hide
+python3 monitor.py model-options --model deepseek-flash --show
 python3 monitor.py run-once --retry
 python3 monitor.py disable
 ```
 
-On Windows, use `python` instead of `python3`. Disabling preserves installed files and records. After updating this repository, run `enable` again to refresh the monitor's private runtime copy.
+Preferences live in the monitor's `model-preferences.json` and apply after synchronization and normal application exit. New chats use the refreshed settings. `enable --no-code-updates` and `--no-model-sync` independently disable either feature. Keep the current and previous recovery builds; update packages and app copies consume disk space.
 
 ## Restore and tests
 
@@ -142,7 +142,7 @@ Platform/version-specific checks and their scope are recorded in [validation](do
 
 The adapter routes new local DS threads to `deepseek-desktop`, preserves other request fields, and lists chats across providers. Local prewarm reuse is bypassed to prevent provider mismatches; new chat creation may be slightly slower.
 
-GPT entries come from the bundled CLI's offline catalog, with one Flash entry added. Rebuilding refreshes that snapshot. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use ad-hoc signing; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
+The first build uses bundled GPT metadata. The monitor then refreshes native GPT and enabled provider metadata before validated rebuilds. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use ad-hoc signing; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
 
 Generated files contain vendor resources and potentially private configuration. Keep them local. See [NOTICE](NOTICE).
 

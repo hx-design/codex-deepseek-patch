@@ -21,5 +21,5 @@ jobs:
           node-version: '22'
       - run: python -m unittest discover -s tests -v
       - run: node tests/route.test.cjs
-      - run: python -m compileall -q patch.py backend.py compatibility.py monitor.py windows_support.py windows_install.py scripts tests
+      - run: python -m compileall -q patch.py backend.py compatibility.py monitor.py model_sync.py updater.py update_worker.py windows_support.py windows_install.py scripts tests
       - run: python scripts/check_release.py

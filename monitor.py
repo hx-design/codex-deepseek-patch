@@ -131,6 +131,9 @@ def native_notify(kind, message):
 class CoreBackend:
     def __new__(cls, settings):
         import patch
+        if settings.get('edition'):
+            from updater import UpdateBackend
+            return UpdateBackend(settings)
         return patch.MonitorBackend(settings)
 
 
@@ -224,6 +227,9 @@ class Monitor:
                 snapshot = self.backend.snapshot()
                 fingerprint = self.fingerprint(snapshot)
                 self.state["observed"] = snapshot
+                for warning in snapshot.get('warnings',[]):
+                    safe=safe_error(warning)
+                    self.notify('update-check',hashlib.sha256(safe.encode()).hexdigest(),safe)
                 if not self.state.get("adoption_checked") or self.state.get("phase") == "installing":
                     recovering_install = self.state.get("phase") == "installing"
                     adoption = self.backend.adopt()
@@ -534,8 +540,19 @@ def enable(args):
         raise ValueError("Native scheduling supports macOS and Windows only")
     settings_path = directory / "settings.json"
     existing = load_json(settings_path, {})
+    import patch
+    from updater import edition
+    channel=edition()['edition']
+    baseline=getattr(args,'baseline',None) or existing.get('baseline')
+    if baseline:
+        record=load_json(Path(baseline)/'manifest.json',{})
+        installed_edition=record.get('edition','proxy' if record.get('proxy') else 'ds')
+        if record and installed_edition!=channel:raise ValueError('The baseline belongs to another edition; use its matching update channel')
+    if existing.get('edition',channel)!=channel:raise ValueError('This monitor directory is pinned to another edition')
     settings = {**existing, "format": FORMAT, "interval": args.interval,
                 "bundled_catalog": True, "enabled_at": timestamp()}
+    settings.update(edition=channel,state_dir=str(directory),auto_update=not getattr(args,'no_code_updates',False),
+                    model_sync=not getattr(args,'no_model_sync',False))
     for name in ("app", "codex_home", "baseline", "keychain_account", "keychain_service"):
         value = getattr(args, name, None)
         if value is not None:
@@ -550,7 +567,9 @@ def enable(args):
     if not node:
         raise ValueError("Node.js is required for offline JavaScript syntax validation")
     settings["node_path"] = str(Path(node).resolve())
-    backend = CoreBackend(settings)
+    # Registration validates local app identity; network discovery starts on the
+    # first scheduled tick, after settings/runtime registration is committed.
+    backend = patch.MonitorBackend(settings)
     backend.snapshot()  # Validate the selected target before registering any service.
     with state_lock(directory) as locked:
         if not locked:
@@ -608,9 +627,18 @@ def main(argv=None):
     p.add_argument("--keychain-account")
     p.add_argument("--keychain-service")
     p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Seconds, minimum 60")
+    p.add_argument('--no-code-updates',action='store_true')
+    p.add_argument('--no-model-sync',action='store_true')
     p = subs.add_parser("run-once", help="Check once; unchanged versions remain quiet")
     p.add_argument("--retry", action="store_true", help="Explicitly retry a failed or incompatible fingerprint")
     p.add_argument("--quiet", action="store_true", help="For native scheduling: write events without polling output")
+    p.add_argument('--sync-now',action='store_true',help='Refresh the pinned code channel and model specifications now')
+    p=subs.add_parser('model-options',help='Keep a model hidden or preserve a smaller context across synchronization')
+    p.add_argument('--model',required=True)
+    p.add_argument('--context-window',type=int)
+    p.add_argument('--compact-limit',type=int)
+    visibility=p.add_mutually_exclusive_group();visibility.add_argument('--hide',action='store_true');visibility.add_argument('--show',action='store_true')
+    p.add_argument('--reset-context',action='store_true',help='Return to the provider maximum')
     subs.add_parser("status", help="Print machine-readable service and update state")
     subs.add_parser("disable", help="Disable checks, preserving builds, logs and recovery data")
     args = parser.parse_args(argv)
@@ -625,10 +653,29 @@ def main(argv=None):
                       "settings": load_json(args.state_dir / "settings.json", {}),
                       "state": load_json(args.state_dir / "state.json", {}),
                       "event_log": str(args.state_dir.resolve() / "events.jsonl")}
+            result['updates']=load_json(args.state_dir/'updates.json',{})
+            result['model_preferences']=load_json(args.state_dir/'model-preferences.json',{})
+        elif args.action == 'model-options':
+            from model_sync import validate_preferences
+            with state_lock(args.state_dir) as locked:
+                if not locked:raise ValueError('Monitor is busy; retry after its current check')
+                path=args.state_dir/'model-preferences.json';value=load_json(path,{})
+                for name,number in [('context_windows',args.context_window),('compact_limits',args.compact_limit)]:
+                    if number is not None:value.setdefault(name,{})[args.model]=number
+                if args.reset_context:
+                    for name in ('context_windows','compact_limits'):value.get(name,{}).pop(args.model,None)
+                hidden=set(value.get('hidden',[]))
+                if args.hide:hidden.add(args.model)
+                if args.show:hidden.discard(args.model)
+                value['hidden']=sorted(hidden);validate_preferences(value);atomic_json(path,value)
+                updates=load_json(args.state_dir/'updates.json',{});updates['models_checked']=0;atomic_json(args.state_dir/'updates.json',updates)
+                result={'model':args.model,'preferences':value,'applies':'next synchronization, after normal app exit'}
         else:
             settings = load_json(args.state_dir / "settings.json")
             if settings is None:
                 raise ValueError("Monitor settings are missing; run enable first")
+            settings['state_dir']=str(args.state_dir.resolve())
+            if getattr(args,'sync_now',False):settings['force_sync']=True
             saved_state = load_json(args.state_dir / "state.json", {})
             baseline = saved_state.get("installed", {}).get("baseline")
             if baseline:

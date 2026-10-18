@@ -20,7 +20,8 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
+EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -32,8 +33,9 @@ MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
+                         "model_sync.py", "updater.py", "update_worker.py", "edition.json",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -237,11 +239,15 @@ def verify_app(app, expected_asar=None):
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
 
 
+def catalog_template(catalog):
+    models=[m for m in catalog['models'] if m.get('slug','').startswith('gpt-') and m.get('visibility','list')=='list']
+    require(models,'The native catalog has no usable GPT metadata template')
+    return next((m for m in models if m['slug']=='gpt-6.1-sol'),models[0])
+
+
 def make_catalog(original):
     catalog = copy.deepcopy(original)
-    templates = [m for m in catalog["models"] if m["slug"] == "gpt-6.1-sol"]
-    require(len(templates) == 1, "The supported catalog template is missing")
-    flash = copy.deepcopy(templates[0])
+    flash = copy.deepcopy(catalog_template(catalog))
     # Prompt text remains local: inherit it from the user's installed catalog.
     flash.update(
         slug=MODEL, display_name="DeepSeek 4.1 Flash", description="DeepSeek 4.1 Flash · DeepSeek API",
@@ -252,7 +258,7 @@ def make_catalog(original):
         shell_type="shell_command", visibility="list", supported_in_api=True, priority=90,
         additional_speed_tiers=[], service_tiers=[], default_service_tier=None,
         available_access_programs=None, availability_nux=None, upgrade=None,
-        context_window=1048576, max_context_window=1048576,
+        context_window=1048576, max_context_window=1048576, effective_context_window_percent=100,
         prefer_websockets=False, use_responses_lite=False, tool_mode=None,
         experimental_supported_tools=[], multi_agent_reasoning_effort="high",
         web_search_tool_type="text", supports_search_tool=True,
@@ -278,22 +284,36 @@ def provider_config(account, service, helper=None):
             'command = ' + json.dumps(command) + '\nargs = ' + json.dumps(args) + '\nrefresh_interval_ms = 0\n')
 
 
-def prepared_config(current, catalog, account, service, managed=None, helper=None):
+def prepared_config(current, catalog, account, service, managed=None, helper=None, proxy=None):
     parsed = tomllib.loads(current)
     if managed:
         from backend import refresh_config
-        return refresh_config(current, catalog, managed)
-    require(parsed.get("model_provider", "openai") == "openai", "A different default provider is configured")
-    require("model_catalog_json" not in parsed and PROVIDER not in parsed.get("model_providers", {}),
-            "A custom catalog or desktop DeepSeek provider already exists; review it before installing")
-    updated = ('model_catalog_json = ' + json.dumps(str(catalog)) + '\n' + current
-               + ("" if current.endswith("\n") else "\n") + provider_config(account, service, helper))
-    check = tomllib.loads(updated)
-    check.pop("model_catalog_json")
-    check["model_providers"].pop(PROVIDER)
-    if not check["model_providers"] and "model_providers" not in parsed:
-        check.pop("model_providers")
-    require(check == parsed, "Unrelated configuration changed")
+        updated = refresh_config(current, catalog, managed)
+    else:
+        require(parsed.get("model_provider", "openai") == "openai", "A different default provider is configured")
+        require("model_catalog_json" not in parsed and PROVIDER not in parsed.get("model_providers", {}),
+                "A custom catalog or desktop DeepSeek provider already exists; review it before installing")
+        updated = ('model_catalog_json = ' + json.dumps(str(catalog)) + '\n' + current
+                   + ("" if current.endswith("\n") else "\n") + provider_config(account, service, helper))
+    expected = copy.deepcopy(parsed)
+    expected["model_catalog_json"] = str(catalog)
+    if not managed:
+        expected.setdefault("model_providers", {})[PROVIDER] = tomllib.loads(provider_config(account, service, helper))["model_providers"][PROVIDER]
+    if proxy:
+        require(EDITION == "proxy", "Proxy providers require the proxy edition")
+        import proxy_support as ps
+        existing = parsed.get("model_providers", {}).get(ps.PROVIDER)
+        if existing is not None:
+            require(managed and managed.get("proxy_provider") == existing,
+                    "An unmanaged proxy provider exists; review the configuration")
+            # A baseline keeps the helper in its retained build directory.
+            require({k:v for k,v in managed.get("proxy",{}).items() if k!='models'} == {k:v for k,v in proxy.items() if k!='models'},
+                    "The managed proxy connection changed; review before migrating")
+        else:
+            addition = ps.provider_config(proxy, Path(catalog).parent / "proxy_support.py")
+            updated += ("" if updated.endswith("\n") else "\n") + addition
+            expected.setdefault("model_providers", {})[ps.PROVIDER] = tomllib.loads(addition)["model_providers"][ps.PROVIDER]
+    require(tomllib.loads(updated) == expected, "Unrelated configuration changed")
     return updated
 
 
@@ -357,6 +377,8 @@ def cli_path(app):
 
 
 def build(args):
+    require(not (getattr(args, "proxy_config", None) or getattr(args, "install_target", None)) or getattr(args, "compatible", False),
+            "Proxy integration and installed-app refresh require --compatible")
     if getattr(args, "compatible", False) or sys.platform == "win32":
         from backend import build_compatible
         return build_compatible(args)
@@ -485,16 +507,17 @@ def restore(args):
             "Configuration changed after installation. Review config-before.toml and the current file before restoring.")
     verify_app(app, manifest["patched_asar"])
     # After installation, patched.app contains the exact original target.
-    verify_app(directory / "patched.app", manifest["original_asar"])
+    previous_asar = manifest.get("replaced_asar", manifest["original_asar"])
+    verify_app(directory / "patched.app", previous_asar)
     before = (directory / "config-before.toml").read_text(encoding="utf-8")
     def commit():
-        verify_app(app, manifest["original_asar"])
+        verify_app(app, previous_asar)
         if not manifest["config_existed"]:
             config.unlink()
         manifest["status"] = "restored"
         save_json(directory / "manifest.json", manifest)
     install_transaction(app, directory / "patched.app", config, current, before, commit)
-    print("Restored the original signed app and pre-install configuration. Open the app normally.")
+    print("Restored the previous app and pre-install configuration. Open the app normally.")
 
 
 def setup_key(args):
@@ -514,7 +537,8 @@ def status(args):
     directory, manifest = load_build(args.directory)
     print(json.dumps({key: manifest.get(key) for key in ("tool_version", "app_version", "status", "boot_probe", "target")}, indent=2))
     if sys.platform in ("darwin", "win32"):
-        expected = manifest["patched_asar"] if manifest["status"] == "installed" else manifest["original_asar"]
+        expected = (manifest["patched_asar"] if manifest["status"] == "installed" else
+                    manifest.get("replaced_asar", manifest["original_asar"]))
         target = manifest.get("deployment_target", manifest["target"]) if manifest["status"] == "installed" else manifest["target"]
         verify_app(Path(target), expected)
         print("Target signature and resource integrity verified.")
@@ -536,6 +560,8 @@ def main():
     p.add_argument("--bundled-catalog", action="store_true", help="Use the offline bundled GPT catalog instead of refreshing")
     p.add_argument("--compatible", action="store_true", help="Check signed source and supported request contracts across app updates")
     p.add_argument("--baseline", type=Path, help="Existing patch build whose managed catalog should be refreshed")
+    p.add_argument("--install-target", type=Path, help="Refresh a known installed Mac baseline using an original signed --app backup")
+    p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)

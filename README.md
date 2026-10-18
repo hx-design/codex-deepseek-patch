@@ -5,7 +5,7 @@
 
 在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，保留 GPT 模型和默认设置。选择 DS 后，新建的本机聊天使用 DeepSeek API。
 
-**v0.2.1** 提供跨版本兼容检查和可选更新监测：官方应用更新后，检查通过才构建、测试并重新安装补丁；遇到未知结构或失败时通知你处理。本版修正 Windows 常驻沙箱服务阻塞安装和无窗口启动时的凭据读取问题。
+**v0.3.0** 同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
 
 这是非官方、本地安装的补丁。仓库只提供补丁源码，不提供 ChatGPT/Codex 应用、提取后的程序、模型系统提示词或 API 密钥。
 
@@ -98,39 +98,46 @@ python3 patch.py install "$NEW_PATCH_BUILD"
 
 凭据默认使用当前用户名和 `Codex DeepSeek API Key`；可用 `--keychain-account`、`--keychain-service` 自定义，`setup-key` 与 `build` 使用相同参数。
 
-## 可选：官方更新后自动重新安装
+## 自动更新与模型同步
 
-先完成一次安装，再启用监测。macOS 示例：
+完成一次安装后运行 `monitor.py enable`，即可同时启用 Codex 更新后自动补装、补丁自身更新和模型同步。macOS 使用 launchd，Windows 使用当前用户的任务计划程序。
+
+| 通道 | 跟随分支 | 模型来源 |
+| --- | --- | --- |
+| 独立 DS 版 | `main` | 原生 GPT + DeepSeek 官方接口 |
+| 现有代理扩展版 | `codex/existing-proxy-models` | 原生 GPT + DeepSeek + 已配置代理 |
+
+两个通道分别发布 `update.json`，锁定版本、提交和文件摘要。安装时登记的通道保持固定，拒绝跨通道更新、倒退版本和摘要不符的文件。扩展版需要现有 EasyCLIProxyAPI；DS 版不需要。
 
 ```sh
 python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"
 python3 monitor.py status
+# 立即检查代码、目录和规格；仍等待应用正常退出才安装。
+python3 monitor.py run-once --sync-now
 ```
 
-Windows PowerShell 示例，`--app` 指向官方来源，`--baseline` 指向已安装的构建：
+Windows 将 `python3` 换为 `python`，`--app` 指向官方 Store 来源，`--baseline` 指向已安装构建。已有旧监测服务的用户，安装本次版本后执行一次 `enable` 完成迁移，以后补丁代码自动更新。
 
-```powershell
-$CodexApp = Join-Path (Get-AppxPackage -Name OpenAI.Codex | Select-Object -First 1 -ExpandProperty InstallLocation) "app"
-python monitor.py enable --app "$CodexApp" --baseline "$PatchBuild"
-python monitor.py status
-```
+默认每 **5 分钟**检查应用变化，每 **1 小时**检查补丁发布和模型规格。发现变化后下载并核对源码，先运行隔离单元测试，再检查官方应用兼容性、构建副本、验证目录与上下文并测试隔离启动。全部通过后等待应用正常退出，完成安装与监测程序更新。测试窗口可能短暂出现。未知结构、断网、无规格的新型号或失败会去重通知，保留当前可用版本和恢复数据。相同状态保持安静；检查不向供应商提交推理回合。
 
-也可将此前本机旧安装器留下的 macOS 构建目录作为 `--baseline`。监测会先核对并接续已安装补丁。
+GPT 通过内置 CLI 刷新原生目录；DS 优先读取官方 `/models` 的真实规格；扩展版读取现有代理 `/models` 发现型号，再核对 xAI、Google、Anthropic 官方规格。自动加入现有 **Grok、Gemini Flash、Opus** 系列的新型号，DS 同步 Flash 系列。首次同步建立现有型号基线，保留此前未选型号；后续新出现的型号自动加入。暂时下线的型号在连续两次成功查询都缺失后移除，重新出现后恢复。新型号缺少可信规格时保留待处理记录并提醒，不套用小窗口。
 
-macOS 使用 launchd，Windows 使用当前用户的任务计划程序；默认登录时及每 **5 分钟**检查一次。检测到稳定的新版本后，依次完成签名与兼容检查、构建、离线线程测试和隔离启动测试。期间可能短暂出现测试窗口。全部通过后等待你正常退出应用，再安装并通知结果；运行中的聊天由你自行结束。
-
-未知结构或执行失败会保留记录，并按同一问题去重通知。正常、未变化的检查保持安静。服务保留构建与恢复数据；不会自动下载新补丁代码、联网刷新模型目录或调用付费模型 API。
+默认上下文使用模型支持的**最大值**，不继承模板的折减百分比。保留用户主动调小的单模型设置与已有 GPT / DS 全局设置；代理模型使用各自窗口。自动压缩默认在配置窗口的 90% 触发，用户更低阈值继续保留。最大窗口变大时默认同步增大；用户已设置的较小窗口保持原值。
 
 ```sh
-# 查看问题详情；明确重试当前失败版本。
-python3 monitor.py status
+# 单模型调小；后续自动同步会保留。
+python3 monitor.py model-options --model deepseek-flash --context-window 262144
+# 恢复跟随最大窗口。
+python3 monitor.py model-options --model deepseek-flash --reset-context
+# 隐藏或重新显示；扩展版同样适用于 Grok / Gemini / Opus。
+python3 monitor.py model-options --model deepseek-flash --hide
+python3 monitor.py model-options --model deepseek-flash --show
+# 重试失败版本；停止服务会保留应用、配置与恢复数据。
 python3 monitor.py run-once --retry
-
-# 停止自动检查，保留补丁、构建和日志。
 python3 monitor.py disable
 ```
 
-Windows 使用相同命令，将 `python3` 换为 `python`。仓库更新后重新执行 `enable`，才会更新监测服务保存的代码副本。
+`model-options` 在下一次同步后应用，修改模型路由需正常退出并重新打开应用，新建聊天使用新规格。偏好保存在监测目录的 `model-preferences.json`，状态与告警可通过 `status` 查看。可用 `enable --no-code-updates` 或 `--no-model-sync` 分别关闭对应功能。构建与更新缓存需要磁盘空间，当前及上一份可恢复构建请保留。
 
 ## 检查与恢复
 
@@ -168,7 +175,7 @@ python3 scripts/test_connection.py "$PATCH_BUILD" --run
 
 - 新建本机 DS 聊天时将 `thread/start` 提供商设为 `deepseek-desktop`，保留其他请求字段；本机聊天列表显示各服务商的聊天。
 - 跳过本机新建聊天的预热缓存复用，避免提供商混用；新建聊天可能略慢。
-- GPT 模型来自构建时内置 CLI 的离线模型目录，再添加一个 Flash 项。模型菜单随重新构建刷新。
+- 首次构建使用内置目录；启用监测后刷新 GPT、DS 模型及规格，验证后重新构建。
 - 保持 ASAR 资源校验启用，更新成员与分块哈希、包头及原生配套摘要。macOS 副本使用 ad-hoc 签名；Windows 副本修改完整性载体。依赖官方签名的系统功能或更新可能受到影响。
 - `.local/`、构建产物和配置备份包含程序副本或本机信息。请勿上传到仓库或 Issue。
 
