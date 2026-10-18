@@ -1,6 +1,10 @@
 # Codex model extension patch
 
-Use existing cloud endpoints and local models in the native Codex desktop model menu. GPT stays available; **DeepSeek is optional**. This is the independent **0.4.0-proxy.1 extension channel** (`codex/existing-proxy-models`). The [DS-only edition](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) stays on `main`; update channels cannot overwrite each other.
+Bring **existing cloud endpoints and local models** into the native Codex model menu. Switch models within the same chat and select supported reasoning levels and context windows.
+
+Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
+
+This is the **0.4.0-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -13,6 +17,21 @@ Use existing cloud endpoints and local models in the native Codex desktop model 
 - Standard-library Python and Node.js only: no extra packages, database or management UI. Natively compatible local models use direct Responses connections. Chat-only models and strict message templates use a small authenticated helper that starts on demand and exits after 120 idle seconds.
 
 Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Windows desktop app. This unofficial source-only project does not distribute the application, extracted model prompts or credentials.
+
+## Lightweight by design
+
+| Design | Implementation | Benefit |
+| --- | --- | --- |
+| Native interface | Reuse the model menu, chats and permission controls | Work within the existing Codex application |
+| Standard libraries | Python / Node.js standard libraries; JSON / TOML state | No additional Python/npm packages or database service |
+| Direct connections | Compatible models call existing Responses endpoints directly | These requests do not traverse a patch relay |
+| On-demand adaptation | Strip unsupported tools or normalize strict message templates | The helper starts when needed and exits after about 120 idle seconds |
+| Native scheduling | launchd or Windows Task Scheduler runs one check per interval | Each check exits; no persistent monitoring loop |
+| Change-based updates | Compare app, runtime and model digests; reuse verified source packages | Unchanged checks avoid rebuilding and redundant downloads |
+| Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
+| Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
+
+The `0.4.0-proxy.1` update runtime uses **22 source files totaling about 263 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
 
 ## Connect and install
 
@@ -87,3 +106,7 @@ python3 patch.py restore "$PATCH_BUILD"
 ```
 
 Recovery validates the current app/config and restores the previous state. macOS copies use ad-hoc signatures; resource integrity checks remain enabled. Never publish `.local/`, builds, logs or personal configuration. See [NOTICE](NOTICE) for third-party ownership.
+
+## Other edition
+
+For DeepSeek official direct access alone, use the [standalone edition on main](https://github.com/limyum-creator/codex-deepseek-patch/tree/main). This extension combines cloud endpoints and local models as needed. The editions have independent update channels.

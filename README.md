@@ -1,11 +1,10 @@
 # Codex 模型扩展补丁
 
-在 Codex 桌面版的原生模型菜单中使用现有云端接口和本地模型，保留 GPT。**不再强制绑定 DeepSeek，也不需要另装一个路由管理软件。**
+把已有的**云端接口和本地模型**接入 Codex 原生模型菜单，在同一个聊天中切换模型，按各模型能力选择思考档位与上下文。
 
-| 版本 | 适合谁 | 更新通道 |
-| --- | --- | --- |
-| [DS 版](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | GPT + DeepSeek 官方直连 | `main`，独立更新 |
-| **本分支：扩展版 `0.4.0-proxy.1`** | GPT + 按需选择的 DeepSeek、已有代理、本地模型 | `codex/existing-proxy-models`，独立更新 |
+支持 **Gemini、Grok、Opus、Ollama、LM Studio 和其他 Responses 兼容接口**，保留原生 GPT。使用现有模型服务与登录配置，在 Codex 内完成模型选择和聊天。
+
+本分支为多模型扩展版 **`0.4.0-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -16,6 +15,21 @@
 - Python / Node.js 标准库，无第三方依赖、数据库或额外管理界面。原生兼容的模型直连已有 Responses 接口；只聊天模型与严格消息模板使用按需启动、空闲 120 秒后退出的小兼容进程。
 
 非官方补丁。仓库只含补丁源码，不含官方应用、提取后的程序、模型提示词或凭据。支持 macOS Apple Silicon 与 Windows 官方桌面应用，需要 **Python 3.11+、Node.js 18+**。
+
+## 已落地的轻量化设计
+
+| 设计 | 当前实现 | 使用上的收益 |
+| --- | --- | --- |
+| 复用 Codex 界面 | 使用原生模型菜单、聊天和权限体系 | 模型选择与工作都在已有应用内完成 |
+| 标准库实现 | Python / Node.js 标准库，配置与状态使用 JSON / TOML | 安装不需要额外 Python/npm 包或数据库服务 |
+| 能直连就直连 | 原生兼容模型直接请求已有 Responses 接口 | 这类请求无需经过补丁的中转进程 |
+| 按需适配 | 只聊天模型去掉工具声明；严格模板整理消息格式 | 兼容进程用到时启动，空闲约 120 秒后退出 |
+| 系统定时调度 | launchd / Windows 任务计划程序按周期执行一次检查 | 检查结束后进程退出；不保持常驻监测循环 |
+| 按变化更新 | 比较应用、运行代码和模型快照摘要；复用已校验的版本源码包 | 未变化时不重新构建，重复检查减少下载和处理 |
+| 简化接入操作 | `connect` 发现并保存连接，`build --verify` 合并安装前检查 | 减少手改配置和逐项执行验证的步骤 |
+| 复用已有会话 | 通过原生接口恢复同一个聊天 ID，保留历史、权限与工作目录 | 不维护另一套聊天数据库或迁移历史副本 |
+
+`0.4.0-proxy.1` 的更新监测运行文件共 **22 个，约 263 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
 
 ## 1. 选择接口
 
@@ -113,7 +127,7 @@ Windows 用 `python`，`--app` 指向官方 Store 来源，`--baseline` 指向�
 
 每 **5 分钟**检查应用变化，每 **1 小时**检查补丁和模型规格。两个版本分别验证各自发布清单、提交和摘要，拒绝互相覆盖、降级或摘要不符的包。更新先测试，再等待正常退出安装。结构不兼容、规格不明或检查失败时去重通知，保留可用版本；没有变化时保持安静。
 
-- GPT 刷新原生目录；DS 查询官方接口；代理自动加入现有 **Grok、Gemini Flash、Opus** 系列的新版本，再核对厂商规格。
+- GPT 刷新原生目录；代理自动加入现有 **Grok、Gemini Flash、Opus** 系列的新版本，再核对厂商规格。可选的官方直连服务从其官方接口同步。
 - 本地服务默认跟随其可用生成模型；明确指定 `--models` 时保留该选择。
 - 默认上下文跟随最大值，单模型调小与手动隐藏持续保留。自动压缩默认为当前窗口的 90%；已有更低阈值继续保留。
 
@@ -134,12 +148,12 @@ python3 monitor.py disable
 
 | 模型 | 最大上下文 | 思考档位 | 来源 |
 | --- | ---: | --- | --- |
-| DeepSeek Flash | 1,048,576 | low / high / max | [DeepSeek](https://api-docs.deepseek.com/quick_start/agent_integrations/) |
 | Grok 4.5 | 500,000 | low / medium / high | [xAI](https://docs.x.ai/developers/models/grok-4.5) |
 | Grok 4.7 | 500,000 | low / medium / high / xhigh | [xAI](https://docs.x.ai/developers/grok-4-7) |
 | Gemini 3.8 Flash | 1,048,576 | low / medium / high | [Google](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash) |
 | Opus 4.6 Thinking | 1,000,000 | low / medium / high / max | [Anthropic](https://platform.claude.com/docs/en/models/opus-4-6/overview) |
 | 本地模型 | 从服务元数据读取 | 按实际能力 | [Ollama](https://docs.ollama.com/api/openai-compatibility)、[LM Studio](https://lmstudio.ai/docs/developer/openai-compat/responses) |
+| DeepSeek Flash（可选） | 1,048,576 | low / high / max | [DeepSeek](https://api-docs.deepseek.com/quick_start/agent_integrations/) |
 
 `-high` / `-thinking` 是代理模型 ID，仍可逐回合调整档位。非思考模型不显示虚假的档位。Opus 的官网上限为 1M；CLIProxyAPI 8.0.32 Antigravity 静态表标注 200K，实际订阅通道的长请求上限仍由上游决定。[代理模型表](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/internal/registry/models/models.json)
 
@@ -159,3 +173,7 @@ python3 scripts/test_connection.py "$PATCH_BUILD" --model MODEL --run
 ```
 
 恢复核对当前应用和配置，返回安装前状态。macOS 副本采用 ad-hoc 签名；Windows 使用独立受管副本；资源完整性检查保持开启。不要上传 `.local/`、构建产物、日志或个人配置。[NOTICE](NOTICE) 说明第三方资源归属。
+
+## 其他版本
+
+只需要 DeepSeek 官方直连时，可使用 [main 分支的独立直连版](https://github.com/limyum-creator/codex-deepseek-patch/tree/main)。本分支按需组合云端接口与本地模型，各版本使用独立更新通道。
