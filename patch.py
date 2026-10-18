@@ -20,7 +20,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"

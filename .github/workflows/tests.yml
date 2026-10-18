@@ -20,6 +20,14 @@ jobs:
         with:
           node-version: '22'
       - run: python -m unittest discover -s tests -v
+      - name: Windows background updater preflight
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Pythonw = Join-Path (Split-Path (Get-Command python).Source) 'pythonw.exe'
+          $Process = Start-Process -FilePath $Pythonw -ArgumentList @('-m', 'unittest', 'discover', '-s', 'tests', '-q') -Wait -PassThru -RedirectStandardError 'windowless-test.log' -RedirectStandardOutput 'windowless-output.log'
+          Get-Content 'windowless-test.log'
+          if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
       - run: node tests/route.test.cjs
       - run: python -m compileall -q patch.py backend.py compatibility.py monitor.py model_sync.py updater.py update_worker.py windows_support.py windows_install.py scripts tests
       - run: python scripts/check_release.py

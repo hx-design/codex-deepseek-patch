@@ -126,7 +126,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(parsed["model_providers"]["other"], {"name": "Other"})
         auth = parsed["model_providers"][patch.PROVIDER]["auth"]
         if patch.sys.platform == "win32":
-            self.assertEqual(auth["command"], patch.sys.executable)
+            executable = Path(patch.sys.executable)
+            expected = executable.with_name("python.exe") if executable.name.lower() == "pythonw.exe" else executable
+            self.assertEqual(auth["command"], str(expected))
             self.assertEqual(auth["args"], [str(patch.ROOT / "windows_support.py"), "credential-get", "--target", "service"])
         else:
             self.assertEqual(auth["args"][2], 'an "account"')
