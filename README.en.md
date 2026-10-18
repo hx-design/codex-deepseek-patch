@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.2-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.3-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -33,7 +33,7 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.2-proxy.1` update runtime uses **24 source files totaling about 289 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.3-proxy.1` update runtime uses **25 source files totaling about 296 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
 
 ### 0.4.2 fix: Windows background updates
 
@@ -48,6 +48,16 @@ If an older release already installed the app but left the monitor on an older v
 Earlier extension releases disabled discovery for proxy and local models, causing MCP definitions to be sent eagerly. These fixed definitions returned after history compaction, even with the model's full context window configured. This affected published defaults too.
 
 Tool-capable models now enable lazy discovery. A small adapter translates native search and custom calls for function-compatible peers; Codex still performs discovery, execution and permission checks. Compaction requests keep tools disabled. Model maxima, deliberate reductions and chat history are preserved. Restart Codex after updating and continue the existing chat.
+
+## macOS updates and permissions
+
+A persistent local signing certificate replaces per-build ad-hoc identities. Its private key stays in the current user's login keychain; public identity metadata lives in `~/Library/Application Support/CodexDeepSeekPatch/signing/`, outside versioned builds. Both editions reuse that local identity while retaining independent update channels.
+
+Updates keep the same designated requirements and ordinary capabilities such as microphone, camera and Apple Events. Only the changed framework, its helpers and the outer app receive local signatures; untouched vendor code retains its official signatures. Installation verifies identity and capabilities. See [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+
+**The first migration from an old ad-hoc signature may require one more macOS permission confirmation. Later patched versions retain the new identity.** Vendor-only application/keychain groups require the vendor's identity and are not claimed by local signatures. The patch does not edit TCC records or clear user keychains.
+
+The first build prepares the identity automatically; `python3 patch.py setup-signing` can do this in advance. Retain the **Codex Model Patch Local Signing** keychain entry. A missing or changed established identity stops the update instead of silently rotating the certificate.
 
 ## Connect and install
 
@@ -121,7 +131,7 @@ python3 scripts/test_connection.py "$PATCH_BUILD" --model MODEL --run
 python3 patch.py restore "$PATCH_BUILD"
 ```
 
-Recovery validates the current app/config and restores the previous state. macOS copies use ad-hoc signatures; resource integrity checks remain enabled. Never publish `.local/`, builds, logs or personal configuration. See [NOTICE](NOTICE) for third-party ownership.
+Recovery validates the current app/config and restores the previous state. macOS copies reuse a persistent local signing certificate; resource integrity checks remain enabled. Never publish `.local/`, builds, logs or personal configuration. See [NOTICE](NOTICE) for third-party ownership.
 
 ## Other edition
 

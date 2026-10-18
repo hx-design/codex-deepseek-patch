@@ -240,6 +240,21 @@ class InstallAdapterTests(unittest.TestCase):
             cli.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_stable_signing_mismatch_stops_install_before_credentials_or_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = {'status': 'prepared', 'target': str(root/'app'), 'codex_home': str(root/'home'),
+                        'original_asar': 'original', 'patched_asar': 'patched',
+                        'stable_signing_required': True, 'macos_signing': {'scheme': 'invalid'}}
+            with mock('backend.p.require_stopped'), mock('backend.p.verify_app'), \
+                 mock('macos_signing.verify_app_identity', side_effect=p.PatchError('identity changed')) as verify, \
+                 mock('backend.credential_available') as credential, mock('backend.p.install_transaction') as install:
+                with self.assertRaisesRegex(p.PatchError, 'identity changed'):
+                    backend.install_compatible(root, manifest)
+            verify.assert_called_once_with(root/'patched.app', manifest['macos_signing'])
+            credential.assert_not_called()
+            install.assert_not_called()
+
     def test_install_refuses_missing_offline_probe_before_transaction(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

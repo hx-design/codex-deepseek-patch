@@ -4,7 +4,7 @@
 
 支持 **Gemini、Grok、Opus、Ollama、LM Studio 和其他 Responses 兼容接口**，保留原生 GPT。使用现有模型服务与登录配置，在 Codex 内完成模型选择和聊天。
 
-本分支为多模型扩展版 **`0.4.2-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
+本分支为多模型扩展版 **`0.4.3-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -31,7 +31,7 @@
 | 简化接入操作 | `connect` 发现并保存连接，`build --verify` 合并安装前检查 | 减少手改配置和逐项执行验证的步骤 |
 | 复用已有会话 | 通过原生接口恢复同一个聊天 ID，保留历史、权限与工作目录 | 不维护另一套聊天数据库或迁移历史副本 |
 
-`0.4.2-proxy.1` 的更新监测运行文件共 **24 个，约 289 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+`0.4.3-proxy.1` 的更新监测运行文件共 **25 个，约 296 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
 
 ### 0.4.2 修复：Windows 后台自动更新
 
@@ -46,6 +46,16 @@
 旧扩展版关闭了代理和本地模型的工具发现能力，大量 MCP 工具定义会提前进入请求；压缩聊天后这些固定定义仍会重新加入。此问题也影响旧版 GitHub 默认配置，模型窗口设为最大值仍可能触发。
 
 新版本默认启用支持工具的模型按需发现，并为普通函数接口转换原生工具搜索协议。搜索、工具执行和权限判断仍由 Codex 完成；压缩请求不会重新带入工具定义。上下文最大值、用户调小设置和原聊天历史保留。更新后重启 Codex，再继续原聊天。
+
+## macOS 更新与系统授权
+
+本版在本机创建并复用固定的代码签名证书，私钥保存在当前用户的登录钥匙串中。签名身份记录独立存放于 `~/Library/Application Support/CodexDeepSeekPatch/signing/`，DS 与扩展版共用本机身份，但继续使用各自的更新通道。
+
+应用更新时沿用相同的身份要求，并保留麦克风、相机、Apple Events 等可本地使用的能力声明。只重签修改过的 Framework、其辅助程序与外层应用；未修改的内置 CLI、Sparkle 等保留官方签名。安装前后都会核对身份和能力声明。macOS 通过签名身份识别跨版本的钥匙串与隐私授权，见 [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
+
+**第一次从旧临时签名迁移时，按 macOS 提示重新确认一次所需权限；后续补丁更新保持这个身份。** 原有官方身份的专属应用组和钥匙串组由厂商证书控制，本地补丁不能冒用。更新不会修改 TCC 授权数据库或清空用户钥匙串。
+
+初次构建自动准备签名身份，也可提前运行 `python3 patch.py setup-signing`。请保留登录钥匙串中的 **Codex Model Patch Local Signing** 条目；已有证书丢失或与已安装版本不一致时，更新会停止并提示恢复，不会偷偷换证书。旧版本构建目录可以按恢复需要管理，签名身份不存放在这些目录内。
 
 ## 1. 选择接口
 
@@ -188,7 +198,7 @@ node tests/route.test.cjs
 python3 scripts/test_connection.py "$PATCH_BUILD" --model MODEL --run
 ```
 
-恢复核对当前应用和配置，返回安装前状态。macOS 副本采用 ad-hoc 签名；Windows 使用独立受管副本；资源完整性检查保持开启。不要上传 `.local/`、构建产物、日志或个人配置。[NOTICE](NOTICE) 说明第三方资源归属。
+恢复核对当前应用和配置，返回安装前状态。macOS 副本采用固定本机证书签名；Windows 使用独立受管副本；资源完整性检查保持开启。不要上传 `.local/`、构建产物、日志或个人配置。[NOTICE](NOTICE) 说明第三方资源归属。
 
 ## 其他版本
 

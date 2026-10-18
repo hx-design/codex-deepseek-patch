@@ -6,7 +6,7 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 
 ## Compatibility changes
 
-1. Inspect a locally obtained official app and verify its publisher and resource integrity. Preserve the v0.1 fixed-version path when changing compatible mode.
+1. Inspect a locally obtained official app and verify its publisher and resource integrity. Use the shared compatible build path for every entry point.
 2. Describe the request/prewarm contract in `compatibility.py`. Asset filenames and minified names may vary; unknown behavior, missing anchors, duplicate targets, or existing patch markers must stop the operation. A version-only allowlist is insufficient for compatible mode.
 3. Keep edits restricted to recorded spans and the route helper. Add tests for renamed variables/assets, changed control flow, ambiguity, marker detection, and preservation outside intended changes.
 4. Exercise actual extracted methods in the Node VM probe. Preserve GPT and remote routes, explicit providers, existing chat behavior, config reads, plugin timeouts, permissions, and unrelated configuration.
@@ -37,3 +37,5 @@ python3 patch.py test-boot "/new/build/directory"
 On Windows, use `python` and Windows paths. Run an install/restore cycle against a disposable target before claiming deployment support. Document the platform, exact version, command, result, and evidence layer in `docs/VALIDATION.md`. Distinguish synthetic tests, source/syntax checks, offline app-server routing, isolated GUI startup, install/restore, and live model calls.
 
 Live provider tests require an explicit request and incur API usage. A previous live result must retain its original version/date; it should not be presented as validation of a new runtime.
+
+macOS signing changes must retain the established local certificate and component requirements, preserve ordinary capability entitlements, and pass `python3 scripts/test_macos_signing.py`. Never reset TCC records, grant privacy access silently, or put signing keys in a release.

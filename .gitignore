@@ -25,3 +25,11 @@ __pycache__/
 .DS_Store
 .venv/
 node_modules/
+
+# Local signing identities and temporary private material never belong in releases.
+signing/
+*.keychain
+*.keychain-db
+*.p12
+*.pfx
+*.pem
