@@ -88,5 +88,27 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual(migrate(native, {'openai','deepseek-desktop'}, path)['status'], 'passed')
 
 
+class NativeSessionConfigurationTests(unittest.TestCase):
+    def test_legacy_home_does_not_get_an_incomplete_adapter_provider(self):
+        from unittest import mock
+        import official_client_migration as subject
+        import patch as core
+        for configured in (False,True):
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as tmp:
+                home=Path(tmp)
+                text='model="gpt"\n[mcp_servers.local-tools]\ncommand="unused-tool"\n'
+                if configured:text+='[model_providers.'+PROVIDER+']\nname="OpenAI"\nbase_url="http://127.0.0.1:1234/v1"\n'
+                (home/'config.toml').write_text(text,encoding='utf-8')
+                process=mock.Mock();process.poll.return_value=0
+                with mock.patch.object(core,'cli_path',return_value=home/'cli'), mock.patch.object(subject.subprocess,'Popen',return_value=process) as spawn, mock.patch.object(subject,'MetadataRpc'):
+                    with subject.native_session(home/'app',home):pass
+                arguments=spawn.call_args.args[0]
+                override='model_providers.'+PROVIDER+'.base_url="http://127.0.0.1:9/backend-api/codex"'
+                self.assertEqual(override in arguments,configured)
+                self.assertIn('mcp_servers.local-tools.enabled=false',arguments)
+                self.assertNotIn('mcp_servers."local-tools".enabled=false',arguments)
+                self.assertEqual((home/'config.toml').read_text(encoding='utf-8'),text)
+
+
 if __name__ == '__main__':
     unittest.main()

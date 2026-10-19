@@ -1,3 +1,9 @@
+# Legacy configuration metadata entry
+
+2026-10-19. Pre-install metadata inspection now avoids creating an incomplete adapter provider and uses literal native override keys for existing MCP names. A production legacy Mac configuration passed initialize/thread-list with tools and inference disabled; isolated before/after provider configurations are regression-covered. The configuration on disk is unchanged by this inspection.
+
+---
+
 # Update panel interaction repair
 
 2026-10-19. macOS now uses the native NSApplication event loop with timer-based state refresh. The close button was confirmed by an actual user click; a hidden native event-loop test also exercises the close callback. Failed/completed panels stop animating on both platforms.
