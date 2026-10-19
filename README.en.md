@@ -2,7 +2,7 @@
 
 Add existing cloud endpoints and local models to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-Extension **0.5.8-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.5.9-proxy.1**, update branch `codex/existing-proxy-models`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
@@ -49,9 +49,9 @@ On Windows use `python`, Windows paths, and omit `--app` to discover the officia
 
 Verification uses the original CLI, isolated state and synthetic local endpoints in the background, without GUI launches or paid inference. Installation requires successful validation. For legacy migration, supply `--baseline`; on Mac point `--app` to its verified `original.app` backup and `--install-target` to the installed app. Only this first transition restores the official app.
 
-Existing chats migrate through native metadata APIs without rewriting history or SQL. Historical external signatures are indexed by hash locally. When an old GPT chat contains proprietary compacted state, its first external-model request obtains a readable task summary through GPT and caches it; this uses one GPT request.
+Existing chats retain their native identity, content, archive state, model and reasoning preference. Old GPT compaction is recovered from locally verified readable records and summarized by the selected external model with its own credentials. **No GPT request or GPT quota is needed.** Shared fork history stops at the exact fork boundary; original files are not rewritten.
 
-Normal external-model turns use independent credentials even after GPT quota exhaustion. An uncached proprietary GPT compaction block still needs one available GPT request for conversion. Cached handoffs and new native readable summaries do not have that dependency.
+Existing handoff caches remain usable. Long records and oversized old summaries are reduced within the selected model's effective context. Missing, corrupt or unsupported local records produce an explicit recovery message instead of silent history loss. Summarization uses the selected service's quota.
 
 ## Non-blocking progress
 

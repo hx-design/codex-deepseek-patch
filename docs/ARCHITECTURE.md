@@ -39,7 +39,12 @@ External reasoning items receive model provenance. A continuation on the same mo
 
 Older external signatures are identified by a bounded, read-only rollout scan: `turn_context.model` associates known external models with SHA-256 signature hashes. The private index stores hash → model, never ciphertext or chat content. Ambiguous origins are excluded.
 
-Old GPT compaction blocks are handled lazily. On the first external turn, the original GPT endpoint generates a readable task-facts summary; the adapter does not decode private reasoning. An account/model/cipher-hash scoped private cache avoids repeated requests. Normal new compaction uses Codex's native readable summaries and the selected model's context window.
+Old GPT compaction blocks are handled lazily without calling GPT. The native request identifies its thread. A read-only standard-library loader verifies that chat's JSONL identity, ordinal continuity, exact compaction item and any bounded shared-history parent prefixes. It reads visible messages and tool results only; opaque reasoning and media bytes are excluded. No database writes, whole-library content index, decryption, or new resident service is involved.
+
+The selected route summarizes the verified text through its own Responses or Chat Completions endpoint. Recovery uses the declared effective model context, bounded UTF-8 chunks and hierarchical reduction; it does not alter the native context window. Summary requests have no tools. An account/thread/model/endpoint/window-scoped private cache avoids repeat calls, and old official handoff caches are read locally and reduced if the chosen window is smaller.
+
+Missing prefixes, ambiguous identity, invalid ordinal/byte boundaries, malformed records, unresolved rollback records and unsupported storage formats return an explicit recovery error before normal inference continues. The current reader supports uncompressed JSONL and native paginated fork prefixes. Oversized, nonreducing or interrupted summaries are not cached as complete. New native readable-summary compaction continues unchanged.
+
 
 ## Installation and recovery
 

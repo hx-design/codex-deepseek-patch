@@ -6,6 +6,7 @@ import subprocess
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 ALLOWED = {
+    'local_history.py', 'tests/test_local_history.py',
     'exit_watch.py', 'tests/test_exit_watch.py',
     'tests/test_inference_chat.py', 'official_client_shortcut.py', 'tests/test_official_client_shortcut.py', 'update_progress.py', 'update_progress_macos.js', 'update_progress.ps1', 'tests/test_update_progress.py', 'tests/test_update_progress_macos.py', 'tests/test_update_progress_windows.py',
     'official_client.py', 'official_client_config.py', 'official_client_host.py', 'official_client_install.py', 'official_client_migration.py', 'official_client_update.py', 'inference_adapter.py', 'inference_transport.py', 'legacy_history.py', 'reasoning_origin.py', 'chat_completions_compat.py', 'scripts/test_official_client.py', 'scripts/test_official_connection.py', 'tests/test_official_client.py', 'tests/test_official_client_config.py', 'tests/test_official_client_host.py', 'tests/test_official_client_install.py', 'tests/test_official_client_migration.py', 'tests/test_official_client_update.py', 'tests/test_inference_adapter.py', 'tests/test_inference_transport.py', 'tests/test_legacy_history.py', 'tests/test_reasoning_origin.py', 'tests/test_chat_completions_compat.py',

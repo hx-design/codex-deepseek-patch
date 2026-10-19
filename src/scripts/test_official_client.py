@@ -50,6 +50,19 @@ def mcp_runtime(executable=None):
 
 
 class Fixture(ToolStub):
+    def recovery_text(self, body):
+        text = json.dumps(body, ensure_ascii=False)
+        if str(body.get('instructions', '')).startswith('Create a factual handoff') or (
+                body.get('messages') and 'Create a factual handoff' in str(body['messages'][0])):
+            patch.require('INTEGER_TOOL_OK' in text and 'CONTEXT_OK' in text,
+                          'Readable native tool/history evidence missing from recovery')
+            patch.require('opaque-native-quota-fixture' not in text, 'Opaque history reached the selected provider')
+            self.server.recovery_summaries.append(body['model'])
+            return 'RECOVERY_FACTS INTEGER_TOOL_OK CONTEXT_OK'
+        if getattr(self.server, 'recovering', False):
+            patch.require('RECOVERY_FACTS' in text, 'Recovered summary missing from the continued native turn')
+        return None
+
     def do_CONNECT(self):
         self.server.blocked_external += 1
         self.send_error(503, 'External connections disabled in this probe')
@@ -78,6 +91,7 @@ class Fixture(ToolStub):
 
     def record(self, body, raw, transport):
         self.server.wire.append({'model': body.get('model'), 'transport': transport, 'path': self.path,
+            'history_summary': str(body.get('instructions', '')).startswith('Create a factual handoff'),
             'request_bytes': len(raw), 'effort': body.get('reasoning', {}).get('effort'),
             'generate': body.get('generate'), 'previous_response_id': bool(body.get('previous_response_id')),
             'tool_count': len(body.get('tools', [])), 'input_types': [v.get('type', 'message')
@@ -126,10 +140,11 @@ class Fixture(ToolStub):
         tools = [v['function'] for v in body.get('tools', [])]
         messages = body['messages']
         self.record({'model':body['model'], 'reasoning':{'effort':body.get('reasoning_effort')},
-                     'tools':tools, 'input':messages}, raw, 'http')
+                     'tools':tools, 'input':messages,
+                     'instructions':messages[0].get('content','') if messages else ''}, raw, 'http')
         phase, error = self.server.phase, None
         call = None
-        text = 'CONTEXT_OK'
+        text = self.recovery_text(body) or 'CONTEXT_OK'
         if self.server.tool_mode and phase == 'search':
             if len(raw) > 120000 or not any(v['name'] == SEARCH_NAME for v in tools):
                 error = 'Chat route eager catalog or missing native discovery'
@@ -192,6 +207,7 @@ class Fixture(ToolStub):
         self.record(body, raw, 'http')
         if self.reject_exhausted_gpt(body):
             return
+        recovery = self.recovery_text(body)
         compact = not body.get('tools')
         original_reader = self.rfile
         try:
@@ -215,7 +231,7 @@ class Fixture(ToolStub):
                 item = self.message('CUSTOM_TOOL_OK')
                 self.server.phase = 'message'
             else:
-                item = self.message('A concise synthetic summary. Continue the pending test.' if compact else 'CONTEXT_OK')
+                item = self.message(recovery or ('A concise synthetic summary. Continue the pending test.' if compact else 'CONTEXT_OK'))
             if compact:
                 self.server.compactions += 1
             _, events = self.simple_events(body, item=item)
@@ -338,13 +354,16 @@ def run(app, reportdir, edition):
             upstream.phase, upstream.answer_usage, upstream.next_usage = 'message', 3000, 10
             upstream.tool_mode, upstream.compactions, upstream.upgrades = False, 0, 0
             upstream.blocked_external, upstream.auxiliary_requests = 0, 0
+            upstream.recovery_summaries = []
             endpoint = 'http://127.0.0.1:' + str(upstream.server_port)
             profile = {'format': 1, 'edition': edition, 'identity': 'synthetic-official-client-' + edition,
                 'token': 'synthetic-local-token-' + 'x' * 32, 'port': 0, 'official_models': [GPT],
+                'history_home':str(base/'home'), 'legacy_history_dir':str(base/'cache'), 'summary_model':GPT,
                 'gpt': {'chatgpt_base_url': endpoint + '/official', 'api_base_url': endpoint + '/official'},
                 'routes': {slug: {'base_url': endpoint + '/route', 'credential': {'kind': 'file', 'path': str(base / 'route.key')},
                     'tool_adapter': True, 'flatten_namespaces': slug == 'local-probe',
-                    'normalize_instructions': slug == 'local-probe', 'chat_only': False} for slug, _ in models if slug != GPT}}
+                    'normalize_instructions': slug == 'local-probe', 'chat_only': False,
+                    'context_window':window} for slug, window in models if slug != GPT}}
             if 'local-probe' in profile['routes']:
                 profile['routes']['local-probe'].update(credential={'kind':'none'},
                     wire_api='chat_completions', supports_reasoning_effort=True)
@@ -392,18 +411,21 @@ def run(app, reportdir, edition):
                 tid = initial['thread']['id']
                 turns = []
 
-                def turn(model, label, effort='high'):
+                def turn(model, label, effort='high', resumed_window=False):
                     before_wire = len(upstream.wire)
                     result = rpc.request('turn/start', {'threadId': tid, 'model': model, 'effort': effort,
                         'input': [{'type': 'text', 'text': 'Run the synthetic local test and reply briefly.'}]})
                     events = finish(rpc, tid, result)
                     windows = _windows(events)
                     expected = dict(models)[model]
-                    patch.require(windows == [expected] and expected > 128000, 'Native catalog window changed: ' + model + ' ' + str(windows))
+                    last_window = next((v['params']['tokenUsage']['modelContextWindow'] for v in reversed(events)
+                                        if v.get('method')=='thread/tokenUsage/updated'), None)
+                    patch.require((windows == [expected] or resumed_window and last_window == expected) and expected > 128000,
+                                  'Native catalog window changed: ' + model + ' ' + str(windows))
                     turns.append({'model': model, 'label': label, 'context_windows': windows,
                         'effort': effort,
                         'compaction': any(v.get('params', {}).get('item', {}).get('type') == 'contextCompaction' for v in events)})
-                    requests = [v for v in upstream.wire[before_wire:] if v['generate'] is not False]
+                    requests = [v for v in upstream.wire[before_wire:] if v['generate'] is not False and not v['history_summary']]
                     patch.require(requests and all(v['effort'] == effort for v in requests),
                                   'Selected reasoning effort did not reach inference: ' + model + ' ' + effort)
                     return events
@@ -505,6 +527,46 @@ def run(app, reportdir, edition):
                 patch.require(not any(v['model'] != GPT and v['generate'] is False for v in upstream.wire),
                               'Registered-model prewarm reached the inference endpoint')
                 report['checks']['native_registered_ws_local_prewarm'] = 'passed'
+                # Seed an old encrypted-compaction event ONLY in this disposable
+                # native rollout. The genuine CLI must resume and use local
+                # visible history while the simulated official quota is empty.
+                path = Path(thread['path'])
+                patch.require(path.resolve().is_relative_to((base/'home').resolve()) and path.suffix == '.jsonl',
+                              'Native probe needs a disposable readable rollout')
+                stop_owned()
+                opaque = {'type':'compaction', 'id':'cmp_quota_fixture',
+                          'encrypted_content':'opaque-native-quota-fixture'}
+                prior_records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+                next_ordinal = max((v.get('ordinal', -1) for v in prior_records), default=-1) + 1
+                with path.open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps({'timestamp':'2026-01-01T00:00:00Z','ordinal':next_ordinal,'type':'compacted',
+                        'payload':{'message':'','replacement_history':[opaque]}})+'\n')
+                prefix = path.read_bytes()
+                process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                    text=True, encoding='utf-8', errors='replace', env=env, cwd=work, **launch_options())
+                rpc = Rpc(process)
+                rpc.request('initialize', {'clientInfo':{'name':'native_history_recovery_probe','version':'1'},
+                                          'capabilities':{'experimentalApi':True}})
+                resumed = rpc.request('thread/resume', {'threadId':tid,'model':DS,'modelProvider':PROVIDER})
+                patch.require(resumed['thread']['id']==tid, 'History recovery changed the chat identity')
+                rpc.pending.clear()  # Discard the old window snapshot emitted by resume.
+                upstream.official_exhausted, upstream.recovering = True, True
+                before = len(upstream.wire)
+                for model, _ in models:
+                    if model != GPT:
+                        turn(model, 'recover old encrypted history with no GPT quota', resumed_window=model==DS)
+                turn(DS, 'reuse recovered history cache')
+                upstream.tool_mode, upstream.phase = True, 'integer_call'
+                after_recovery = turn(target, 'native tool execution after old history recovery')
+                require_tool_success(after_recovery, 'commandExecution', 'INTEGER_TOOL_OK')
+                report['checks']['native_tools_after_old_history_recovery'] = 'passed'
+                patch.require(upstream.recovery_summaries == [m for m,_ in models if m!=GPT],
+                              'Recovery did not summarize once per selected model/cache')
+                patch.require(all(v['model']!=GPT for v in upstream.wire[before:]),
+                              'Local history recovery contacted the official GPT service')
+                patch.require(path.read_bytes().startswith(prefix), 'History recovery rewrote the existing native rollout')
+                report['checks']['old_encrypted_history_without_gpt_quota'] = 'passed'
+                report['checks']['selected_model_summary_cache_and_original_prefix'] = 'passed'
                 report.update(status='passed', turns=turns, retained_turns=len(thread['turns']),
                     upstream_websocket_connections=upstream.upgrades, compact_requests=upstream.compactions,
                     blocked_external_connections=upstream.blocked_external, wire=upstream.wire,

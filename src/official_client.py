@@ -25,7 +25,7 @@ from official_client_config import adapt_catalog, migrate_legacy_routes, prepare
 
 ARCHITECTURE = "official-client-v1"
 ADAPTER_FILES = ("inference_adapter.py", "inference_transport.py", "official_client_host.py",
-                 "responses_compat.py", "chat_completions_compat.py", "proxy_support.py", "windows_support.py", "legacy_history.py", "reasoning_origin.py")
+                 "responses_compat.py", "chat_completions_compat.py", "proxy_support.py", "windows_support.py", "legacy_history.py", "reasoning_origin.py", "local_history.py")
 
 
 def endpoint(port, token):
@@ -81,6 +81,7 @@ def adapter_routes(manifest, routes, platform=None):
             if connection.get("key_file"):
                 value["credential"] = {"kind":"file", "path":connection["key_file"]}
             result[model] = value
+        result[model]['context_window'] = route.get('context_window')
     return result
 
 
@@ -138,6 +139,12 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
         effective["deepseek_enabled"] = model_snapshot.get("deepseek_enabled", effective.get("deepseek_enabled", True))
     mapped = adapter_routes(effective, routes)
     catalog = adapt_catalog(catalog, routes, preferences, apply_root_preferences=previous is None and not model_snapshot)
+    for model in catalog['models']:
+        if model['slug'] in mapped:
+            levels = [v['effort'] for v in model.get('supported_reasoning_levels', [])]
+            if levels:
+                mapped[model['slug']]['summary_reasoning_effort'] = next(
+                    (level for level in ('none','minimal','low','medium','high','max') if level in levels), levels[0])
     old_profile_path = baseline / "adapter-profile.json" if baseline else None
     old_profile = json.loads(old_profile_path.read_text(encoding="utf-8")) if previous and old_profile_path and old_profile_path.is_file() else None
     token = old_profile["token"] if old_profile else secrets.token_urlsafe(32)
@@ -152,10 +159,14 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                       "api_base_url":"https://api.openai.com/v1"}, "routes":mapped,
                "official_models":[row['slug'] for row in catalog['models'] if row['slug'] not in routes],
                "legacy_history_dir":str(codex_home / "model-adapter-history"),
+               "history_home":str(codex_home),
                "legacy_origins_file":str(codex_home / "model-adapter-legacy-origins.json"),
                "summary_model":p.catalog_template(catalog)["slug"]}
     if old_profile:
         profile["gpt"] = old_profile["gpt"]
+        # This name identifies pre-upgrade cache entries only; it never selects
+        # a network model now. Preserve it when the official catalog changes.
+        profile['summary_model'] = old_profile.get('summary_model', profile['summary_model'])
         if "network_proxy" in old_profile:
             profile["network_proxy"] = old_profile["network_proxy"]
     prepared, ownership = prepare_config(before, output / "desktop-models.json", endpoint(port, token),
