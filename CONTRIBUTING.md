@@ -36,6 +36,7 @@ Only owned configuration changes are allowed. Rebase against the latest configur
 ## Validation
 
 ```sh
+cd src
 python3 -m unittest discover -s tests -v
 node tests/route.test.cjs  # retained legacy regression
 python3 patch.py build --app "/path/to/official/app" --connections "/path/to/connections.json" --output "/new/build/directory" --verify
@@ -44,3 +45,9 @@ python3 patch.py build --app "/path/to/official/app" --connections "/path/to/con
 On Windows use `python` and Windows paths. Validate both DS/extension on Mac/Windows. Record unit fixtures, original CLI synthetic integration, real model calls, service tests and actual installation separately. Models without credentials receive synthetic protocol coverage, not a real-model success label.
 
 Live provider tests require user authorization and use minimal synthetic chats. Never publish app bundles, generated vendor catalogs, tokens, raw user history or private execution evidence. Real tests should use ephemeral authentication and avoid login refresh. Native verification does not require GUI boot or local signing tests; retain those only for legacy recovery changes.
+
+## Source layout and portable releases
+
+Development code lives in `src/`. Keep the root command wrappers small; all internal imports remain within the source tree. Tests and build fixtures are source materials, not additional running services.
+
+After committing and testing a source revision, run `python3 src/scripts/release_manifest.py --commit FULL_SOURCE_SHA --sequence NEXT_SEQUENCE --distribution`. This uses an isolated Git index to create a portable source commit at the paths required by older installed updaters and writes the root update feed. The feed records both source and distribution commits. Test the portable commit too; publish its release tag and the edition branch atomically. Never point a feed at a local-only commit. DS and extension retain independent branches, versions and sequences.

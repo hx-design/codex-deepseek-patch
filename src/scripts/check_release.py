@@ -3,7 +3,8 @@ from pathlib import Path
 import re
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[1]
+SOURCE = Path(__file__).resolve().parents[1]
+ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 ALLOWED = {
     'tests/test_inference_chat.py', 'official_client_shortcut.py', 'tests/test_official_client_shortcut.py', 'update_progress.py', 'update_progress_macos.js', 'update_progress.ps1', 'tests/test_update_progress.py', 'tests/test_update_progress_macos.py', 'tests/test_update_progress_windows.py',
     'official_client.py', 'official_client_config.py', 'official_client_host.py', 'official_client_install.py', 'official_client_migration.py', 'official_client_update.py', 'inference_adapter.py', 'inference_transport.py', 'legacy_history.py', 'reasoning_origin.py', 'chat_completions_compat.py', 'scripts/test_official_client.py', 'scripts/test_official_connection.py', 'tests/test_official_client.py', 'tests/test_official_client_config.py', 'tests/test_official_client_host.py', 'tests/test_official_client_install.py', 'tests/test_official_client_migration.py', 'tests/test_official_client_update.py', 'tests/test_inference_adapter.py', 'tests/test_inference_transport.py', 'tests/test_legacy_history.py', 'tests/test_reasoning_origin.py', 'tests/test_chat_completions_compat.py',
@@ -27,6 +28,8 @@ ALLOWED = {
 }
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]
+if SOURCE != ROOT:
+    ALLOWED = {("src/" + name if name.startswith(("scripts/", "tests/")) or "/" not in name and (Path(name).suffix in (".py", ".js", ".ps1") or name == "edition.json") else name) for name in ALLOWED} | {"patch.py", "monitor.py"}
 if (set(files) | {"update.json"}) != ALLOWED:
     raise SystemExit("Release file allowlist mismatch: " + repr(set(files) ^ ALLOWED))
 patterns = [re.compile("/" + "Users" + r"/[^\s/]+/"), re.compile(r"gh[pousr]_[A-Za-z0-9]{25,}"),

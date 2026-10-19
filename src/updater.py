@@ -330,7 +330,8 @@ class UpdateBackend:
                     self.progress=Progress(self.directory)
                     self.progress.begin(self.edition,release['version'],release['commit'])
                     self.progress.publish('available',present=True)
-                self.package=source_package(release,self.directory,progress=self.progress)
+                self.package=source_package(release,self.directory,
+                    progress=self.progress if release['commit']!=installed_release.get('commit') else None)
                 self.cache['release']=release
             except Exception as error:
                 from monitor import safe_error
@@ -379,10 +380,22 @@ class UpdateBackend:
         self.prepare()
         app=self.base.snapshot()
         self.settings['app']=str(self.base.app)
+        from official_client_update import read_manifest
+        record=read_manifest(self.base.baseline)
+        self.quiet_model_sync=self.model_only_change(app,self.desired_runtime,record)
         model_digest=self.model_snapshot['digest'] if self.model_snapshot else self.installed_metadata().get('model_digest','legacy')
         return {**app,'app_fingerprint':app['fingerprint'],'runtime_digest':self.desired_runtime,
                 'model_digest':model_digest,'fingerprint':self.combined(app['fingerprint'],self.desired_runtime,model_digest),
                 'warnings':self.warnings}
+
+    @staticmethod
+    def model_only_change(app, runtime, installed):
+        metadata=installed.get('update',{})
+        asars=[digest for name,digest in app.get('hashes',{}).items() if name.endswith('/app.asar')]
+        return (installed.get('architecture')=='official-client-v1' and installed.get('status')=='installed'
+                and runtime==metadata.get('runtime_digest') and asars==[installed.get('original_asar')]
+                and app.get('version')==installed.get('app_version') and app.get('build')==installed.get('app_build')
+                and (not metadata.get('app_fingerprint') or metadata['app_fingerprint']==app.get('fingerprint')))
 
     def installed_metadata(self, baseline=None):
         baseline=baseline or self.base.baseline
@@ -414,7 +427,8 @@ class UpdateBackend:
         p.require(self.snapshot()['fingerprint']==snapshot['fingerprint'],'Update changed before building')
         source,target=self.source()
         output.parent.mkdir(parents=True,exist_ok=True)
-        if not getattr(self,'progress',None):
+        quiet=getattr(self,'quiet_model_sync',False) is True
+        if not quiet and not getattr(self,'progress',None):
             from update_progress import for_settings
             self.progress=for_settings(self.settings,root=self.package,force=True)
         job={'app':str(source),'install_target':str(target) if target else None,'baseline':str(self.base.baseline),
@@ -423,13 +437,15 @@ class UpdateBackend:
              'update':{'edition':self.edition,'runtime_digest':self.desired_runtime,
                        'architecture':getattr(self,'desired_architecture',getattr(p,'ARCHITECTURE','legacy')),
                        'model_digest':snapshot['model_digest'],'package':str(self.package),
+                       'app_fingerprint':snapshot.get('app_fingerprint'), 'quiet_model_sync':quiet,
                        'monitor_state_dir':str(self.directory),
                        'release':self.cache.get('release'),
-                       **(self.progress.metadata() if self.progress else {})}}
+                       **(self.progress.metadata() if self.progress and not quiet else {})}}
         worker(self.package,'build',job,output.parent/(output.name+'-job'))
         return {'directory':str(output)}
 
     def progress_phase(self,phase):
+        if getattr(self,'quiet_model_sync',False) is True:return
         try:
             if not getattr(self,'progress',None):
                 from update_progress import Progress,for_settings
@@ -440,6 +456,7 @@ class UpdateBackend:
         except Exception:pass  # Optional view state cannot block runtime activation.
 
     def request_close(self,build):
+        if getattr(self,'quiet_model_sync',False) is True:return
         from update_progress import from_manifest,validated_close
         record=json.loads((Path(build['directory'])/'manifest.json').read_text(encoding='utf-8'))
         progress=from_manifest(record)

@@ -216,6 +216,8 @@ def for_settings(settings, root=None, version=None, force=False):
 @optional_view
 def from_manifest(manifest):
     update = manifest.get('update', {})
+    if update.get('quiet_model_sync') is True:
+        return None
     directory, identity = update.get('progress_state_dir'), update.get('progress_id')
     if not directory or not identity:
         return None
@@ -374,6 +376,8 @@ def action(directory, identity, command, phase=None):
 @optional_view
 def worker_progress(action_name, job, job_path):
     """New candidate workers also bridge first upgrades from old monitors."""
+    if job.get('update',{}).get('quiet_model_sync') is True:
+        return None
     if action_name == 'install':
         return from_manifest(load_json(Path(job['directory']) / 'manifest.json', {}))
     settings = job.get('settings')

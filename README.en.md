@@ -2,7 +2,7 @@
 
 Add DeepSeek Flash to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-DS **0.4.3**, update branch `main`.
+DS **0.4.6**, update branch `main`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
@@ -65,3 +65,7 @@ Code/model checks are independently configurable and edition-pinned. New Grok, G
 macOS privacy/keychain databases are not reset. Returning from a locally signed legacy app to the official identity may require one system permission confirmation; subsequent adapter updates do not re-sign the app.
 
 Unofficial project. Source only: never publish app bundles, extracted catalogs, personal configuration, credentials or raw user logs. See the validation document for real-model and synthetic coverage separately.
+
+## Repository layout
+
+The root `patch.py` and `monitor.py` remain the public command entries. Implementation, internal tests and maintenance scripts live under [`src/`](src/); design and validation notes live in [`docs/`](docs/). Portable release packages preserve historical paths for existing automatic updaters. Source organization adds no runtime service. Model-only synchronization stages quietly and waits for normal app exit; new code releases retain the update window.

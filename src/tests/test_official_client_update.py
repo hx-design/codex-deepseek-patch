@@ -295,7 +295,7 @@ class DiscoveryOrderingTests(unittest.TestCase):
         obj=object.__new__(updater.UpdateBackend)
         obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
-        obj.base=Mock(app=Path('/Store/removed-old'))
+        obj.base=Mock(app=Path('/Store/removed-old'),baseline=None)
         def discover():
             obj.base.app=Path('/Store/current')
             return {'fingerprint':'current-app'}

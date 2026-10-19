@@ -19,8 +19,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Locate source tree
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          with open(os.environ['GITHUB_ENV'], 'a') as handle:
+              handle.write('ADAPTER_SOURCE_ROOT=' + ('src' if Path('src/edition.json').is_file() else '.') + '\n')
       - run: python -m unittest discover -s tests -v
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
       - name: Windows background updater preflight
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -29,8 +38,11 @@ jobs:
           Get-Content 'windowless-test.log'
           if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
       - run: node tests/route.test.cjs
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
       - run: python -m compileall -q .
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
       - run: python scripts/check_release.py
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
   macos-signing:
     runs-on: macos-latest
     steps:
@@ -41,6 +53,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Locate source tree
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          with open(os.environ['GITHUB_ENV'], 'a') as handle:
+              handle.write('ADAPTER_SOURCE_ROOT=' + ('src' if Path('src/edition.json').is_file() else '.') + '\n')
       - run: python -m unittest discover -s tests -v
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
       - run: python scripts/test_macos_signing.py
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
       - run: python scripts/check_release.py
+        working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
