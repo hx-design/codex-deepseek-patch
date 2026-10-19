@@ -12,7 +12,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import patch
 from scripts.test_context import ResponsesStub,Rpc
-from scripts.test_offline import isolated_environment,launch_options,stop_probe
+from scripts.test_offline import isolated_environment,launch_options,stop_probe, probe_command
 
 class Stub(ResponsesStub):
     def do_POST(self):
@@ -59,7 +59,7 @@ def main(directory):
             (base/'home/config.toml').write_text(config,encoding='utf-8')
             patch.save_json(base/'home/auth.json',{'OPENAI_API_KEY':'placeholder'})
             with (directory/'switching-probe.log').open('w',encoding='utf-8') as log:
-                process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
+                process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
                     text=True,encoding='utf-8',env=env,cwd=work,**launch_options())
                 driver=subprocess.Popen(['node',str(patch.ROOT/'scripts/route_driver.cjs'),str(directory/'compatibility.json')],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,encoding='utf-8',env=env,**launch_options())

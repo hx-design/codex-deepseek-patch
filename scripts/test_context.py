@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import patch
-from scripts.test_offline import isolated_environment, launch_options, stop_probe
+from scripts.test_offline import isolated_environment, launch_options, stop_probe, probe_command
 
 
 class ResponsesStub(http.server.BaseHTTPRequestHandler):
@@ -140,7 +140,7 @@ def main(directory):
             (base/'home/config.toml').write_text(config,encoding="utf-8")
             work=base/'work';work.mkdir()
             with (directory/'context-probe.log').open('w',encoding='utf-8') as log:
-                process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,
+                process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE,stderr=log,text=True,encoding="utf-8",errors="replace",env=env,cwd=work,**launch_options())
                 try:
                     rpc=Rpc(process)

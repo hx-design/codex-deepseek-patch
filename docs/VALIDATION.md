@@ -1,3 +1,13 @@
+# v0.4.6-proxy.1：隔离验证的插件下载
+
+2026-10-19，Windows 安装检查期间，原生 CLI 的后台插件克隆可能占用临时目录，使已通过的模型检查在清理时失败。
+
+- 目录、思考、上下文、切换、工具、连接及启动的隔离检查关闭测试环境中的插件与远端插件自动下载；用户实际 Codex 的插件设置保持原样。
+- 新增 CLI 参数和隔离桌面配置回归；全套 208 项测试覆盖图片工具及既有功能。
+- Grok 图片接口的权限或额度提示仅描述本次具体型号/接口的返回，不能据此推断 Grok Build 内所有生图入口的可用性。
+
+---
+
 # v0.4.5-proxy.1：Windows 中文生图输入
 
 2026-10-19，补充中文系统上的真实管道编码检查。旧图片工具会按 Windows 的 GBK 默认编码解读 Codex 发来的 UTF-8 请求；中文提示词或中文路径可能使工具退出。
@@ -15,7 +25,7 @@
 - 205 项 Python 回归（Mac 204 通过、1 项 Windows 专属跳过），包括 27 项图片接口、脱敏、输出保存和配置保护检查；Node 路由检查通过。
 - 真实 Codex CLI 离线验证三路按需发现、MCP 调用、图片保存和内联图片回传，使用合成接口，无外部生成。
 - Windows 实际账户验证：Gemini 聊天调用 Gemini 图片模型、Grok 4.7 调用 GPT Image 均完成一次图片生成并返回文件。
-- Grok 4.7 能发起 Imagine 请求；测试账户的上游返回 `personal-team-blocked:spending-limit`。错误码被保留为可读提示；补丁不自动重试生成。
+- Grok 4.7 能发起 Imagine 请求；测试 `grok-imagine-image` 型号时上游返回 `personal-team-blocked:spending-limit`。错误码被保留为可读提示；补丁不自动重试生成。
 - CLI 配置启用、重复启用、更新与禁用有完整备份，保护已有其他 MCP、默认模型、多行 TOML 和 Windows 换行；正式配置沿用用户审批规则。
 - 图片请求分别使用 GPT/Grok Images 和 Gemini generateContent，模型可用性按现成账户查询，返回 PNG/JPEG/WebP 新文件和图片内容。
 - 功能随扩展版独立更新，DS 直连通道保持独立。

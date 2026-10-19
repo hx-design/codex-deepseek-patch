@@ -42,7 +42,7 @@ def isolated_environment(base):
 def offline_config(catalog, proxy_models=(), routes=None):
     result = ("model = " + json.dumps(patch.MODEL) + "\nmodel_provider = " + json.dumps(patch.PROVIDER) +
             "\nmodel_catalog_json = " + json.dumps(str(Path(catalog).resolve())) + "\n" +
-            "web_search = \"disabled\"\n[features]\nmemories = false\n" +
+            "web_search = \"disabled\"\n[features]\nmemories = false\nplugins = false\nremote_plugin = false\n" +
             "\n[model_providers." + patch.PROVIDER + "]\nname = \"DeepSeek offline routing probe\"\n" +
             "base_url = " + json.dumps(LOOPBACK_BASE_URL) + "\nwire_api = \"responses\"\n" +
             "env_key = " + json.dumps(DUMMY_KEY_VARIABLE) + "\nrequires_openai_auth = false\n")
@@ -55,6 +55,12 @@ def offline_config(catalog, proxy_models=(), routes=None):
         for provider in {r['provider'] for r in routes.values()}-{'deepseek-desktop','easycli-desktop'}:
             result+='\n[model_providers.'+provider+']\nname="Local offline probe"\nbase_url='+json.dumps(LOOPBACK_BASE_URL)+'\nwire_api="responses"\nenv_key='+json.dumps(DUMMY_KEY_VARIABLE)+'\nrequires_openai_auth=false\n'
     return result
+
+
+def probe_command(app):
+    """Keep installation checks independent of background plugin downloads."""
+    return [str(patch.cli_path(app)), "--disable", "plugins", "--disable", "remote_plugin",
+            "app-server", "--listen", "stdio://"]
 
 
 def stop_probe(process, timeout=5):
@@ -222,7 +228,7 @@ def main(directory):
             proxy_models = manifest.get("proxy", {}).get("models", [])
             (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json", proxy_models, manifest.get("model_routes")), encoding="utf-8")
             with (directory / "offline-stderr.log").open("w", encoding="utf-8") as log:
-                process = subprocess.Popen([str(patch.cli_path(app)), "app-server", "--listen", "stdio://"],
+                process = subprocess.Popen(probe_command(app),
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                                            text=True, encoding="utf-8", errors="replace", env=environment,
                                            cwd=work, **launch_options())

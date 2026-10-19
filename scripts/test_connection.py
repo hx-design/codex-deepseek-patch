@@ -11,7 +11,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import patch
 from scripts.test_context import Rpc
-from scripts.test_offline import isolated_environment,launch_options,stop_probe
+from scripts.test_offline import isolated_environment,launch_options,stop_probe, probe_command
 
 
 def main(directory,model='deepseek-flash'):
@@ -44,7 +44,7 @@ def main(directory,model='deepseek-flash'):
             (work/'probe.txt').write_text('CODEX_TOOL_OK\n',encoding='utf-8')
             (base/'home/config.toml').write_text('model_catalog_json='+json.dumps(str(directory/'desktop-models.json'))+'\n'+text,encoding='utf-8')
             with (directory/('smoke-'+suffix+'.log')).open('w',encoding='utf-8') as log:
-                process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
+                process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
                     text=True,encoding='utf-8',env=env,cwd=work,**launch_options())
                 try:
                     rpc=Rpc(process);rpc.request('initialize',{'clientInfo':{'name':'connection_probe','version':'2'},'capabilities':{'experimentalApi':True}})

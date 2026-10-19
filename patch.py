@@ -21,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.4.5-proxy.1"
+VERSION = "0.4.6-proxy.1"
 EDITION = "proxy"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"

@@ -16,7 +16,7 @@ import patch
 import local_bridge
 from responses_compat import SEARCH_NAME, ToolAdapter
 from scripts.test_context import Rpc
-from scripts.test_offline import isolated_environment, launch_options, stop_probe
+from scripts.test_offline import isolated_environment, launch_options, stop_probe, probe_command
 
 
 def mcp_fixture():
@@ -134,7 +134,7 @@ def main(directory):
                       'base_url="http://127.0.0.1:'+str(bridge.server_port)+'/v1"\nenv_key="PROBE_KEY"\nrequest_max_retries=0\nstream_max_retries=0\n')
             (base/'home/config.toml').write_text(config, encoding='utf-8')
             with (directory/'tool-loading-probe.log').open('w', encoding='utf-8') as log:
-                process = subprocess.Popen([str(patch.cli_path(app)), 'app-server', '--listen', 'stdio://'],
+                process = subprocess.Popen(probe_command(app),
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8', env=env, cwd=base, **launch_options())
                 try:
                     rpc = Rpc(process); rpc.request('initialize', {'clientInfo': {'name': 'tool_loading_probe', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
