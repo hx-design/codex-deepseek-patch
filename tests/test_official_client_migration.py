@@ -51,6 +51,35 @@ class FakeNative:
 
 
 class MigrationTest(unittest.TestCase):
+    def test_unset_model_and_effort_resolve_natively_without_blocking_migration_or_recovery(self):
+        import json
+        native=FakeNative()
+        native.threads['2'].update(model=None,reasoningEffort=None)
+        before=copy.deepcopy(native.threads)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'migration.json'
+            migrate(native,{'openai','deepseek-desktop'},path)
+            snapshot=next(row for row in json.loads(path.read_text())['threads'] if row['id']=='2')
+            self.assertIsNone(snapshot['metadata']['model'])
+            self.assertIsNone(snapshot['metadata']['reasoningEffort'])
+            self.assertEqual(native.threads['2']['model'],'gpt-6.1-sol')
+            rollback(native,path)
+            self.assertEqual(native.threads['2']['modelProvider'],before['2']['modelProvider'])
+            self.assertEqual(native.archived,{'2'})
+            from official_client_migration import metadata_matches
+            for tid in before:self.assertTrue(metadata_matches(before[tid],native.threads[tid]))
+
+    def test_only_unset_choices_may_resolve_and_all_other_metadata_remains_strict(self):
+        from official_client_migration import metadata_matches
+        before={'id':'chat','model':None,'reasoningEffort':None,'cwd':'/original','recencyAt':3}
+        actual={**before,'model':'gpt-current','reasoningEffort':'high'}
+        self.assertTrue(metadata_matches(before,actual,resolved_defaults={'model':'gpt-current','reasoningEffort':'high'}))
+        self.assertFalse(metadata_matches(before,actual,resolved_defaults={'model':'another','reasoningEffort':'high'}))
+        for field,value in (('cwd','/other'),('recencyAt',4),('reasoningEffort','not-valid')):
+            self.assertFalse(metadata_matches(before,{**actual,field:value}))
+        self.assertFalse(metadata_matches({**before,'model':'chosen'},actual))
+        self.assertFalse(metadata_matches({**before,'reasoningEffort':'low'},actual))
+
     def test_preserves_history_metadata_archive_and_unmanaged_provider(self):
         native = FakeNative()
         before = copy.deepcopy(native.threads)
