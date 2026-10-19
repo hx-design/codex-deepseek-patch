@@ -171,6 +171,15 @@ class WindowsProgressNativeTests(unittest.TestCase):
                 self.assertEqual(snapshot['launch_enabled'],phase == 'completed')
                 self.assertEqual(snapshot['detail'],'后台继续更新，窗口保持隐藏。')
 
+    def test_terminal_phases_stop_progress_and_keep_close_available(self):
+        for phase, value in (('failed',0),('completed',100)):
+            with self.subTest(phase=phase):
+                snapshot=self.run_view(phase)
+                self.assertEqual(snapshot['progress_style'],'Continuous')
+                self.assertEqual(snapshot['progress_value'],value)
+                self.assertFalse(snapshot['start_enabled'])
+                self.assertFalse(self.record.exists())
+
     def test_real_button_events_send_only_fixed_quoted_controller_argv(self):
         for phase, action in (('available','start'),('completed','launch')):
             with self.subTest(action=action):

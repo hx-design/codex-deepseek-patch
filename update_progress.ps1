@@ -146,6 +146,14 @@ function Refresh-State {
         $message.Text = Short-Text $next.detail 500
         $start.Enabled = $next.can_start -eq $true
         $launch.Enabled = $next.can_launch -eq $true
+        if ($next.phase -in @('completed','failed')) {
+            $progress.MarqueeAnimationSpeed = 0
+            $progress.Style = 'Continuous'
+            $progress.Value = if ($next.phase -eq 'completed') { 100 } else { 0 }
+            $percent.Text = ''
+            return
+        }
+        $progress.MarqueeAnimationSpeed = 28
         if ($null -ne $next.completed -and $null -ne $next.total -and
             ($next.completed -is [int] -or $next.completed -is [long]) -and
             ($next.total -is [int] -or $next.total -is [long])) {

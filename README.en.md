@@ -2,7 +2,7 @@
 
 Add DeepSeek Flash to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-DS **0.4.0**, update branch `main`.
+DS **0.4.1**, update branch `main`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 

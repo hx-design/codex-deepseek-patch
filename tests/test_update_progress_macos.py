@@ -22,7 +22,7 @@ class NativePanelTests(unittest.TestCase):
                      str(directory),sys.executable,str(controller),'--self-test']
             if flag:command.append(flag)
             result=subprocess.run(command,check=True,capture_output=True,text=True,timeout=20,**background_options())
-            return json.loads(result.stdout), json.loads(record.read_text()) if record.exists() else None
+            return json.loads(result.stdout) if result.stdout.strip() else {}, json.loads(record.read_text()) if record.exists() else None
 
     def test_start_button_uses_fixed_controller_arguments_without_showing_panel(self):
         result, action=self.render({'phase':'available','can_start':True,'completed':2,'total':5},'--self-test-action')
@@ -41,6 +41,19 @@ class NativePanelTests(unittest.TestCase):
         self.assertEqual(result['primary'],'启动 Codex');self.assertIsNone(action)
         result, action=self.render(state,'--self-test-action')
         self.assertEqual(result['action'],'launch');self.assertEqual(action[3],'launch')
+
+    def test_native_application_event_loop_dispatches_close_without_showing_panel(self):
+        _, action=self.render({'phase':'failed','can_start':False},'--self-test-loop')
+        self.assertIsNotNone(action)
+        self.assertEqual(action[3],'dismiss')
+        self.assertEqual(action[-1],'failed')
+
+    def test_failed_and_completed_progress_stop_animating(self):
+        for phase in ('failed', 'completed'):
+            with self.subTest(phase=phase):
+                result, action=self.render({'phase':phase,'can_start':False,'can_launch':phase=='completed'})
+                self.assertFalse(result['indeterminate'])
+                self.assertIsNone(action)
 
     def test_closing_window_sends_dismiss_not_cancel_or_launch(self):
         result, action=self.render({'phase':'verifying','can_start':False},'--self-test-dismiss')
