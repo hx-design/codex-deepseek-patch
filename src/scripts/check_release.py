@@ -6,6 +6,7 @@ import subprocess
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 ALLOWED = {
+    'management.py', 'settings_macos.js', 'settings_windows.ps1', 'tests/test_management.py',
     'local_history.py', 'tests/test_local_history.py',
     'exit_watch.py', 'tests/test_exit_watch.py',
     'tests/test_inference_chat.py', 'official_client_shortcut.py', 'tests/test_official_client_shortcut.py', 'update_progress.py', 'update_progress_macos.js', 'update_progress.ps1', 'tests/test_update_progress.py', 'tests/test_update_progress_macos.py', 'tests/test_update_progress_windows.py',

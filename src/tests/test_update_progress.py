@@ -1,6 +1,8 @@
 from windows_support import background_options
 """Headless lifecycle tests: no desktop view, application or real upstream."""
 import json
+import base64
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -156,6 +158,19 @@ class ProgressTest(unittest.TestCase):
             self.progress.present();self.progress.publish('completed',present=True)
         self.assertEqual(self.spawn_mock.call_count,1)
 
+    def test_explicit_reopen_reuses_live_window_without_popup_loop(self):
+        self.settings()
+        with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=False):
+            self.progress.present()
+            u.action(self.root,self.identity,'dismiss','available')
+            self.progress.present(force=True)
+            self.progress.present()
+        self.assertEqual(self.spawn_mock.call_count,2)
+        with mock.patch.object(u,'_alive',return_value=True):
+            self.progress.present(force=True)
+        self.assertEqual(self.spawn_mock.call_count,2)
+        self.assertEqual(monitor.load_json(self.root/'progress.ui.json')['presented'],['available'])
+
     def test_failed_state_survives_reopen_and_same_version_not_spam(self):
         self.settings()
         with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=False):
@@ -205,8 +220,14 @@ class ProgressTest(unittest.TestCase):
             self.progress.present()
         args=self.spawn_mock.call_args.args[0]
         self.assertIn('-STA',args);self.assertIn('Hidden',args)
-        self.assertEqual(args[args.index('-StateDirectory')+1],str(self.root))
-        self.assertIn('-ControllerPath',args)
+        wrapper=base64.b64decode(args[args.index('-EncodedCommand')+1]).decode('utf-16le')
+        payload=json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)",wrapper)[1]))
+        self.assertEqual(payload['parameters']['StateDirectory'],str(self.root))
+        self.assertEqual(payload['parameters']['PythonExecutable'],'C:/Python/pythonw.exe')
+        self.assertEqual(Path(payload['parameters']['ControllerPath']).name,'update_progress.py')
+        self.assertEqual(Path(payload['script']).name,'update_progress.ps1')
+        self.assertNotIn('ExecutionPolicy',wrapper)
+        self.assertNotIn(str(self.root),wrapper)  # Paths are data, never shell source.
 
     def test_mac_normal_close_exact_paths_no_kill(self):
         with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u.subprocess,'run') as run:

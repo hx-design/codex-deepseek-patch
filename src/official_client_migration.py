@@ -240,16 +240,18 @@ def _set_provider(rpc, row, target, archived_ids):
             archived_ids.add(row["id"])
 
 
-def migrate(rpc, providers, journal_path):
+def migrate(rpc, providers, journal_path, *, target=PROVIDER):
     """Migrate the complete recorded inventory, resuming safely after interruption."""
     journal_path = Path(journal_path)
-    providers = set(providers) - {PROVIDER}
+    if target not in (PROVIDER, 'openai'):
+        raise ValueError('Unknown managed migration target')
+    providers = set(providers) - {target}
     if journal_path.exists():
         journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        if journal.get("format") != 1 or journal.get("target") != PROVIDER or set(journal["providers"]) != providers:
+        if journal.get("format") != 1 or journal.get("target") != target or set(journal["providers"]) != providers:
             raise ValueError("A different provider migration owns this journal")
     else:
-        journal = {"format":1, "target":PROVIDER, "providers":sorted(providers), "phase":"prepared",
+        journal = {"format":1, "target":target, "providers":sorted(providers), "phase":"prepared",
                    "inference_turns":0, "threads":inventory(rpc, providers)}
         atomic_json(journal_path, journal)
     if journal["phase"] == "rolled_back":
@@ -257,7 +259,7 @@ def migrate(rpc, providers, journal_path):
     if journal["phase"] == "complete":
         return {"status":"passed", "migrated_chats":len(journal["threads"]),
                 "archived_chats":sum(row["archived"] for row in journal["threads"]), "inference_turns":0}
-    archived_ids = {row['id'] for row in inventory(rpc, providers | {PROVIDER}) if row['archived']}
+    archived_ids = {row['id'] for row in inventory(rpc, providers | {target}) if row['archived']}
     for row in journal["threads"]:
         if row["phase"] == "migrated":
             continue
@@ -266,7 +268,7 @@ def migrate(rpc, providers, journal_path):
         journal["phase"] = "running"
         atomic_json(journal_path, journal)
         try:
-            _set_provider(rpc, row, PROVIDER, archived_ids)
+            _set_provider(rpc, row, target, archived_ids)
         except Exception:
             journal["phase"] = "needs_recovery"
             atomic_json(journal_path, journal)
@@ -282,9 +284,9 @@ def migrate(rpc, providers, journal_path):
 def rollback(rpc, journal_path):
     journal_path = Path(journal_path)
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    if journal.get("format") != 1 or journal.get("target") != PROVIDER:
+    if journal.get("format") != 1 or journal.get("target") not in (PROVIDER, 'openai'):
         raise ValueError("Unknown native provider migration journal")
-    archived_ids = {row['id'] for row in inventory(rpc, set(journal['providers']) | {PROVIDER}) if row['archived']}
+    archived_ids = {row['id'] for row in inventory(rpc, set(journal['providers']) | {journal['target']}) if row['archived']}
     for row in reversed(journal["threads"]):
         if row["phase"] not in ("changing", "migrated"):
             continue

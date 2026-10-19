@@ -50,4 +50,18 @@ Live provider tests require user authorization and use minimal synthetic chats. 
 
 Development code lives in `src/`. Keep the root command wrappers small; all internal imports remain within the source tree. Tests and build fixtures are source materials, not additional running services.
 
-After committing and testing a source revision, run `python3 src/scripts/release_manifest.py --commit FULL_SOURCE_SHA --sequence NEXT_SEQUENCE --distribution`. This uses an isolated Git index to create a portable source commit at the paths required by older installed updaters and writes the root update feed. The feed records both source and distribution commits. Test the portable commit too; publish its release tag and the edition branch atomically. Never point a feed at a local-only commit. DS and extension retain independent branches, versions and sequences.
+Prepare both editions from one committed source revision, then validate those exact portable bytes on both platforms:
+
+```sh
+python3 src/scripts/release_manifest.py --commit FULL_SOURCE_SHA --prepare-pair PRIVATE_CANDIDATE_DIR --ds-version DS_VERSION --proxy-version PROXY_VERSION
+python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition ds --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
+python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition proxy --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
+```
+
+Run the two verification commands on macOS and Windows. On Windows use ordinary-user `pythonw`, with redirected output and no console. Gather all four receipts and their logs in one private directory. Each receipt binds the candidate, portable commit, shared-core digest and test log hashes. Push the candidate source branch for CI first; after it succeeds, publish both independent feeds and tags with one atomic operation:
+
+```sh
+python3 src/scripts/release_manifest.py --promote PRIVATE_CANDIDATE_DIR/candidate.json --receipts PRIVATE_RECEIPTS_DIR --execute
+```
+
+Candidate preparation uses isolated Git indexes without changing the checkout or published feed. Portable artifacts retain historical paths and the 100-file limit for existing updaters. The old `--distribution` command remains available for historical tooling; new paired releases use the gates above. Never point a feed at a local-only commit.

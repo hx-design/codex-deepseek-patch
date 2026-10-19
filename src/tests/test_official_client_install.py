@@ -24,7 +24,7 @@ class PowerLoss(BaseException):
 
 
 class Fixture:
-    def __init__(self, root, *, update=False, fresh=False):
+    def __init__(self, root, *, update=False, fresh=False, native_identity=False):
         root = root.resolve()
         self.root, self.directory, self.home = root, root/'build', root/'home'
         self.target, self.source, self.prior = root/'target.app', root/'source.app', root/'baseline'
@@ -52,7 +52,7 @@ class Fixture:
         p.save_json(self.prior/'manifest.json', prior)
         (self.directory/'config-before.toml').write_text(original)
         prepared, ownership = prepare_config(original, self.directory/'desktop-models.json', endpoint,
-            mode='native-summary', previous=prior.get('native_config'))
+            mode='builtin' if native_identity else 'native-summary', previous=prior.get('native_config'))
         (self.directory/'config-prepared.toml').write_text(prepared)
         p.save_json(self.directory/'host-settings.json', {'edition': 'ds', 'health_identity': 'new'})
         self.manifest = {'architecture': installer.ARCHITECTURE, 'status': 'prepared', 'edition': 'ds',
@@ -119,14 +119,14 @@ class Fixture:
         def session(app, home):
             yield fixture.metadata
 
-        def migrate(rpc, providers, path):
+        def migrate(rpc, providers, path, *, target=PROVIDER):
             fixture.metadata_calls.append('migrate')
-            p.save_json(path, {'format':1, 'target':PROVIDER, 'phase': 'running', 'before': copy.deepcopy(rpc),
+            p.save_json(path, {'format':1, 'target':target, 'phase': 'running', 'before': copy.deepcopy(rpc),
                                'threads':[{'id':key,'provider':value} for key,value in rpc.items()]})
-            rpc['active'] = PROVIDER
+            rpc['active'] = target
             if fixture.migrate_failure:
                 raise RuntimeError('interrupted native metadata')
-            rpc['archived'] = PROVIDER
+            rpc['archived'] = target
             value = json.loads(path.read_text()); value['phase'] = 'complete'; p.save_json(path, value)
             return {'status': 'passed', 'migrated_chats': 2, 'inference_turns': 0}
 
@@ -206,6 +206,23 @@ class ConfigRollbackTests(unittest.TestCase):
 
 
 class TransactionTests(unittest.TestCase):
+    def test_builtin_upgrade_migrates_existing_chats_and_failure_restores_old_identity(self):
+        for fail in (False,True):
+            with self.subTest(fail=fail),tempfile.TemporaryDirectory() as temp:
+                fixture=Fixture(Path(temp),update=True,native_identity=True)
+                fixture.migrate_failure=fail
+                with fixture.boundaries(),mock.object(p,'clone_app') as clone,mock.object(p,'exchange') as exchange:
+                    if fail:
+                        with self.assertRaises(RuntimeError):installer.install(fixture.directory,fixture.manifest)
+                    else:installer.install(fixture.directory,fixture.manifest)
+                clone.assert_not_called();exchange.assert_not_called()
+                if fail:fixture.assert_baseline(self)
+                else:
+                    self.assertEqual(tomllib.loads(fixture.text())['model_provider'],'openai')
+                    self.assertEqual(fixture.metadata,{'active':'openai','archived':'openai'})
+                    record=json.loads((fixture.directory/'manifest.json').read_text())
+                    self.assertTrue(Path(record['native_identity_migration_journal']).is_file())
+
     def test_each_interrupted_intent_and_checkpoint_recovers_all_resources_idempotently(self):
         phases = ('prepared', 'app_restoring', 'official_app_restored', 'config_activating',
                   'config_activated', 'service_activating', 'service_activated', 'metadata_migrating',

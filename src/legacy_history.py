@@ -15,12 +15,103 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+import uuid
 from reasoning_origin import public_reasoning_message, reasoning_key
 
 
 class LegacyHistoryError(Exception):
     def __init__(self, code, message, status=502):
         self.code, self.message, self.status = code, message, status
+
+
+# The native compaction wire schema names this carrier encrypted_content. Our
+# explicit namespace holds a portable READABLE handoff, not OpenAI ciphertext.
+# Decode it before either official or external inference; never send this
+# envelope to a provider and never use it as a filesystem reference.
+HANDOFF_PREFIX = 'codex-model-adapter:readable-handoff:v1:'
+MAX_HANDOFF_BYTES = 256_000
+
+
+def handoff_item(summary):
+    if not isinstance(summary, str) or not summary.strip() or len(summary.encode()) > MAX_HANDOFF_BYTES:
+        raise LegacyHistoryError('invalid_adapter_handoff', 'The model did not return a usable compaction summary')
+    payload = _json({'format': 1, 'summary': summary.strip()})
+    return {'type':'compaction', 'id':'cmp_adapter_' + uuid.uuid4().hex,
+            'encrypted_content':HANDOFF_PREFIX + base64.b64encode(payload).decode('ascii')}
+
+
+def expand_handoffs(body):
+    items = body.get('input')
+    if not isinstance(items, list):
+        return body, False
+    result, changed = [], False
+    for item in items:
+        carrier = item.get('encrypted_content') if isinstance(item, dict) and item.get('type') == 'compaction' else None
+        if not isinstance(carrier, str) or not carrier.startswith(HANDOFF_PREFIX):
+            result.append(item)
+            continue
+        try:
+            encoded = carrier[len(HANDOFF_PREFIX):]
+            if len(encoded) > (MAX_HANDOFF_BYTES + 4096) * 2:
+                raise ValueError()
+            value = json.loads(base64.b64decode(encoded, validate=True))
+            text = value['summary']
+            if value.get('format') != 1 or not isinstance(text, str) or not text.strip() or len(text.encode()) > MAX_HANDOFF_BYTES:
+                raise ValueError()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise LegacyHistoryError('invalid_adapter_handoff', 'The saved readable compaction summary is invalid', 400) from None
+        result.append({'role':'assistant', 'content':[{'type':'output_text', 'text':
+            'Earlier task history summarized by the previously selected model:\n' + text}]})
+        changed = True
+    return ({**body, 'input':result}, True) if changed else (body, False)
+
+
+class RecoveryProgress:
+    """Disposable progress/cancellation metadata, without any conversation text."""
+    def __init__(self, home, model, operation):
+        self.root=Path(home)/'model-adapter-operations'
+        if self.root.is_symlink():raise ValueError('Invalid operation directory')
+        self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+        self.operation=operation
+        self.value={'format':1,'kind':'history-recovery','id':uuid.uuid4().hex,'model':model,'phase':'recovering','cache':False}
+        self.path=self.root/(self.value['id']+'.json')
+        self.cancel_path=self.root/(self.value['id']+'.cancel')
+        self.stopped=threading.Event()
+        for path in self.root.glob('*.json'):
+            try:
+                if path.is_symlink() or path.stat().st_size>8192 or time.time()-path.stat().st_mtime<86400:continue
+                old=json.loads(path.read_text(encoding='utf-8'))
+                if (old.get('kind')=='history-recovery' and old.get('id')==path.stem
+                        and old.get('phase') in ('completed','failed','cancelled')):path.unlink()
+            except (OSError,ValueError,AttributeError):pass
+        self.update()
+        def watch():
+            while not self.stopped.wait(.15):
+                if self.cancel_path.is_file() and not self.cancel_path.is_symlink():
+                    operation.cancel()
+                    return
+        self.watcher=threading.Thread(target=watch,daemon=True)
+        self.watcher.start()
+
+    def update(self, **fields):
+        self.value.update({k:v for k,v in fields.items() if k in ('phase','cache','part','total','level')})
+        self.value['updated_at']=time.time()
+        temporary=None
+        try:
+            fd,temporary=tempfile.mkstemp(prefix='.operation-',dir=self.root)
+            with os.fdopen(fd,'wb') as stream:stream.write(_json(self.value))
+            os.replace(temporary,self.path)
+        except OSError:pass  # A view cannot fail a model request.
+        finally:
+            if temporary:
+                try:Path(temporary).unlink(missing_ok=True)
+                except OSError:pass
+
+    def finish(self, successful):
+        self.stopped.set();self.watcher.join(.3)
+        self.update(phase='cancelled' if self.operation.cancelled.is_set() else 'completed' if successful else 'failed')
+        try:self.cancel_path.unlink(missing_ok=True)
+        except OSError:pass
 
 
 def _json(value):
@@ -206,7 +297,7 @@ class LegacyHistory:
             if temporary:
                 Path(temporary).unlink(missing_ok=True)
 
-    def convert(self, body, headers, *, cancelled=None, protected_reasoning=(), cache_scope=b'', fallback_models=(), normalize_cached=None):
+    def convert(self, body, headers, *, cancelled=None, protected_reasoning=(), cache_scope=b'', fallback_models=(), normalize_cached=None, progress=None):
         result = visible_reasoning(body, protected_reasoning=protected_reasoning)
         items = result.get('input')
         if not isinstance(items, list):
@@ -232,6 +323,7 @@ class LegacyHistory:
                     summary = self._read(self.directory / (old_key + '.json'), expected_model=old_model)
                     if summary is not None:
                         break
+                if progress:progress.update(cache=summary is not None,phase='recovering')
                 if summary is None:
                     summary = self.summarizer(copy.deepcopy(item), self.summary_model, headers, cancelled)
                 elif uncached and normalize_cached is not None:

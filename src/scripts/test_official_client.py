@@ -30,7 +30,7 @@ from scripts.test_offline import isolated_environment, launch_options, probe_com
 from scripts.test_switching import finish
 from scripts.test_tools import Stub as ToolStub, mcp_fixture
 
-PROVIDER = 'codex-model-adapter'
+PROVIDER = 'openai'
 GPT = 'gpt-6.1-sol'
 DS = 'deepseek-flash'
 
@@ -91,7 +91,7 @@ class Fixture(ToolStub):
 
     def record(self, body, raw, transport):
         self.server.wire.append({'model': body.get('model'), 'transport': transport, 'path': self.path,
-            'history_summary': str(body.get('instructions', '')).startswith('Create a factual handoff'),
+            'history_summary': str(body.get('instructions', '')).startswith(('Create a factual handoff', 'Compact the ongoing task')),
             'request_bytes': len(raw), 'effort': body.get('reasoning', {}).get('effort'),
             'generate': body.get('generate'), 'previous_response_id': bool(body.get('previous_response_id')),
             'tool_count': len(body.get('tools', [])), 'input_types': [v.get('type', 'message')
@@ -124,6 +124,9 @@ class Fixture(ToolStub):
         if not warmup:
             self.server.next_usage = 10
         item = item or self.message('CONTEXT_OK')
+        if body['model'] == GPT and inference_adapter._is_compaction(body):
+            item = {'type':'compaction', 'id':'cmp_native_fixture_' + str(index),
+                    'encrypted_content':'opaque-native-fixture-' + str(index)}
         response = {'id': 'resp_native_' + str(index), 'object': 'response', 'created_at': int(time.time()),
                     'status': 'completed', 'model': body['model'], 'output': [] if warmup else [item],
                     'usage': {'input_tokens': usage, 'input_tokens_details': {'cached_tokens': 0},
@@ -379,7 +382,8 @@ def run(app, reportdir, edition):
                 '[features]\nmemories=false\napps=false\n'
                 '[mcp_servers.bulk]\ncommand=' + json.dumps(mcp_runtime()) + '\nargs=' +
                 json.dumps([str(Path(__file__).resolve()), '--mcp']) + '\n')
-            config, _ = prepare_config(current, catalog, relay_url, mode='native-summary')
+            legacy_config, legacy_ownership = prepare_config(current, catalog, relay_url, mode='native-summary')
+            config, _ = prepare_config(legacy_config, catalog, relay_url, mode='builtin', previous=legacy_ownership)
             (base / 'home/config.toml').write_text(config, encoding='utf-8')
             patch.save_json(base / 'home/auth.json', {'OPENAI_API_KEY': 'official-api-fixture'})
             env.update(OPENAI_API_KEY='official-api-fixture', HTTP_PROXY=endpoint, HTTPS_PROXY=endpoint,
@@ -401,7 +405,7 @@ def run(app, reportdir, edition):
                 sandbox = 'danger-full-access' if sys.platform == 'win32' else 'workspace-write'
                 report['sandbox_requested'] = sandbox
                 report['sandbox_scope'] = 'isolated temporary home and work directory'
-                initial = rpc.request('thread/start', {'model': DS, 'modelProvider': PROVIDER, 'cwd': str(work),
+                initial = rpc.request('thread/start', {'model': DS, 'modelProvider': 'codex-model-adapter', 'cwd': str(work),
                     'approvalPolicy': 'never', 'sandbox': sandbox, 'baseInstructions': 'This is a synthetic local regression.',
                     'config': {'web_search': 'disabled', 'features.memories': False, 'features.apps': False}})
                 report['sandbox_effective'] = initial.get('sandbox')
@@ -430,6 +434,29 @@ def run(app, reportdir, edition):
                                   'Selected reasoning effort did not reach inference: ' + model + ' ' + effort)
                     return events
 
+                turn(DS, 'legacy adapter chat before native identity migration')
+                # Installation runs metadata migration with the desktop stopped
+                # and a fresh native process; an already loaded thread intentionally
+                # ignores provider overrides. Reproduce that lifecycle exactly.
+                stop_owned()
+                process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                    text=True, encoding='utf-8', errors='replace', env=env, cwd=work, **launch_options())
+                rpc = Rpc(process)
+                rpc.request('initialize', {'clientInfo':{'name':'native_identity_migration_probe','version':'1'},
+                    'capabilities':{'experimentalApi':True}})
+                from official_client_migration import migrate
+                migration = migrate(rpc, {'codex-model-adapter'}, base/'migration.json', target='openai')
+                stop_owned()
+                process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                    text=True, encoding='utf-8', errors='replace', env=env, cwd=work, **launch_options())
+                rpc = Rpc(process)
+                rpc.request('initialize', {'clientInfo':{'name':'native_post_migration_probe','version':'1'},
+                    'capabilities':{'experimentalApi':True}})
+                resumed = rpc.request('thread/resume', {'threadId':tid, 'excludeTurns':True,
+                    'approvalPolicy':'never', 'sandbox':sandbox})
+                patch.require(migration['migrated_chats'] == 1 and resumed['modelProvider'] == 'openai'
+                    and resumed['thread']['id'] == tid, 'Existing chat did not regain native provider identity')
+                report['checks']['existing_chat_native_identity_migration'] = 'passed'
                 turn(DS, 'registered model local WS prewarm')
                 for model, _ in models:
                     turn(model, 'same-thread switch')
@@ -442,14 +469,14 @@ def run(app, reportdir, edition):
                 report['checks']['reasoning_high_low_high'] = 'passed'
                 upstream.next_usage = int(dict(models)[target] * .7) + 100
                 turn(target, 'synthetic usage above compaction threshold')
-                auto = turn(target, 'automatic plain compaction')
+                auto = turn(target, 'automatic native compaction bridge')
                 patch.require(any(v.get('params', {}).get('item', {}).get('type') == 'contextCompaction' for v in auto),
-                              'Automatic native plain compaction did not run')
+                              'Automatic native compaction did not run')
                 _compact(rpc, tid)
                 turn(target, 'after manual plain compaction')
                 turn(GPT, 'return to GPT after plain compaction')
                 turn(target, 'return to registered model after plain compaction')
-                report['checks']['plain_auto_manual_compaction_windows'] = 'passed'
+                report['checks']['native_auto_manual_compaction_windows'] = 'passed'
                 upstream.tool_mode, upstream.phase = True, 'search'
                 before = len(upstream.records)
                 turn(target, '160-tool lazy discovery and execution')
@@ -511,6 +538,15 @@ def run(app, reportdir, edition):
                 report['quota_error'] = quota_error
                 upstream.official_exhausted = False
                 turn(GPT, 'return after synthetic GPT quota reset')
+                native_identity = rpc.request('thread/resume', {'threadId':tid})
+                patch.require(native_identity['modelProvider'] == 'openai', 'Native prediction eligibility provider identity changed')
+                fork = rpc.request('thread/fork', {'threadId':tid, 'ephemeral':True,
+                    'experimentalPredictionMode':True, 'excludeTurns':True})
+                patch.require(fork['modelProvider'] == 'openai', 'Prediction fork lost native provider identity')
+                predicted = rpc.request('turn/start', {'threadId':fork['thread']['id'],
+                    'input':[{'type':'text','text':'Return one brief suggested next instruction.'}]})
+                finish(rpc, fork['thread']['id'], predicted)
+                report['checks']['native_prediction_provider_and_fork'] = 'passed'
                 thread = rpc.request('thread/read', {'threadId': tid, 'includeTurns': True})['thread']
                 patch.require(thread['id'] == tid and len(thread['turns']) >= len(turns), 'Native thread history was lost')
                 official = [v for v in upstream.wire if v['model'] == GPT]
@@ -531,8 +567,9 @@ def run(app, reportdir, edition):
                 # native rollout. The genuine CLI must resume and use local
                 # visible history while the simulated official quota is empty.
                 path = Path(thread['path'])
-                patch.require(path.resolve().is_relative_to((base/'home').resolve()) and path.suffix == '.jsonl',
-                              'Native probe needs a disposable readable rollout')
+                from reasoning_origin import _source_path
+                path = _source_path(path, base/'home')
+                patch.require(path.suffix == '.jsonl', 'Native probe needs a disposable readable rollout')
                 stop_owned()
                 opaque = {'type':'compaction', 'id':'cmp_quota_fixture',
                           'encrypted_content':'opaque-native-quota-fixture'}
@@ -551,6 +588,7 @@ def run(app, reportdir, edition):
                 patch.require(resumed['thread']['id']==tid, 'History recovery changed the chat identity')
                 rpc.pending.clear()  # Discard the old window snapshot emitted by resume.
                 upstream.official_exhausted, upstream.recovering = True, True
+                upstream.recovery_summaries = []
                 before = len(upstream.wire)
                 for model, _ in models:
                     if model != GPT:

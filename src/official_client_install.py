@@ -441,6 +441,8 @@ def install(directory, manifest):
     prior = (json.loads((Path(baseline) / 'manifest.json').read_text(encoding='utf-8'))
              if baseline else manifest['initial_manifest'])
     legacy = prior.get('architecture') != ARCHITECTURE
+    native_provider = manifest['native_config']['root'].get('model_provider') or 'openai'
+    config_mode = 'builtin' if native_provider == 'openai' else 'native-summary'
     restore_app = legacy and sys.platform == 'darwin' and bool(prior.get('patched_asar'))
     p.require_stopped(target, read_only_source=sys.platform == 'win32')
     previous_deployment = prior.get('deployment_target') if sys.platform == 'win32' and legacy else None
@@ -459,7 +461,7 @@ def install(directory, manifest):
         current = p.read_config(config)
         _guard_staged_config(current, staged)
         prepared, ownership = prepare_config(current, directory / 'desktop-models.json',
-            manifest['native_config']['root']['openai_base_url'], mode='native-summary',
+            manifest['native_config']['root']['openai_base_url'], mode=config_mode,
             previous=prior.get('native_config') if not legacy else None)
         txid = uuid.uuid4().hex
         backup_file = 'config-before-install.' + txid + '.toml'
@@ -496,7 +498,7 @@ def install(directory, manifest):
             current = p.read_config(config)
             _guard_staged_config(current, staged)
             prepared, ownership = prepare_config(current, directory / 'desktop-models.json',
-                manifest['native_config']['root']['openai_base_url'], mode='native-summary',
+                manifest['native_config']['root']['openai_base_url'], mode=config_mode,
                 previous=prior.get('native_config') if not legacy else None)
             activation_backup = 'config-before-activation.' + txid + '.toml'
             p.atomic_text(directory / activation_backup, current)
@@ -518,16 +520,22 @@ def install(directory, manifest):
                 with native_session(target, home) as rpc:
                     manifest['legacy_origin_index'] = _prepare_origins(directory, home, rpc, providers,
                         set(prior.get('model_routes', {})), transaction)
-                    manifest['chat_migration'] = migrate(rpc, providers, directory / transaction['migration_file'])
+                    manifest['chat_migration'] = migrate(rpc, providers, directory / transaction['migration_file'], target=native_provider)
                 manifest['chat_migration_journal'] = str(directory / transaction['migration_file'])
                 manifest['native_original_config_file'] = str(directory / activation_backup)
                 manifest['native_original_config_sha256'] = transaction['previous_config_sha256']
                 manifest['legacy_origins_ownership'] = {**transaction['origin_index'], 'directory': str(directory)}
             else:
-                for key in ('chat_migration_journal', 'legacy_origins_ownership', 'legacy_origin_index',
+                for key in ('chat_migration_journal', 'native_identity_migration_journal', 'legacy_origins_ownership', 'legacy_origin_index',
                             'native_original_config_file', 'native_original_config_sha256'):
                     if key in prior:
                         manifest[key] = copy.deepcopy(prior[key])
+                if native_provider == 'openai' and prior.get('native_config', {}).get('root', {}).get('model_provider') == 'codex-model-adapter':
+                    _record(directory, transaction, 'metadata_migrating')
+                    with native_session(target, home) as rpc:
+                        manifest['native_identity_migration'] = migrate(rpc, {'codex-model-adapter'},
+                            directory / transaction['migration_file'], target='openai')
+                    manifest['native_identity_migration_journal'] = str(directory / transaction['migration_file'])
             verify_official(target)
             p.require(healthy(settings), 'The native adapter stopped after activation')
             activated = p.read_config(config)
@@ -612,19 +620,21 @@ def uninstall(directory):
                             p.require(migration_file.is_file() and not migration_file.is_symlink(),
                                       'The first native chat migration journal is unavailable')
                             migration = json.loads(migration_file.read_text(encoding='utf-8'))
-                            p.require(migration.get('format') == 1 and migration.get('target') == 'codex-model-adapter',
+                            p.require(migration.get('format') == 1 and migration.get('target') in ('codex-model-adapter', 'openai'),
                                       'Unknown initial native migration journal')
                             previous_providers = {row['id']: row['provider'] for row in migration['threads']}
                         # Only provider destinations come from the old journal.
                         # Preserve today's model/effort/recency/archive metadata.
                         destination = ownership['original_root'].get('model_provider') or 'openai'
-                        rows = inventory(rpc, {'codex-model-adapter'})
+                        native_provider = ownership['root'].get('model_provider') or 'openai'
+                        rows = inventory(rpc, {'codex-model-adapter', native_provider})
+                        rows = [row for row in rows if previous_providers.get(row['id'], destination) != row['provider']]
                         transaction['threads'] = [{**row, 'restore_provider': previous_providers.get(row['id'], destination)}
                                                       for row in rows]
                         transaction['phase'] = 'restoring_metadata'
                         atomic_json(journal_path, transaction)
                     rows = transaction['threads']
-                    providers = {'codex-model-adapter'} | {row['restore_provider'] for row in rows}
+                    providers = {'codex-model-adapter', 'openai'} | {row['restore_provider'] for row in rows}
                     archived_ids = {row['id'] for row in inventory(rpc, providers) if row['archived']}
                     for row in rows:
                         if row['phase'] == 'restored':

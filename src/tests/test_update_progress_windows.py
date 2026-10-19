@@ -125,12 +125,10 @@ class WindowsProgressNativeTests(unittest.TestCase):
         self.state_path = self.directory / 'progress.json'
         self.state_path.write_text(json.dumps(state,ensure_ascii=False),encoding='utf-8')
         self.before = self.state_path.read_bytes()
-        command = [self.powershell,'-NoLogo','-NoProfile','-NonInteractive','-STA',
-            '-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(SCRIPT),
-            '-StateDirectory',str(self.directory),'-PythonExecutable',str(self.python),
-            '-ControllerPath',str(self.controller),flag]
-        if action:
-            command.append(action)
+        from windows_support import native_ui_command
+        command=native_ui_command(SCRIPT,{'StateDirectory':str(self.directory),
+            'PythonExecutable':str(self.python),'ControllerPath':str(self.controller),
+            flag.removeprefix('-'):action if action is not None else True})
         result = subprocess.run(command,capture_output=True,timeout=20,creationflags=subprocess.CREATE_NO_WINDOW,
             env={**os.environ,'CODEX_PROGRESS_TEST_RECORD':str(self.record)})
         def diagnostic(raw):

@@ -137,6 +137,9 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
     if model_snapshot:
         effective["locals"] = model_snapshot.get("locals", effective.get("locals", []))
         effective["deepseek_enabled"] = model_snapshot.get("deepseek_enabled", effective.get("deepseek_enabled", True))
+        if 'proxy' in model_snapshot:effective['proxy'] = model_snapshot['proxy']
+    effective['keychain_account'] = effective.get('keychain_account') or __import__('getpass').getuser()
+    effective['keychain_service'] = effective.get('keychain_service') or p.KEYCHAIN_SERVICE
     mapped = adapter_routes(effective, routes)
     catalog = adapt_catalog(catalog, routes, preferences, apply_root_preferences=previous is None and not model_snapshot)
     for model in catalog['models']:
@@ -170,7 +173,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
         if "network_proxy" in old_profile:
             profile["network_proxy"] = old_profile["network_proxy"]
     prepared, ownership = prepare_config(before, output / "desktop-models.json", endpoint(port, token),
-                                          mode="native-summary", previous=previous)
+                                          mode="builtin", previous=previous)
     output.mkdir(parents=True, mode=0o700)
     for name in ADAPTER_FILES:
         shutil.copy2(p.ROOT / name, output / name)
@@ -196,7 +199,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                 "runtime_sha256":{name:p.file_sha(output / name) for name in ADAPTER_FILES},
                 "profile_sha256":p.file_sha(output / "adapter-profile.json"),
                 "host_settings_sha256":p.file_sha(output / "host-settings.json"), "model_routes":routes,
-                "keychain_account":prior.get("keychain_account"), "keychain_service":prior.get("keychain_service"),
+                "keychain_account":effective.get("keychain_account"), "keychain_service":effective.get("keychain_service"),
                 "deepseek_enabled":effective.get("deepseek_enabled", edition == "ds"),
                 "locals":effective.get("locals", []), "probe_required":True}
     if effective.get("proxy"):
