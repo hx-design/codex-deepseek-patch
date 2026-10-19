@@ -5,7 +5,7 @@
   "version": "0.4.11",
   "architecture": "official-client-v1",
   "sequence": 22,
-  "commit": "deec119882479fb5bfd35e43f601c8eb4bff1d92",
+  "commit": "6a6b1e0b29e2d1ca93f29c6ebd0a5b59424abbf8",
   "files": {
     ".github/workflows/tests.yml": "5e18a01a2974c754b5705f5d2d6419c2a62d4cedf793f144bb97aaa1bfe12c1e",
     ".gitignore": "5dad4cb99db25a12988a003a7e4f3296ff311138f60d4aaeb1dbd5929ccf2a61",
@@ -69,7 +69,7 @@
     "tests/test_inference_transport.py": "8deff84849570d50404840d1cef9499fe8e0d5443bd649f6014876c9e16952b9",
     "tests/test_legacy_history.py": "ba22cfac11c118cd658c684bf184d309767591e4c8744e08b4833d85a0efc276",
     "tests/test_local_history.py": "2036cda289fc7ba8389884638c39f1b8175610c8993763d40e145c0d6894630b",
-    "tests/test_local_support.py": "fa807f0aca23a716d2114da37b0b73f1547a3f7b863c53e937254f4f4444eef3",
+    "tests/test_local_support.py": "e1da18cac239e49048d868a0a64b40d415db4803cbac5cfcdbabe3806d4e9f5e",
     "tests/test_macos_signing.py": "a9e2ab7388b90e19fbcdd628282a6b2d41bf9e4bfe4721ee0d9b3f83e6a333ae",
     "tests/test_model_sync.py": "c2fe34acd42e062e11fe25b907d254029a64b2b3f12d92e0ef4c8a7305c18020",
     "tests/test_monitor.py": "823034b23b3a9c35d82bd5eecf4b9572cabc479165c3d138cf35342e6674cdec",
@@ -103,5 +103,5 @@
     "windows_update_ui.js": "4b6d4b676296c98ae53b2c4e268493fffdea8c4770abccec0faa3cca1865cb73",
     "windows_update_ui.py": "55c42bcb978702a72afd23a907b03c08d332e2acc305332f1362ba257a3230c9"
   },
-  "source_commit": "59960cf1c5e369be6b2133288237a4abc6b690b2"
+  "source_commit": "25986a5b89ba37e322362e2aed2753f273a51f7e"
 }
