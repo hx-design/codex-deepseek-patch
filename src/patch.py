@@ -22,8 +22,10 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = json.loads((Path(__file__).resolve().parent / "edition.json").read_text(encoding="utf-8"))["version"]
-EDITION = "proxy"
+_RELEASE = json.loads((Path(__file__).resolve().parent / "edition.json").read_text(encoding="utf-8"))
+VERSION, EDITION = _RELEASE['version'], _RELEASE['edition']
+if EDITION not in ('ds', 'proxy'):
+    raise ValueError('Unknown patch edition')
 ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"

@@ -24,13 +24,14 @@ The macOS stopped-app check excludes only an orphan Electron browser_crashpad_ha
 
 2026-10-19. DS 0.4.0 and extension 0.5.0-proxy.1 use the original desktop app plus a small external adapter. Results below distinguish real model calls from synthetic protocol fixtures. The older records remain below as historical evidence.
 
-## 0.5.9 / 0.4.9: recover old GPT history without GPT quota
+## 0.5.10 / 0.4.10: recover old GPT history without GPT quota
 
-- 532 unit tests pass on macOS and ordinary-user Windows (12 / 8 platform skips). Windows tests ran with no console window.
+- 533 unit tests pass on macOS and ordinary-user Windows (12 / 8 platform skips). Windows tests ran with no console window.
 - The actual native Mac and Windows CLI resumed an isolated chat seeded with an old encrypted compaction event while the official GPT fixture was quota-exhausted. Both edition suites completed selected-model summaries, same-chat continuation and native tool execution with zero GPT requests; the original rollout prefix remained unchanged.
 - Extension fixtures cover DS, Grok, Gemini and local Chat Completions routes. Existing tool discovery, same-chat switching, reasoning selection and post-compaction context checks remain in the same suite.
 - Small live checks with existing DS Flash, Grok 4.7 and Gemini Flash endpoints recovered a synthetic goal/tool marker and returned it correctly with the GPT endpoint disabled. No real user history was sent by these live checks.
 - Read-only verification of a long local fork reconstructed its bounded parent history and current prefix in under a second. Unit cases cover wrong/missing chat identity, fork byte/ordinal boundaries, missing prefixes, malformed files, symlinks, cancellation, small-window reduction and reuse of old cache entries.
+- Package edition and version are read from one edition.json authority. Fresh subprocess tests exercise both DS and extension metadata, so copying shared source cannot change the update channel.
 - No app bundle, login store, history database or original conversation file is rewritten by recovery. Unsupported or incomplete local history returns an explicit recovery error; it never falls back to GPT.
 
 ## 0.5.8 / 0.4.8: exit-triggered application and quota regression
