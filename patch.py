@@ -21,7 +21,7 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.3.6"
+VERSION = "0.3.7"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"

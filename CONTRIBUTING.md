@@ -4,6 +4,21 @@ Issues and pull requests for app compatibility or platform support are welcome. 
 
 Do not upload app bundles, complete extracted JavaScript, generated catalogs, user configuration, API keys, authentication files, or raw personal logs. Local evidence and backups belong in ignored build directories.
 
+## 每次修复的四组合核对 / Four-variant bug-fix review
+
+每个 bug 都必须在同一次任务中核对以下四种组合，记录受影响、已修复并验证、或不受影响的具体原因：
+
+| Platform | DS edition (`main`) | Extension (`codex/existing-proxy-models`) |
+| --- | --- | --- |
+| macOS | Required review | Required review |
+| Windows | Required review | Required review |
+
+- 同一原因涉及的代码在所有受影响组合同步修复；平台专属问题也要明确核对另一平台的相关路径。
+- 每条发布分支独立版本、更新序号和来源摘要，保持两版各自更新。
+- 对请求更新的机器核验实际安装版本、运行代码和保留的用户设置，分别记录已构建、已验证、已发布、已安装和已重启状态。
+- Every bug fix reviews all four combinations in the same task. Apply shared fixes to every affected combination and state the reason for unaffected cases.
+- Keep edition-specific releases and feeds independent. Record validation and the actual installation state on each requested machine separately from publication.
+
 ## Compatibility changes
 
 1. Inspect a locally obtained official app and verify its publisher and resource integrity. Use the shared compatible build path for every entry point.

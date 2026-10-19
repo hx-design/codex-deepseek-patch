@@ -169,6 +169,18 @@ class OfflineTests(unittest.TestCase):
 
 
 class BootTests(unittest.TestCase):
+    def test_mock_keychain_is_mac_probe_only_and_verified_on_its_own_process(self):
+        for platform in ['darwin', 'win32', 'linux']:
+            with mock.object(test_boot.sys, 'platform', platform):
+                args = test_boot.boot_command('/stage/app', '/temporary/browser')
+                self.assertEqual('--use-mock-keychain' in args, platform == 'darwin')
+                self.assertIn('--user-data-dir=/temporary/browser', args)
+        rows = [{'pid': 100, 'ppid': 1, 'command': '/stage/app --user-data-dir=/temporary/browser'},
+                {'pid': 200, 'ppid': 1, 'command': '/other/app --use-mock-keychain'}]
+        self.assertFalse(test_boot.inspect_children(rows, 100, Path('/temporary/browser'), Path('/stage/cli'))['mock_keychain'])
+        rows[0]['command'] += ' --use-mock-keychain'
+        self.assertTrue(test_boot.inspect_children(rows, 100, Path('/temporary/browser'), Path('/stage/cli'))['mock_keychain'])
+
     def test_owned_tree_excludes_another_running_app_and_grandchildren_are_included(self):
         rows = [{"pid": 100, "ppid": 1, "command": "root"},
                 {"pid": 101, "ppid": 100, "command": "helper"},

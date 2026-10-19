@@ -94,3 +94,9 @@ CI 使用合成 ASAR、模型元数据和替身后台，检查资源完整性、
 刚创建且尚无持久记录的 DS 聊天，只有在目标提供方相同、预览为空且恢复错误精确匹配该聊天的记录缺失时，才保留当前已加载会话直接发送；不卸载它。其他恢复错误照常返回，已有 GPT ↔ DS 聊天继续使用原有切换流程。
 
 后台子进程共用无控制台选项并保留标准输入输出管道。GUI 启动检查通过原生 CreateProcessW 指定专用隐藏桌面，随后清理进程树和桌面句柄。隔离检查关闭测试环境插件下载，避免后台克隆进程占用临时目录；用户插件设置不变。纯 DS 直连官方端点，没有扩展版闲置转接进程的生命周期问题。
+
+## macOS 隔离启动的钥匙串
+
+隔离测试创建临时 HOME、Codex 配置和浏览器目录。macOS GUI 进程额外传入 `--use-mock-keychain`，让 Chromium 的测试凭据后端处理临时加密存储；实际进程参数也必须包含该标记才允许通过。正式应用启动和安装配置不添加此参数，原有签名、登录钥匙串与用户凭据保持原样。Windows 继续使用隐藏桌面检查，不传入 Mac 测试参数。
+
+机制参考：[Chromium KeychainKeyProvider](https://github.com/chromium/chromium/blob/main/components/os_crypt/async/browser/keychain_key_provider.mm)。
