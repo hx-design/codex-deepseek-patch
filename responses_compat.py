@@ -77,14 +77,22 @@ class ToolAdapter:
         if 'tools' not in body:
             self.body.pop('tools')
         if isinstance(body.get('input'), list):
+            # ResponsesLite carries the current declarations in a prompt-only
+            # additional_tools item. Function-only peers need ordinary tools.
+            for item in body['input']:
+                if item.get('type') == 'additional_tools':
+                    if not isinstance(item.get('tools'), list):
+                        raise ValueError('Invalid additional tool declarations')
+                    for tool in item['tools']:
+                        self.add_loaded(self.tool(tool))
             # Native Responses carries discovered declarations in history. A
             # function-only peer also needs them in its current tool catalog.
-            discovery = any(t.get('type') == 'tool_search' for t in body.get('tools', []))
+            discovery = SEARCH_NAME in self.kinds
             for item in body['input']:
                 if discovery and item.get('type') == 'tool_search_output':
                     for tool in item.get('tools', []):
                         self.add_loaded(self.tool(tool))
-            self.body['input'] = [self.input_item(x) for x in body['input']]
+            self.body['input'] = [self.input_item(x) for x in body['input'] if x.get('type') != 'additional_tools']
         choice = self.body.get('tool_choice')
         if isinstance(choice, dict):
             if choice.get('type') == 'tool_search':

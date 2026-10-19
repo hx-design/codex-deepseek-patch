@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import urllib.parse
@@ -132,7 +131,10 @@ def parse_spec(model, document, url):
 
 def provider_models(provider):
     auth = provider.get('auth')
-    if auth:
+    if 'credential' in provider:
+        from inference_adapter import read_credential
+        key = read_credential(provider['credential'])
+    elif auth:
         result = subprocess.run([auth['command']]+auth.get('args', []), capture_output=True, text=True,encoding="utf-8",errors="replace", timeout=15,
                                 cwd=auth.get('cwd'), **p.background_options())
         p.require(result.returncode == 0 and result.stdout.strip(), 'Provider credential helper is unavailable')
@@ -148,20 +150,75 @@ def provider_models(provider):
     return {row['id']:row for row in rows}
 
 
+def cloud_catalog(home, client_version):
+    """Read full native metadata using existing access, with no login refresh.
+
+    This is the same fixed models endpoint used by the official CLI. Tokens
+    stay in memory and are never copied into a disposable authentication file,
+    emitted in diagnostics, or sent across a redirect. Keychain-only logins
+    use the bundled fallback rather than prompting during a background tick.
+    """
+    auth=Path(home)/'auth.json'
+    p.require(auth.is_file() and auth.stat().st_size<=1_000_000,'Existing file-backed ChatGPT access is unavailable')
+    tokens=json.loads(auth.read_text(encoding='utf-8')).get('tokens') or {}
+    access,account=tokens.get('access_token'),tokens.get('account_id')
+    p.require(all(isinstance(value,str) and value and not any(c in value for c in '\r\n\0') for value in (access,account)),
+              'Existing ChatGPT access is unavailable')
+    p.require(re.fullmatch(r'\d+\.\d+\.\d+',client_version),'Official CLI version is unavailable')
+    url='https://chatgpt.com/backend-api/codex/models?'+urllib.parse.urlencode({'client_version':client_version})
+    request=urllib.request.Request(url,headers={'Authorization':'Bearer '+access,'ChatGPT-Account-ID':account,
+        'Accept':'application/json','User-Agent':'codex_cli_rs/'+client_version})
+    with urllib.request.build_opener(NoRedirect).open(request,timeout=20) as response:
+        raw=response.read(MAX_DOCUMENT+1)
+    p.require(len(raw)<=MAX_DOCUMENT,'Native model catalog exceeds the size limit')
+    value=json.loads(raw)
+    p.require(isinstance(value.get('models'),list) and value['models'],'Native cloud catalog is empty')
+    p.catalog_template(value)
+    value['_model_sync']={'mode':'cloud','authentication':'existing-chatgpt-access',
+                          'account_refresh':True,'login_refresh':False,'auth_copied':False}
+    return value
+
+
 def native_catalog(app, home):
-    """Refresh through the native CLI using private disposable authentication."""
+    """Refresh full cloud metadata; fall back to the untouched CLI's bundle."""
     with tempfile.TemporaryDirectory(prefix='codex-model-catalog-') as temp:
-        auth = Path(home)/'auth.json'
-        if auth.is_file():
-            shutil.copy2(auth, Path(temp)/'auth.json')
-            if os.name != 'nt': (Path(temp)/'auth.json').chmod(0o600)
-        result = subprocess.run([str(p.cli_path(app)), 'debug', 'models'], capture_output=True, text=True,encoding="utf-8",errors="replace",
-                                timeout=90, env={**os.environ, 'CODEX_HOME':temp}, **p.background_options())
+        from scripts.test_offline import isolated_environment
+        environment=isolated_environment(Path(temp))
+        p.atomic_text(Path(environment['CODEX_HOME'])/'config.toml', 'cli_auth_credentials_store="ephemeral"\n')
+        cli=str(p.cli_path(app))
+        try:
+            version=subprocess.run([cli,'--version'],capture_output=True,text=True,encoding='utf-8',errors='replace',
+                                   timeout=15,env=environment,**p.background_options())
+            match=re.search(r'\b(\d+\.\d+\.\d+)\b',version.stdout)
+            p.require(version.returncode==0 and match,'Official CLI version is unavailable')
+            return cloud_catalog(home,match[1])
+        except Exception:
+            pass  # Static fallback metadata never includes token/error details.
+        result = subprocess.run([cli, 'debug', 'models', '--bundled'], capture_output=True, text=True,encoding="utf-8",errors="replace",
+                                timeout=90, env=environment, **p.background_options())
         p.require(result.returncode == 0, 'Native GPT catalog refresh failed')
         value = json.loads(result.stdout)
         p.require(isinstance(value.get('models'), list) and value['models'], 'Native GPT catalog is empty')
         p.catalog_template(value)
+        value['_model_sync']={'mode':'bundled','authentication':'none','account_refresh':False,
+                              'fallback_reason':'cloud_catalog_unavailable'}
         return value
+
+
+def native_provider(manifest, profile, provider):
+    """Resolve metadata access from existing route references, never a helper."""
+    models=[model for model,route in manifest.get('model_routes',{}).items() if route['provider']==provider]
+    matches=[profile.get('routes',{}).get(model) for model in models]
+    matches=[value for value in matches if value is not None]
+    if not matches:
+        # A fully hidden provider still needs metadata discovery for unhide and
+        # future family versions; its credential reference stays in the manifest.
+        from official_client import adapter_routes
+        matches=list(adapter_routes(manifest, {'metadata-only':{'provider':provider}}).values())
+    p.require(matches,'The native provider has no managed connection reference')
+    values=[{'base_url':row['base_url'],'credential':copy.deepcopy(row.get('credential'))} for row in matches]
+    p.require(all(value==values[0] for value in values),'The native provider has ambiguous connection references')
+    return values[0]
 
 
 def validate_preferences(value):
@@ -169,7 +226,7 @@ def validate_preferences(value):
     p.require(isinstance(value.get('hidden', []), list) and all(isinstance(x, str) for x in value.get('hidden', [])), 'Invalid hidden model list')
     for name in ('context_windows', 'compact_limits'):
         table = value.get(name, {})
-        p.require(isinstance(table, dict) and all(isinstance(k, str) and type(v) is int and v > 0 for k,v in table.items()), 'Invalid model reduction settings')
+        p.require(isinstance(table, dict) and all(isinstance(k, str) and (type(v) is int and v > 0 or name == 'context_windows' and v is None) for k,v in table.items()), 'Invalid model reduction settings')
     return copy.deepcopy(value)
 
 
@@ -235,6 +292,13 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     directory.mkdir(parents=True,exist_ok=True,mode=0o700)
     current=p.tomllib.loads(p.read_config(Path(settings['codex_home'])/'config.toml'))
     manifest=json.loads((baseline/'manifest.json').read_text(encoding="utf-8"))
+    native_mode=(manifest.get('architecture') or settings.get('architecture') or getattr(p,'ARCHITECTURE','legacy'))=='official-client-v1'
+    profile_path=baseline/'adapter-profile.json'
+    if manifest.get('architecture')=='official-client-v1':
+        p.require(profile_path.is_file() and not profile_path.is_symlink()
+                  and p.file_sha(profile_path)==manifest.get('profile_sha256'),
+                  'The native model connection profile changed')
+    profile=json.loads(profile_path.read_text(encoding='utf-8')) if manifest.get('architecture')=='official-client-v1' else None
     previous=json.loads((directory/'models.json').read_text(encoding="utf-8")) if (directory/'models.json').exists() else {}
     policy=copy.deepcopy(previous.get('policy', {}))
     preferences=validate_preferences(json.loads((directory/'model-preferences.json').read_text(encoding="utf-8")) if (directory/'model-preferences.json').exists() else {})
@@ -243,10 +307,50 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     # Recognize manual reductions to a managed catalog instead of overwriting them.
     installed_snapshot=baseline/'synced-models.json'
     installed_defaults=json.loads(installed_snapshot.read_text(encoding="utf-8")).get('defaults',{}) if installed_snapshot.exists() else {}
+    initial_native_import=(native_mode and not installed_snapshot.exists()
+                           and previous.get('architecture')!='official-client-v1')
+    retained_limits=[]
+    if native_mode:
+        # Managed per-model reductions survive the first native sync even when
+        # the legacy build predates synced-models.json. The old global DS cap
+        # was shared with GPT and is handled separately during migration.
+        for model,route in manifest.get('model_routes',{}).items():
+            window,maximum=route.get('context_window'),route.get('max_context_window')
+            inherited_ds=(manifest.get('architecture')!='official-client-v1' and route['provider']==p.PROVIDER
+                          and current.get('model_provider','openai')=='openai' and current.get('model_context_window')==window)
+            if initial_native_import and not inherited_ds:
+                retained_limits.append((model,window,maximum,route.get('compact_limit')))
+            if type(window) is int:installed_defaults.setdefault(model,window)
+        original_preferences=manifest.get('native_config',{}).get('original_root',current)
+        original_window=original_preferences.get('model_context_window')
+        if type(original_window) is int:
+            for model,entry in old_models.items():
+                if model not in manifest.get('model_routes',{}) and model.startswith(('gpt-','codex-')):
+                    installed_defaults.setdefault(model,min(original_window,entry.get('max_context_window') or original_window))
+                    if initial_native_import:
+                        retained_limits.append((model,original_window,entry.get('max_context_window') or original_window,
+                                                original_preferences.get('model_auto_compact_token_limit')))
     for model, default in installed_defaults.items():
         value=old_models.get(model,{}).get('context_window')
-        if type(value) is int and value < default and model not in preferences.get('context_windows',{}):
-            preferences.setdefault('context_windows',{})[model]=value
+        if type(value) is int and value < default:
+            table=preferences.setdefault('context_windows',{})
+            if model in table and table[model] is None:
+                # A reset has priority until its maximum was actually installed.
+                # Later direct edits to that installed maximum remain detectable.
+                maximum=old_models.get(model,{}).get('max_context_window')
+                if default != maximum:continue
+                table[model]=value
+                continue
+            table[model]=min(value,table.get(model,value))
+    # Import legacy/initial per-model choices only once and only after checking
+    # live edits. A later reset-context must not re-import the old managed cap.
+    for model,window,maximum,compact in retained_limits:
+        if model in preferences.get('context_windows',{}) and preferences['context_windows'][model] is None:
+            continue
+        if type(window) is int and type(maximum) is int and window<maximum:
+            preferences.setdefault('context_windows',{}).setdefault(model,window)
+        if type(window) is int and type(compact) is int and 0<compact<int(window*.9):
+            preferences.setdefault('compact_limits',{}).setdefault(model,compact)
     if preferences:
         p.save_json(directory/'model-preferences.json',preferences)
     warnings=[]
@@ -254,13 +358,16 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
         native=fetch_native(Path(settings['app']),Path(settings['codex_home']))
     except Exception:
         warnings.append('Native GPT catalog could not refresh; retaining its last good entries')
-        native={'models':[m for m in old_catalog['models'] if m['slug'].startswith(('gpt-','codex-')) and m['slug'] not in previous.get('routes',manifest.get('model_routes',{}))]}
+        native={'models':[m for m in old_catalog['models'] if m['slug'].startswith(('gpt-','codex-')) and m['slug'] not in previous.get('routes',manifest.get('model_routes',{}))],
+                '_model_sync':{'mode':'retained','authentication':'none','account_refresh':False}}
+    native_source=copy.deepcopy(native.get('_model_sync',{'mode':'provided','account_refresh':None}))
     entries=[]; defaults={};routes={};specs=copy.deepcopy(previous.get('specs', {}))
     for raw in native['models']:
         entry=copy.deepcopy(raw);slug=entry['slug']
         if slug in preferences.get('hidden',[]):continue
         if entry.get('max_context_window') or entry.get('context_window'):
-            apply_reductions(entry,preferences)
+            compact=apply_reductions(entry,preferences)
+            if native_mode:entry['auto_compact_token_limit']=compact
             defaults[slug]=entry['context_window']
         entries.append(entry)
     template=p.catalog_template(native)
@@ -278,7 +385,8 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
         state=policy.setdefault(provider,{})
         selected=state.get('selected',initial)
         try:
-            available=fetch_provider(current['model_providers'][provider])
+            connection=native_provider(manifest,profile,provider) if profile is not None else current['model_providers'][provider]
+            available=fetch_provider(connection)
             if provider=='deepseek-desktop':
                 for model,row in available.items():
                     size=row.get('context_window')
@@ -287,7 +395,7 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
                                              'reasoning_levels':row.get('effort',{}).get('supported_levels',['low','high','max']),
                                              'max_output_tokens':row.get('max_output_tokens'),
                                              'display_name':str(row.get('name') or model)[:100],
-                                             'source':current['model_providers'][provider]['base_url'].rstrip('/')+'/models'}
+                                             'source':connection['base_url'].rstrip('/')+'/models'}
             chosen=select_models(available,selected,state,preferences,allowed)
         except Exception:
             warnings.append(provider+': model endpoint unavailable; retaining last good selection')
@@ -317,9 +425,9 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
             if model not in specs:
                 continue  # New unknown specs never receive an arbitrary small cap.
             entry=make_entry(template,model,provider,specs[model],90+len(routes))
-            fallback=current.get('model_context_window') if provider=='deepseek-desktop' else None
+            fallback=current.get('model_context_window') if provider=='deepseek-desktop' and not native_mode else None
             compact=apply_reductions(entry,preferences,fallback)
-            if provider=='deepseek-desktop' and current.get('model_auto_compact_token_limit'):
+            if provider=='deepseek-desktop' and not native_mode and current.get('model_auto_compact_token_limit'):
                 compact=min(compact,current['model_auto_compact_token_limit'])
             defaults[model]=entry['context_window']
             routes[model]={'provider':provider,'context_window':entry['context_window'],
@@ -335,12 +443,14 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
             except Exception:
                 warnings.append(identifier+': local model service unavailable; retaining last good models')
                 previous_models={m['slug']:m for m in previous.get('catalog',{}).get('models',[])}
-                for model,route in previous.get('routes',{}).items():
+                for model,route in previous.get('routes',manifest.get('model_routes',{})).items():
                     if route['provider'] not in (identifier,identifier+'-compat') or model in preferences.get('hidden',[]):continue
                     prior=old_models.get(model,previous_models.get(model))
                     if prior:
                         p.require(not any(e['slug']==model for e in entries),'Model ID belongs to more than one provider: '+model)
-                        entries.append(copy.deepcopy(prior));routes[model]=route;defaults[model]=prior['context_window']
+                        entry=copy.deepcopy(prior);compact=apply_reductions(entry,preferences,route.get('context_window'))
+                        entries.append(entry);routes[model]={**route,'context_window':entry['context_window'],'compact_limit':compact}
+                        defaults[model]=entry['context_window']
                 continue
             # A metadata failure does not erase a previously working model.
             for issue in issues:
@@ -378,8 +488,9 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     if preferences:p.save_json(directory/'model-preferences.json',preferences)
     p.require(entries, 'No models remain visible')
     snapshot={'format':1,'edition':settings['edition'],'catalog':{'models':entries},'routes':routes,
+              'architecture':'official-client-v1' if native_mode else 'legacy',
               'specs':specs,'policy':policy,'defaults':defaults,'warnings':sorted(set(warnings)),
-              'locals':locals,'deepseek_enabled':deepseek}
+              'locals':locals,'deepseek_enabled':deepseek,'native_catalog_source':native_source}
     snapshot['digest']=snapshot_digest(snapshot)
     p.save_json(directory/'models.json',snapshot)
     return snapshot

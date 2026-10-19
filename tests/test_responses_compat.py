@@ -73,6 +73,30 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertEqual(next_call['input'][1]['call_id'], 'call_a')
         self.assertEqual(json.loads(next_call['input'][1]['output']), [LOADED])
 
+    def test_prompt_additional_tools_are_current_declarations_and_roundtrip_custom(self):
+        custom = {"type":"namespace", "name":"functions", "tools":[{"type":"custom","name":"apply_patch"}]}
+        source = {"input":[{"type":"additional_tools","tools":[SEARCH,custom]},
+                            {"role":"user","content":"Patch"},
+                            {"type":"tool_search_output","call_id":"s","tools":[LOADED]}]}
+        original = copy.deepcopy(source)
+        adapter = ToolAdapter(source, flatten_namespaces=True)
+        self.assertEqual([v["name"] for v in adapter.body["tools"]],
+                         [SEARCH_NAME,"functions__apply_patch","files__read"])
+        self.assertFalse(any(v.get("type") == "additional_tools" for v in adapter.body["input"]))
+        actual = adapter.output_item({"type":"function_call","name":"functions__apply_patch",
+                                      "call_id":"c","arguments":'{"input":"exact patch"}'})
+        self.assertEqual((actual["type"],actual["namespace"],actual["input"]),
+                         ("custom_tool_call","functions","exact patch"))
+        self.assertEqual(source, original)
+
+    def test_additional_tools_merge_namespace_without_duplicates(self):
+        extra = copy.deepcopy(LOADED); extra["tools"][0]["name"] = "write"
+        actual = ToolAdapter({"tools":[LOADED],"input":[
+            {"type":"additional_tools","tools":[LOADED,extra]}]}).body
+        self.assertEqual([t["name"] for t in actual["tools"][0]["tools"]],["read","write"])
+        with self.assertRaises(ValueError):
+            ToolAdapter({"input":[{"type":"additional_tools","tools":"not a tool list"}]})
+
     def test_repeated_search_does_not_duplicate_tools_or_discard_new_matches(self):
         extra = copy.deepcopy(LOADED); extra['tools'][0]['name'] = 'write'
         body = ToolAdapter({'tools': [SEARCH, LOADED], 'input': [

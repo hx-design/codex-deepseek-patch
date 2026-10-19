@@ -15,7 +15,7 @@ def validate(value):
     if not isinstance(value,dict):
         raise ValueError('Connection must be an object')
     result=copy.deepcopy(value)
-    allowed={'id','name','kind','base_url','models','key_file','model_specs','chat_only_models','normalize_instructions_models','tool_adapter_models','respect_server_context'}
+    allowed={'id','name','kind','base_url','models','key_file','model_specs','chat_only_models','normalize_instructions_models','tool_adapter_models','respect_server_context','wire_api','supports_reasoning_effort'}
     if set(result)-allowed or not re.fullmatch(r'local-[a-z0-9-]+',result.get('id','')):
         raise ValueError('Use a unique local-... connection ID')
     if result.get('kind') not in ('ollama','lmstudio','openai'):
@@ -32,6 +32,10 @@ def validate(value):
         raise ValueError('Key file must use an absolute path')
     result.setdefault('respect_server_context',False)
     if type(result['respect_server_context']) is not bool:raise ValueError('Invalid server context preference')
+    result.setdefault('wire_api','responses')
+    if result['wire_api'] not in ('responses','chat_completions'):raise ValueError('Unsupported model API protocol')
+    result.setdefault('supports_reasoning_effort',False)
+    if type(result['supports_reasoning_effort']) is not bool:raise ValueError('Invalid reasoning-effort capability')
     result.setdefault('chat_only_models',[])
     result.setdefault('normalize_instructions_models',[])
     result.setdefault('tool_adapter_models',[])
@@ -220,6 +224,7 @@ def connect(args):
     kind=args.kind or ('ollama' if ':11434' in url or ':21434' in url else 'lmstudio' if ':1234' in url else 'openai')
     identifier='local-'+args.name
     row={'id':identifier,'name':args.name,'kind':kind,'base_url':url,'models':args.models or [],'respect_server_context':getattr(args,'respect_server_context',False)}
+    row.update(wire_api=getattr(args,'wire_api','responses'),supports_reasoning_effort=getattr(args,'supports_reasoning_effort',False))
     if args.key_file:row['key_file']=str(args.key_file.resolve())
     if args.context_window:
         if not args.models:raise ValueError('Select model IDs when supplying a context maximum')

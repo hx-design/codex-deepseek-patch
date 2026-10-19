@@ -19,38 +19,28 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 - Every bug fix reviews all four combinations in the same task. Apply shared fixes to every affected combination and state the reason for unaffected cases.
 - Keep edition-specific releases and feeds independent. Record validation and the actual installation state on each requested machine separately from publication.
 
-## Compatibility changes
+## Native integration changes
 
-1. Inspect a locally obtained official app and verify its publisher and resource integrity. Use the shared compatible build path for every entry point.
-2. Describe the request/prewarm contract in `compatibility.py`. Asset filenames and minified names may vary; unknown behavior, missing anchors, duplicate targets, or existing patch markers must stop the operation. A version-only allowlist is insufficient for compatible mode.
-3. Keep edits restricted to recorded spans and the route helper. Add tests for renamed variables/assets, changed control flow, ambiguity, marker detection, and preservation outside intended changes.
-4. Exercise actual extracted methods in the Node VM probe. Preserve GPT and remote routes, explicit providers, existing chat behavior, config reads, plugin timeouts, permissions, and unrelated configuration.
-5. Preserve ASAR hashes and native integrity enforcement. Keep Store installations read-only and Windows deployments in the managed user directory.
-6. Bind inspection evidence to the source archive, verify copied sources, and recheck before installation. Test transactions and rollback against disposable targets.
+1. Verify the original app publisher and bundled CLI before probing. New architecture must not modify ASAR, re-sign the app or copy a Store package.
+2. Keep adapter rules protocol/capability based. Add synthetic coverage for arbitrary model identities, both wire APIs, streaming, tool results, errors, cancellation, reasoning provenance and context transitions.
+3. Run the original CLI with isolated state and synthetic endpoints in the background. Do not launch GUI windows or touch the user's keychain during routine validation.
+4. Preserve native login, tool execution, approvals, chat identity, working directory and readable-summary compaction. Test native API metadata migrations and interruption recovery; never write the history database directly.
+5. Stage and validate the same bytes. Recheck source/runtime/profile identity before activation. Test rollback with fault injection and real Windows normal-user service states.
 
 ## Monitor and configuration changes
 
-Keep unchanged checks quiet, notifications deduplicated, and state writes atomic. The monitor must wait for normal app exit, retain recovery data, and never submit paid inference. Automatic code updates must follow the enabled edition-pinned feed with digest checks and isolated validation. Scheduler registration must remain optional and reversible.
+Keep unchanged checks quiet, notifications deduplicated, and state writes atomic. Wait for normal app exit. Scheduled checks must not submit inference. Code updates follow the edition-pinned feed with digests and isolated preflight; reject native-to-legacy downgrades. Registration remains reversible.
 
-Managed updates may refresh the registered catalog path while preserving unrelated user edits. Changes to managed provider/catalog fields must stop for review. Test baseline adoption separately for in-place macOS installation and Windows's separate deployment/source paths.
+Only owned configuration changes are allowed. Rebase against the latest configuration under the installation lock, retain unrelated edits, and restore the immediately previous state after activation failures. Preserve explicit model reductions/hiding and original server configuration. Cloud specification errors retain the last known good value.
 
 ## Validation
 
 ```sh
 python3 -m unittest discover -s tests -v
-node tests/route.test.cjs
+node tests/route.test.cjs  # retained legacy regression
+python3 patch.py build --app "/path/to/official/app" --connections "/path/to/connections.json" --output "/new/build/directory" --verify
 ```
 
-For a locally built compatible app:
+On Windows use `python` and Windows paths. Validate both DS/extension on Mac/Windows. Record unit fixtures, original CLI synthetic integration, real model calls, service tests and actual installation separately. Models without credentials receive synthetic protocol coverage, not a real-model success label.
 
-```sh
-python3 patch.py build --compatible --app "/path/to/official/app" --output "/new/build/directory"
-python3 scripts/test_offline.py "/new/build/directory"
-python3 patch.py test-boot "/new/build/directory"
-```
-
-On Windows, use `python` and Windows paths. Run an install/restore cycle against a disposable target before claiming deployment support. Document the platform, exact version, command, result, and evidence layer in `docs/VALIDATION.md`. Distinguish synthetic tests, source/syntax checks, offline app-server routing, isolated GUI startup, install/restore, and live model calls.
-
-Live provider tests require an explicit request and incur API usage. A previous live result must retain its original version/date; it should not be presented as validation of a new runtime.
-
-macOS signing changes must retain the established local certificate and component requirements, preserve ordinary capability entitlements, and pass `python3 scripts/test_macos_signing.py`. Never reset TCC records, grant privacy access silently, or put signing keys in a release.
+Live provider tests require user authorization and use minimal synthetic chats. Never publish app bundles, generated vendor catalogs, tokens, raw user history or private execution evidence. Real tests should use ephemeral authentication and avoid login refresh. Native verification does not require GUI boot or local signing tests; retain those only for legacy recovery changes.

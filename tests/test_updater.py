@@ -114,7 +114,7 @@ class UpdateTests(unittest.TestCase):
             monitor.main(['--state-dir',str(root),'model-options','--model','grok-4.7','--show','--reset-context'])
             prefs=monitor.load_json(root/'model-preferences.json')
             self.assertNotIn('grok-4.7',prefs['hidden'])
-            self.assertNotIn('grok-4.7',prefs['context_windows'])
+            self.assertIsNone(prefs['context_windows']['grok-4.7'])
 
     def test_runtime_activation_failure_is_recoverable_after_app_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,7 +165,7 @@ class ExtensionWorkerTests(unittest.TestCase):
         for fail in [True, False]:
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp)
-                job={'app':str(root/'app'),'baseline':str(root/'baseline'),'output':str(root/'build'),
+                job={'architecture':'legacy','app':str(root/'app'),'baseline':str(root/'baseline'),'output':str(root/'build'),
                      'settings':{'codex_home':str(root/'home'),'keychain_account':'account',
                                  'keychain_service':'service','state_dir':str(root/'state')}}
                 calls=[]

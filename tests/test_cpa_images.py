@@ -1,3 +1,4 @@
+from windows_support import background_options
 import argparse
 import base64
 import http.server
@@ -241,7 +242,7 @@ class ImagesTests(unittest.TestCase):
                     {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
                     {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'list_image_models', 'arguments': {}}}]
         result = subprocess.run([sys.executable, str(Path(images.__file__)), '--config', str(self.config), '--endpoint', self.server.endpoint],
-                                input='\n'.join(json.dumps(r) for r in requests)+'\n', capture_output=True, text=True, check=True)
+                                input='\n'.join(json.dumps(r) for r in requests)+'\n', capture_output=True, text=True, check=True, **background_options())
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([r['id'] for r in replies], [1, 2, 3])
         self.assertEqual([t['name'] for t in replies[1]['result']['tools']], ['list_image_models', 'generate_image'])
@@ -266,7 +267,7 @@ class ImagesTests(unittest.TestCase):
         environment = {**os.environ, 'PYTHONIOENCODING': 'gbk'}
         result = subprocess.run([sys.executable, str(Path(images.__file__)), '--config', str(self.config), '--endpoint', self.server.endpoint],
             input=('\n'.join(json.dumps(request, ensure_ascii=False) for request in requests) + '\n').encode('utf-8'),
-            capture_output=True, env=environment)
+            capture_output=True, env=environment, **background_options())
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         replies = [json.loads(line) for line in result.stdout.decode('utf-8').splitlines()]
         self.assertFalse(replies[1]['result'].get('isError'), replies[1])

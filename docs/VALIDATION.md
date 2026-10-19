@@ -1,3 +1,51 @@
+# Official-client refactor: validation record
+
+2026-10-19. DS 0.4.0 and extension 0.5.0-proxy.1 use the original desktop app plus a small external adapter. Results below distinguish real model calls from synthetic protocol fixtures. The older records remain below as historical evidence.
+
+## Real models and original authentication
+
+- macOS and Windows each completed the same-chat **GPT → DeepSeek → Grok 4.7 → Gemini 3.8 Flash → GPT** sequence. Every turn recalled all earlier synthetic tags; DS/Grok/Gemini executed the native file tool; the final GPT recalled the complete sequence and file marker without a tool.
+- The first two diagnostic runs exposed foreign encrypted reasoning and foreign reasoning-content schema leaking into GPT. Model provenance isolation and readable-message normalization fixed both; the complete rerun passed on both platforms.
+- Tests used the existing ChatGPT access only in an isolated CLI's ephemeral credential store, without refresh or production configuration/history changes. No credential was found in the disposed test state.
+- A separate real GPT/DS/Grok test passed native readable-summary compaction and GPT return. A synthetic old GPT compacted-state fixture also exercised the real one-time readable-summary conversion and cache reuse.
+
+## Native CLI and protocol coverage
+
+The untouched bundled CLI exercises both editions with fake loopback model endpoints. Checks include model catalogs, high/low/high reasoning, per-model context beyond 128K, automatic/manual readable compaction, same-chat switching, original GPT WebSockets and provider credential isolation, local prewarm, 160 lazily discovered MCP tools, integer argument normalization and actual custom-tool file creation.
+
+The extension additionally tests native CLI → Chat Completions → native lazy tool execution and custom tool execution → GPT. Independent HTTP/SSE/WebSocket fixtures cover anonymous local services, arbitrary Claude/GLM/local model names, images, parallel calls, result association, truncation, cancellation, errors and unsupported capabilities. Those arbitrary models have **synthetic protocol coverage**, not credential-backed real-model validation.
+
+The original Mac host's vendor signature, bundled CLI/Node identity, native app tool connection and 53-tool registration were checked. The previously installed legacy Mac app completed an actual Calculator computer-use test; this refactor's new host has not yet repeated that full GUI interaction. Routine verification uses background CLI processes and does not launch desktop test windows.
+
+## Installation and migration
+
+- Windows normal-user pythonw tests verify hidden execution, native metadata migration/restart/reentry/rollback, preserved model/effort/archive/content, and zero inference during migration.
+- Fault-injection tests cover activation phases, configuration rebase, later unrelated edits, independent rollback failures, commit interruption, idempotent recovery and restoring current chat metadata after extended use.
+- Actual Windows Task Scheduler fixtures restore Ready, Disabled and Running states exactly. UTF-16 XML declaration/encoding and CRLF backup restoration are covered.
+- Windows package activation was verified through the original Store AUMID and real package identity APIs. New installation paths never copy the Store app.
+
+## Legacy updater and notification regression
+
+The published extension 0.4.10 updater was exercised on Windows with its parent working directory inside the runtime. This reproduced a directory-lock failure during child activation. The fixed independent native recovery record survives the old updater deleting its activation journal; both immediate parent promotion and injected promotion failure followed by restart restore the native baseline and backend.
+
+A subsequent full Windows legacy-package preflight exposed console flashes from Node/OpenSSL child processes inside tests. A windowless Python parent does not hide those grandchildren. All real test subprocesses now request hidden startup explicitly; a source contract checks this across the full test directory. This is required for both editions, since old updaters run the complete downloaded test suite.
+
+### Final Windows and four-variant gates
+
+- Published old updater, fresh candidate download path: 91/91 source-file digests checked; **484 Python tests passed** (5 platform/tool availability skips) and the legacy Node route suite passed.
+- A normal-user WinEventHook observer covered that entire run: **zero owned terminal/form show events**, zero other show events, and no observer errors.
+- macOS and Windows native suites passed for both editions: DS **9 checks**, extension **12 checks**. Windows uses danger-full-access only inside this deterministic synthetic test's disposable home/work directory, records the actual effective policy, and leaves production settings untouched. Integer tool execution requires completed status, exit code 0 and a standalone output marker; custom tools require completed file changes and exact expected file contents.
+- The final Windows DS suite repeated the window observer with zero show events. The extension's real-model five-step sequence and synthetic Chat Completions suite remain separately recorded above.
+- macOS full suites passed in both branch configurations (483 tests at that checkpoint, 10 Windows skips); later Windows hidden-child enforcement and tool-success regressions were checked separately. Hidden native panels passed four AppKit cases and eleven Windows control/contract cases without showing production windows.
+
+## Lightweight runtime
+
+A private macOS adapter process serving only a health check measured **166,046 bytes across 9 runtime source files** and **31,120 KiB idle RSS** before the later transport close fix. This measures that specific build/process, excluding Python, the official app, test/recovery/update sources, external services and model weights. It does not measure peak inference memory.
+
+The optional update panel uses system AppKit / WinForms, with no web frontend or third-party UI dependency. Native control tests are performed without showing windows or closing production applications. Completion never launches Codex without the user pressing the launch button.
+
+---
+
 # v0.4.10-proxy.1：恢复 Windows 官方应用版本检测
 
 2026-10-19。Windows 受管副本不具备当前进程的 MSIX 包身份，官方更新器因此在初始化阶段退出。本次仅在 Windows 且原因精确匹配时启用兼容检查器，复用官方发布源、schema、版本比较及架构选择，保留原更新策略。

@@ -1,3 +1,4 @@
+from windows_support import background_options
 import json
 from pathlib import Path
 import tempfile
@@ -71,5 +72,5 @@ class ContractTests(unittest.TestCase):
           assert.equal(calls,Number(expected));assert.equal(nativeCalls,1);
           assert.equal(!!owner.updater,expected);
         }})().catch(e=>{console.error(e);process.exit(1)});'''.replace('BODY',body)
-        r=subprocess.run(['node','-e',script],capture_output=True,text=True)
+        r=subprocess.run(['node','-e',script],capture_output=True,text=True,**background_options())
         self.assertEqual(r.returncode,0,r.stderr)

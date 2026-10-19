@@ -5,6 +5,8 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    'tests/test_inference_chat.py', 'official_client_shortcut.py', 'tests/test_official_client_shortcut.py', 'update_progress.py', 'update_progress_macos.js', 'update_progress.ps1', 'tests/test_update_progress.py', 'tests/test_update_progress_macos.py', 'tests/test_update_progress_windows.py',
+    'official_client.py', 'official_client_config.py', 'official_client_host.py', 'official_client_install.py', 'official_client_migration.py', 'official_client_update.py', 'inference_adapter.py', 'inference_transport.py', 'legacy_history.py', 'reasoning_origin.py', 'chat_completions_compat.py', 'scripts/test_official_client.py', 'scripts/test_official_connection.py', 'tests/test_official_client.py', 'tests/test_official_client_config.py', 'tests/test_official_client_host.py', 'tests/test_official_client_install.py', 'tests/test_official_client_migration.py', 'tests/test_official_client_update.py', 'tests/test_inference_adapter.py', 'tests/test_inference_transport.py', 'tests/test_legacy_history.py', 'tests/test_reasoning_origin.py', 'tests/test_chat_completions_compat.py',
     "windows_update_ui.py", "windows_update_ui.js", "tests/test_windows_update_ui.py", "tests/test_windows_update_contract.py",
     "cpa_images.py", "tests/test_cpa_images.py",
     "macos_signing.py", "tests/test_macos_signing.py", "scripts/test_macos_signing.py",

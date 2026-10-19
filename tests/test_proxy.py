@@ -1,3 +1,4 @@
+from windows_support import background_options
 import copy
 import json
 from pathlib import Path
@@ -76,7 +77,7 @@ class ProxyTests(unittest.TestCase):
                   "vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),c);"
                   "const models=JSON.parse(process.argv[2]);"
                   "console.log(JSON.stringify(Object.fromEntries(models.map(model=>[model,c.codexPatchAppServerParams('thread/start',{model},'local').config]))));")
-        routed = json.loads(subprocess.check_output(['node','-e',script,str(patch.ROOT/'route.js'),json.dumps(list(ps.MODELS))],text=True))
+        routed = json.loads(subprocess.check_output(['node','-e',script,str(patch.ROOT/'route.js'),json.dumps(list(ps.MODELS))],text=True,**background_options()))
         for model in catalog['models'][1:]:
             slug=model['slug']
             self.assertEqual(model['context_window'],expected[slug])
