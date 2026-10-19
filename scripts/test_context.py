@@ -113,7 +113,7 @@ def main(directory):
     node = ("const fs=require('fs'),vm=require('vm');const x=JSON.parse(fs.readFileSync(0,'utf8'));"
             "const c=vm.createContext({});vm.runInContext(x.route,c);"
             "console.log(JSON.stringify(x.models.map(model=>c.codexPatchAppServerParams('thread/start',{model},'local'))));")
-    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True,encoding="utf-8",errors="replace"))
+    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True,encoding="utf-8",errors="replace",**patch.background_options()))
     expected={m['slug']:m['context_window'] for m in json.loads((directory/'desktop-models.json').read_text(encoding="utf-8"))['models']}
     app = directory/'patched.app' if manifest['status']=='prepared' else Path(manifest['target'])
     server = http.server.ThreadingHTTPServer(('127.0.0.1',0),ResponsesStub)

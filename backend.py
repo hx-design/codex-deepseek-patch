@@ -172,7 +172,7 @@ def build_compatible(args):
         verify_official(app)
         with tempfile.TemporaryDirectory(prefix="codex-model-catalog-") as temp:
             raw=subprocess.check_output([str(p.cli_path(app)),"debug","models","--bundled"],stderr=subprocess.PIPE,
-                                        env={**os.environ,"CODEX_HOME":temp},timeout=90)
+                                        env={**os.environ,"CODEX_HOME":temp},timeout=90,**p.background_options())
         catalog=p.make_catalog(json.loads(raw),deepseek=deepseek)
         if proxy:
             import proxy_support

@@ -62,7 +62,20 @@ function codexPatchManagedRequest(client, method, params, options) {
     if (!route && thread.modelProvider === 'openai') { states.set(id, {key}); return send(); }
     if (thread.ephemeral) throw new Error('Switch models in a saved chat.');
     if (thread.status?.type === 'active') throw new Error('Wait for the current reply to finish before switching models.');
-    const current = await client.enqueueRequest('thread/resume', {threadId: id, excludeTurns: true}, options);
+    let current;
+    try {
+      current = await client.enqueueRequest('thread/resume', {threadId: id, excludeTurns: true}, options);
+    } catch (error) {
+      // Native thread/start already selected this provider and its context, but
+      // a fresh loaded session has no resumable rollout until the first turn.
+      // Keep that session alive; all other resume errors remain visible.
+      if (route && thread.modelProvider === target && thread.preview === '' &&
+          error?.message?.includes('no rollout found for thread id ' + id)) {
+        states.set(id, {key});
+        return send();
+      }
+      throw error;
+    }
     const retained = {cwd: current.cwd, approvalPolicy: current.approvalPolicy,
                       approvalsReviewer: current.approvalsReviewer, runtimeWorkspaceRoots: current.runtimeWorkspaceRoots};
     if (current.activePermissionProfile?.id) retained.permissions = current.activePermissionProfile.id;

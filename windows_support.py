@@ -6,6 +6,7 @@ read-only. No third party modules, fuse disabling or plaintext credential files.
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import uuid
 
 FUSE_SENTINEL = b"dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"
 DICTIONARY_SENTINEL = b"AGbevlPCksUGKNL8TSn7wGmJEuJsXb2A"
@@ -24,6 +26,97 @@ class WindowsSupportError(ValueError):
     pass
 
 
+def background_options():
+    """Hide owned Windows utilities without changing their redirected pipes."""
+    if os.name != "nt":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = subprocess.SW_HIDE
+    return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": startup}
+
+
+@contextmanager
+def isolated_desktop_options():
+    """Boot a Windows test GUI on a private desktop, never the user's desktop."""
+    if os.name != "nt":
+        yield {}
+        return
+    from ctypes import wintypes
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    user.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+                                   wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    user.CreateDesktopW.restype = wintypes.HANDLE
+    user.CloseDesktop.argtypes = [wintypes.HANDLE]
+    user.CloseDesktop.restype = wintypes.BOOL
+    name = 'CodexPatchProbe-' + uuid.uuid4().hex
+    desktop = user.CreateDesktopW(name, None, None, 0, 0x10000000, None)
+    if not desktop:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield {'desktop': name}
+    finally:
+        user.CloseDesktop(desktop)
+
+
+def desktop_process(args, desktop, *, env, cwd, stdout):
+    """Create an owned test process with native lpDesktop (not exposed by Popen)."""
+    from ctypes import wintypes as w
+    import msvcrt
+    class Startup(ctypes.Structure):
+        _fields_ = [('cb',w.DWORD),('reserved',w.LPWSTR),('desktop',w.LPWSTR),('title',w.LPWSTR),
+                    *[(n,w.DWORD) for n in ('x','y','width','height','chars_x','chars_y','fill','flags')],
+                    ('show',w.WORD),('reserved_size',w.WORD),('reserved_ptr',ctypes.c_void_p),
+                    ('stdin',w.HANDLE),('stdout',w.HANDLE),('stderr',w.HANDLE)]
+    class ProcessInfo(ctypes.Structure):
+        _fields_ = [('process',w.HANDLE),('thread',w.HANDLE),('pid',w.DWORD),('tid',w.DWORD)]
+    kernel = ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateProcessW.argtypes = [w.LPCWSTR,w.LPWSTR,ctypes.c_void_p,ctypes.c_void_p,w.BOOL,
+        w.DWORD,ctypes.c_void_p,w.LPCWSTR,ctypes.POINTER(Startup),ctypes.POINTER(ProcessInfo)]
+    kernel.CreateProcessW.restype = w.BOOL
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.WaitForSingleObject.argtypes = [w.HANDLE,w.DWORD]
+    kernel.WaitForSingleObject.restype = w.DWORD
+    kernel.GetExitCodeProcess.argtypes = [w.HANDLE,ctypes.POINTER(w.DWORD)]
+    kernel.TerminateProcess.argtypes = [w.HANDLE,w.UINT]
+    info = ProcessInfo()
+    with open(os.devnull,'rb') as null:
+        handles = [msvcrt.get_osfhandle(null.fileno()),msvcrt.get_osfhandle(stdout.fileno())]
+        inherited = [os.get_handle_inheritable(h) for h in handles]
+        try:
+            for h in handles:os.set_handle_inheritable(h,True)
+            startup = Startup();startup.cb=ctypes.sizeof(startup);startup.desktop=desktop
+            startup.flags=0x101;startup.show=0
+            startup.stdin=handles[0];startup.stdout=startup.stderr=handles[1]
+            command=ctypes.create_unicode_buffer(subprocess.list2cmdline([str(a) for a in args]))
+            environment=ctypes.create_unicode_buffer('\0'.join(k+'='+v for k,v in sorted(env.items()))+'\0\0')
+            # CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+            if not kernel.CreateProcessW(str(args[0]),command,None,None,True,0x08000600,
+                                         environment,str(cwd),ctypes.byref(startup),ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            for h,old in zip(handles,inherited):os.set_handle_inheritable(h,old)
+    kernel.CloseHandle(info.thread)
+    class OwnedProcess:
+        pid=info.pid
+        returncode=None
+        def poll(self):
+            if self.returncode is None and kernel.WaitForSingleObject(info.process,0)==0:
+                code=w.DWORD()
+                if not kernel.GetExitCodeProcess(info.process,ctypes.byref(code)):raise ctypes.WinError(ctypes.get_last_error())
+                self.returncode=code.value;kernel.CloseHandle(info.process)
+            return self.returncode
+        def wait(self,timeout=None):
+            if self.poll() is None:
+                result=kernel.WaitForSingleObject(info.process,0xFFFFFFFF if timeout is None else max(0,int(timeout*1000)))
+                if result==258:raise subprocess.TimeoutExpired(args,timeout)
+                if result!=0:raise ctypes.WinError(ctypes.get_last_error())
+            return self.poll()
+        def kill(self):
+            if self.poll() is None and not kernel.TerminateProcess(info.process,1):raise ctypes.WinError(ctypes.get_last_error())
+    return OwnedProcess()
+
+
 def _require(ok, message):
     if not ok:
         raise WindowsSupportError(message)
@@ -31,7 +124,7 @@ def _require(ok, message):
 
 def _powershell(script):
     result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                            check=True, capture_output=True, text=True, encoding="utf-8")
+                            check=True, capture_output=True, text=True, encoding="utf-8", **background_options())
     return result.stdout.strip()
 
 

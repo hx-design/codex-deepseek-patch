@@ -12,6 +12,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import patch
+from windows_support import isolated_desktop_options, desktop_process
 from scripts.test_offline import isolated_environment, launch_options, stop_probe, offline_config, DUMMY_KEY_VARIABLE, DUMMY_KEY
 
 
@@ -21,7 +22,7 @@ def process_table():
                   "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine) "
                   "| ConvertTo-Json -Compress")
         raw = subprocess.check_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                                      text=True, encoding="utf-8", errors="replace", timeout=20)
+                                      text=True, encoding="utf-8", errors="replace", timeout=20, **patch.background_options())
         values = json.loads(raw) if raw.strip() else []
         if isinstance(values, dict):
             values = [values]
@@ -77,9 +78,12 @@ def main(directory, timeout=360):
             (base / "home/config.toml").write_text(config, encoding="utf-8")
             browser = base / "browser"
             started = time.monotonic()
-            with (directory / "boot.log").open("w", encoding="utf-8") as log:
-                process = subprocess.Popen([str(layout["exe"]), "--user-data-dir=" + str(browser), "--no-first-run"],
-                                           env=environment, stdout=log, stderr=log, cwd=base, **launch_options())
+            with (directory / "boot.log").open("w", encoding="utf-8") as log, isolated_desktop_options() as desktop_options:
+                args=[str(layout["exe"]), "--user-data-dir=" + str(browser), "--no-first-run"]
+                if desktop_options:
+                    process=desktop_process(args,**desktop_options,env=environment,stdout=log,cwd=base)
+                else:
+                    process=subprocess.Popen(args,env=environment,stdout=log,stderr=log,cwd=base,**launch_options())
                 try:
                     while time.monotonic() - started < timeout:
                         patch.require(process.poll() is None, "Isolated boot probe exited: " + str(process.returncode))

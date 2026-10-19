@@ -68,7 +68,7 @@ def stop_probe(process, timeout=5):
     if sys.platform == "win32":
         if process.poll() is None:
             subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, **patch.background_options())
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -98,7 +98,9 @@ def stop_probe(process, timeout=5):
 
 def launch_options():
     if sys.platform == "win32":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        options = patch.background_options()
+        options['creationflags'] = options.get('creationflags', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+        return options
     return {"start_new_session": True}
 
 

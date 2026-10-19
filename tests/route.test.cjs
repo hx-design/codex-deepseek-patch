@@ -86,6 +86,24 @@ async function actualBundleTest(filename) {
 
 async function managedRoutingTests() {
   if (!context.codexPatchManagedRequest) return;
+  const firstCalls=[];
+  const fresh={hostId:'local',enqueueRequest:async(method,params)=>{
+    firstCalls.push(method);
+    if(method==='thread/read')return {thread:{id:'new',modelProvider:'easycli-desktop',preview:'',turns:[],ephemeral:false,status:{type:'idle'}}};
+    if(method==='thread/resume')throw new Error('no rollout found for thread id new');
+    assert.equal(method,'turn/start','An empty chat must not be unloaded');
+    return {sent:true};
+  }};
+  await context.codexPatchManagedRequest(fresh,'turn/start',{threadId:'new',model:'grok-4.7'},{});
+  assert.deepEqual(firstCalls,['thread/read','thread/resume','turn/start']);
+  for (const [preview,message] of [['has a user message','no rollout found for thread id new'],['','permission denied'],['','no rollout found for thread id another']]) {
+    const guarded={hostId:'local',enqueueRequest:async(method)=>{
+      if(method==='thread/read')return {thread:{id:'new',modelProvider:'easycli-desktop',preview,ephemeral:false,status:{type:'idle'}}};
+      if(method==='thread/resume')throw new Error(message);
+      assert.fail('An unrelated resume error must not send a message');
+    }};
+    await assert.rejects(context.codexPatchManagedRequest(guarded,'turn/start',{threadId:'new',model:'grok-4.7'},{}));
+  }
   let current = {id:'saved', model:'grok-4.5', modelProvider:'easycli-desktop', ephemeral:false, status:{type:'idle'}};
   const calls = [];
   const client = {hostId:'local',

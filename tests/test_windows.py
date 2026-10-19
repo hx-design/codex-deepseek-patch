@@ -12,6 +12,42 @@ from unittest import mock
 import windows_support as win
 
 
+class BackgroundProcessTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Real Windows console and redirected handles')
+    def test_console_program_retains_utf8_pipes_without_allocating_a_console(self):
+        executable = str(Path(sys.executable).with_name('python.exe'))
+        code = "import ctypes,json,sys; text=sys.stdin.buffer.read().decode('utf-8'); sys.stdout.buffer.write(json.dumps({'console':int(ctypes.windll.kernel32.GetConsoleWindow()),'text':text},ensure_ascii=False).encode('utf-8')); sys.stderr.buffer.write(b'diagnostic')"
+        result = win.subprocess.run([executable, '-c', code], input='中文输入'.encode('utf-8'),
+            capture_output=True, timeout=20, **win.background_options())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'console': 0, 'text': '中文输入'})
+        self.assertEqual(result.stderr, b'diagnostic')
+
+    @unittest.skipUnless(os.name == 'nt', 'Real Windows desktop isolation')
+    def test_gui_probe_desktop_is_private_and_removed_after_process_exit(self):
+        import ctypes
+        from ctypes import wintypes
+        executable = str(Path(sys.executable).with_name('python.exe'))
+        code = "import ctypes,json; from ctypes import wintypes; u=ctypes.WinDLL('user32'); u.GetThreadDesktop.restype=wintypes.HANDLE; u.GetUserObjectInformationW.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD,ctypes.c_void_p]; h=u.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId()); b=ctypes.create_unicode_buffer(256); assert u.GetUserObjectInformationW(h,2,b,ctypes.sizeof(b),None); print(json.dumps({'desktop':b.value}))"
+        with win.isolated_desktop_options() as desktop:
+            name = desktop['desktop']
+            with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryFile() as log:
+                process=win.desktop_process([executable,'-c',code],**desktop,env=dict(os.environ),cwd=temporary,stdout=log)
+                try:self.assertEqual(process.wait(timeout=20),0)
+                finally:
+                    if process.poll() is None:process.kill();process.wait(timeout=5)
+                log.seek(0)
+                self.assertEqual(json.loads(log.read())['desktop'],name)
+        user = ctypes.WinDLL('user32')
+        user.OpenDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        user.OpenDesktopW.restype = wintypes.HANDLE
+        handle = user.OpenDesktopW(name, 0, False, 1)
+        if handle:
+            user.CloseDesktop.argtypes = [wintypes.HANDLE]
+            user.CloseDesktop(handle)
+        self.assertFalse(handle, 'The completed test must release its private desktop')
+
+
 class RunningProcessTests(unittest.TestCase):
     def check(self, names, read_only_source):
         app = PureWindowsPath("C:/Codex/app")
