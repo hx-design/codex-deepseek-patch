@@ -2,7 +2,7 @@
 
 把已有云端接口和本地模型加入 **官方 Codex 的模型菜单**，在同一个聊天中切换，继续使用原登录、聊天记录和原生工具。
 
-扩展版 **0.5.7-proxy.1** · 更新分支 `codex/existing-proxy-models`
+扩展版 **0.5.8-proxy.1** · 更新分支 `codex/existing-proxy-models`
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 

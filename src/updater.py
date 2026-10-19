@@ -137,6 +137,8 @@ def worker(root, action, job, work_directory):
     with (directory/('worker-'+action+'.log')).open('w',encoding='utf-8') as log:
         result=subprocess.run([sys.executable,str(root/'update_worker.py'),action,str(path)],
                               cwd=root,stdout=log,stderr=log,timeout=1800,**background_options())
+    if action=='install' and result.returncode==75:
+        raise p.AppRunningError('Codex reopened before installation; the prepared update is retained')
     p.require(result.returncode==0,'Update worker failed during '+action+'; see its local log')
     return json.loads(path.with_suffix('.result.json').read_text(encoding="utf-8"))
 

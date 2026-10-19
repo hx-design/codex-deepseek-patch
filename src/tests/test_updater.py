@@ -13,6 +13,24 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_reopen_status_crosses_real_child_process_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/'update_worker.py').write_text('raise SystemExit(75)\n')
+            with self.assertRaises(p.AppRunningError):u.worker(root,'install',{},root/'job')
+            with self.assertRaises(p.PatchError) as error:u.worker(root,'identity',{},root/'job')
+            self.assertNotIsInstance(error.exception,p.AppRunningError)
+
+    def test_reopened_install_worker_retains_waiting_progress(self):
+        import update_worker
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'job.json';path.write_text('{}');progress=Mock()
+            with mock('update_progress.worker_progress',return_value=progress), \
+                 mock.object(update_worker,'execute',side_effect=p.AppRunningError('reopened')):
+                self.assertEqual(update_worker.main(['install',str(path)]),75)
+            progress.publish.assert_called_once_with('waiting_for_exit')
+            self.assertFalse(path.with_suffix('.result.json').exists())
+
     def test_model_sync_is_quiet_only_when_app_and_code_are_unchanged(self):
         app={'version':'v','build':'b','fingerprint':'app','hashes':{'resources/app.asar':'asar'}}
         installed={'architecture':'official-client-v1','status':'installed','app_version':'v','app_build':'b',
