@@ -22,7 +22,7 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.5.2-proxy.1"
+VERSION = "0.5.3-proxy.1"
 EDITION = "proxy"
 ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"

@@ -39,9 +39,12 @@ class FakeNative:
             if tid in self.archived:
                 raise RuntimeError('Archived thread')
             self.threads[tid]['modelProvider'] = params['modelProvider']
+            self.threads[tid]['cwd'] = params.get('cwd', '/initial-rollout-cwd')
             self.threads[tid]['model'] = params.get('model', 'gpt-6.1-sol')
             self.threads[tid]['reasoningEffort'] = params.get('config', {}).get('model_reasoning_effort', 'high')
             return {'thread':copy.deepcopy(self.threads[tid]), 'modelProvider':params['modelProvider']}
+        elif method == 'thread/read':
+            return {'thread':copy.deepcopy(self.threads[tid])}
         elif method != 'thread/unsubscribe':
             raise AssertionError('Migration must not generate a turn or compact history')
         return {}
@@ -65,6 +68,29 @@ class MigrationTest(unittest.TestCase):
             rollback(native, path)
             self.assertEqual(native.threads, before)
             self.assertEqual(native.archived, {'2'})
+
+    def test_windows_directory_aliases_compare_equally_without_ignoring_folder_changes(self):
+        from official_client_migration import _digest
+        slash=chr(92)
+        path='C:'+slash+'Users'+slash+'editor'+slash+'Work'
+        normal={'id':'synthetic','cwd':path,'name':'same','model':'model'}
+        duplicate={**normal,'cwd':path.replace(slash,slash+slash)}
+        verbatim={**normal,'cwd':slash+slash+'?'+slash+path}
+        self.assertEqual(_digest(normal),_digest(duplicate))
+        self.assertEqual(_digest(normal),_digest(verbatim))
+        self.assertNotEqual(_digest(normal),_digest({**normal,'cwd':path+'2'}))
+        self.assertNotEqual(_digest(normal),_digest({**normal,'name':'changed'}))
+
+    def test_archived_chat_keeps_workspace_moved_after_original_rollout(self):
+        native=FakeNative();native.threads['2']['cwd']='/later-moved-workspace'
+        before=copy.deepcopy(native.threads)
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'migration.json'
+            migrate(native,{'openai','deepseek-desktop'},path)
+            self.assertEqual(native.threads['2']['cwd'],'/later-moved-workspace')
+            rollback(native,path)
+            self.assertEqual(native.threads,before)
+            self.assertEqual(native.archived,{'2'})
 
     def test_failure_restores_archive_and_can_rollback_completed_mutations(self):
         native = FakeNative()

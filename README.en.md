@@ -2,7 +2,7 @@
 
 Add existing cloud endpoints and local models to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-Extension **0.5.2-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.5.3-proxy.1**, update branch `codex/existing-proxy-models`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 

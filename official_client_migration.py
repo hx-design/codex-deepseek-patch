@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import queue
@@ -113,8 +114,27 @@ def _metadata(thread):
     return {key:thread.get(key) for key in keys if key in thread}
 
 
-def _digest(thread):
+def _raw_digest(thread):
     return hashlib.sha256(json.dumps(_metadata(thread), sort_keys=True).encode()).hexdigest()
+
+
+def _digest(thread):
+    value = _metadata(thread)
+    cwd = value.get("cwd")
+    if isinstance(cwd, str):
+        normalized = cwd.replace("/", "\\")
+        if normalized.startswith("\\\\?\\UNC\\"):
+            normalized = "\\\\" + normalized[8:]
+        elif normalized.startswith("\\\\?\\"):
+            normalized = normalized[4:]
+        drive, tail = ntpath.splitdrive(normalized)
+        if drive and ntpath.isabs(normalized):
+            # Native Windows APIs normalize duplicate separators and verbatim
+            # prefixes. Keep directory case: case-sensitive folders can exist.
+            if len(drive) == 2 and drive[1] == ":":
+                normalized = drive.upper() + tail
+            value["cwd"] = ntpath.normpath(normalized)
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 def inventory(rpc, providers):
@@ -132,6 +152,7 @@ def inventory(rpc, providers):
                     found.append({"id":thread["id"], "provider":thread["modelProvider"], "archived":archived,
                                   "path":thread.get("path"),
                                   "model":thread.get("model"), "reasoning_effort":thread.get("reasoningEffort"),
+                                  "metadata":_metadata(thread), "metadata_version":2,
                                   "metadata_sha256":_digest(thread), "phase":"pending"})
             cursor = reply.get("nextCursor")
             if not cursor:
@@ -144,7 +165,26 @@ def inventory(rpc, providers):
     return found
 
 
+def _metadata_for_row(rpc, row):
+    metadata = row.get("metadata")
+    if row.get("metadata_version", 1) not in (1, 2):
+        raise ValueError("Unknown chat metadata snapshot version")
+    saved_digest = _digest if row.get("metadata_version", 1) == 2 else _raw_digest
+    if metadata is None:
+        # An interrupted older journal can be upgraded only from a matching
+        # native record. A mismatching original requires verified recovery data.
+        current = rpc.request("thread/read", {"threadId":row["id"], "includeTurns":False})["thread"]
+        metadata = _metadata(current)
+        if saved_digest(metadata) != row["metadata_sha256"]:
+            raise ValueError("Original chat metadata snapshot is required for recovery")
+        row["metadata"] = metadata
+    if saved_digest(metadata) != row["metadata_sha256"]:
+        raise ValueError("The saved chat metadata snapshot changed")
+    return metadata
+
+
 def _set_provider(rpc, row, target, archived_ids):
+    metadata = _metadata_for_row(rpc, row)
     archived = row["archived"]
     if archived and row["id"] in archived_ids:
         rpc.request("thread/unarchive", {"threadId":row["id"]})
@@ -153,6 +193,10 @@ def _set_provider(rpc, row, target, archived_ids):
         # Changing provider otherwise selects its default model. Carry the
         # existing explicit model/effort through the native resume operation.
         params = {"threadId":row["id"], "modelProvider":target, "excludeTurns":True}
+        # Resume otherwise reloads the initial rollout cwd, losing a workspace
+        # move made later in the official desktop (especially archived chats).
+        if metadata.get("cwd") is not None:
+            params["cwd"] = metadata["cwd"]
         if row.get("model") is not None:
             params["model"] = row["model"]
         if row.get("reasoning_effort") is not None:
@@ -161,7 +205,7 @@ def _set_provider(rpc, row, target, archived_ids):
         thread = result["thread"]
         if thread["id"] != row["id"] or result.get("modelProvider", thread.get("modelProvider")) != target:
             raise ValueError("Native resume did not retain the chat ID and target provider")
-        if _digest(thread) != row["metadata_sha256"]:
+        if _digest(thread) != _digest(metadata):
             raise ValueError("Unrelated native chat metadata changed during provider migration")
         rpc.request("thread/unsubscribe", {"threadId":row["id"]})
     finally:
@@ -191,6 +235,7 @@ def migrate(rpc, providers, journal_path):
     for row in journal["threads"]:
         if row["phase"] == "migrated":
             continue
+        _metadata_for_row(rpc, row)
         row["phase"] = "changing"
         journal["phase"] = "running"
         atomic_json(journal_path, journal)
@@ -217,6 +262,8 @@ def rollback(rpc, journal_path):
     for row in reversed(journal["threads"]):
         if row["phase"] not in ("changing", "migrated"):
             continue
+        _metadata_for_row(rpc, row)
+        atomic_json(journal_path, journal)
         _set_provider(rpc, row, row["provider"], archived_ids)
         row["phase"] = "restored"
         atomic_json(journal_path, journal)
