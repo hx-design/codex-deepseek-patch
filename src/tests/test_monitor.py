@@ -293,11 +293,23 @@ class MonitorTests(unittest.TestCase):
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_old_macos_background_jobs_restore_only_their_own_policy(self):
+        with mock.object(monitor.sys, "platform", "darwin"), mock.object(monitor.os, "getpid", return_value=1234), mock.object(monitor.subprocess, "run") as run:
+            monitor.prepare_background_work()
+        run.assert_called_once_with(["/usr/sbin/taskpolicy", "-B", "-p", "1234"], check=True, capture_output=True, timeout=20)
+
+    def test_windows_jobs_do_not_run_macos_policy_tools(self):
+        with mock.object(monitor.sys, "platform", "win32"), mock.object(monitor.subprocess, "run") as run:
+            monitor.prepare_background_work()
+        run.assert_not_called()
+
     def test_launchd_runs_on_login_and_interval_and_uses_private_runtime(self):
         directory = Path("/tmp/Codex Patch Directory").resolve()
         value = monitor.launchd_plist(directory, 300, "/usr/local/bin/python3")
         self.assertEqual(value["StartInterval"], 300)
         self.assertTrue(value["RunAtLoad"])
+        # Background I/O throttling can make a valid app signature time out.
+        self.assertEqual(value["ProcessType"], "Standard")
         self.assertEqual(value["ProgramArguments"], [str(Path("/usr/local/bin/python3")), str(directory / "runtime/monitor.py"),
                                                     "--state-dir", str(directory), "run-once", "--quiet"])
         self.assertEqual(plistlib.loads(plistlib.dumps(value)), value)

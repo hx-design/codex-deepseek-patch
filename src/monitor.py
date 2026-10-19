@@ -389,9 +389,18 @@ def launchd_plist(directory, interval, python=None):
     bins += [str(Path(executable).parent), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     return {"Label": service_label(directory), "ProgramArguments": service_command(directory, executable),
             "EnvironmentVariables": {"PATH": ":".join(dict.fromkeys(bins))},
-            "RunAtLoad": True, "StartInterval": interval, "ProcessType": "Background",
+            "RunAtLoad": True, "StartInterval": interval, "ProcessType": "Standard",
             "StandardOutPath": str(Path(directory) / "scheduler.stdout.log"),
             "StandardErrorPath": str(Path(directory) / "scheduler.stderr.log")}
+
+
+def prepare_background_work():
+    # Already-loaded older launchd definitions keep their Background class
+    # after a runtime update. Restore normal policy for this process and its
+    # children without stopping the job or changing other applications.
+    if sys.platform == "darwin":
+        subprocess.run(["/usr/sbin/taskpolicy", "-B", "-p", str(os.getpid())],
+                       check=True, capture_output=True, timeout=20)
 
 
 def windows_identity_sid():
@@ -741,6 +750,7 @@ def main(argv=None):
                 updates=load_json(args.state_dir/'updates.json',{});updates['models_checked']=0;atomic_json(args.state_dir/'updates.json',updates)
                 result={'model':args.model,'preferences':value,'applies':'next synchronization, after normal app exit'}
         else:
+            prepare_background_work()
             from updater import reconcile_native_activation
             reconcile_native_activation(args.state_dir)
             settings = load_json(args.state_dir / "settings.json")

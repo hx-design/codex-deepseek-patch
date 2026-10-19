@@ -2,7 +2,7 @@
 
 把 DeepSeek Flash 加入 **官方 Codex 的模型菜单**，在同一个聊天中切换，继续使用原登录、聊天记录和原生工具。
 
-DS 版 **0.4.10** · 更新分支 `main`
+DS 版 **0.4.11** · 更新分支 `main`
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
