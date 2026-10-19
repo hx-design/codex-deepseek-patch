@@ -176,8 +176,10 @@ class LocalTests(unittest.TestCase):
         for server in [upstream,bridge]:threading.Thread(target=server.serve_forever,daemon=True).start()
         try:
             url=f'http://127.0.0.1:{bridge.server_port}/v1/responses'
+            # An empty unauthorized POST tests authentication before body validation
+            # without an unread body racing Windows TCP connection teardown.
             with self.assertRaises(urllib.error.HTTPError) as error:
-                urllib.request.urlopen(urllib.request.Request(url,data=b'{}'),timeout=2)
+                urllib.request.urlopen(urllib.request.Request(url,data=b''),timeout=2)
             self.assertEqual(error.exception.code,401)
             tools=[{'type':'function','name':'test'}]
             for model in ['chat','agent']:
