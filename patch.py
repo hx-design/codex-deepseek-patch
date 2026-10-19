@@ -22,7 +22,7 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 EDITION = "ds"
 ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"

@@ -1,3 +1,11 @@
+# Preserve moved workspaces during metadata migration
+
+2026-10-19. A legacy archived chat exposed native resume falling back to its original rollout directory after a later desktop workspace move. Migration now records the complete protected metadata snapshot and supplies the saved cwd explicitly. Windows path comparisons normalize separators and verbatim prefixes while retaining folder case and all other metadata checks. Interrupted older journals require an exact matching original snapshot before recovery.
+
+WorkPC recovery through native metadata APIs verified 106 original chats, providers, archive states and workspace identities. No SQL writes or inference turns were used. The repair also persists recovered snapshots before retrying a metadata change.
+
+---
+
 # Legacy configuration metadata entry
 
 2026-10-19. Pre-install metadata inspection now avoids creating an incomplete adapter provider and uses literal native override keys for existing MCP names. A production legacy Mac configuration passed initialize/thread-list with tools and inference disabled; isolated before/after provider configurations are regression-covered. The configuration on disk is unchanged by this inspection.
