@@ -231,6 +231,16 @@ class RuntimeTests(unittest.TestCase):
 
 
 class IndexTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows extended path aliases')
+    def test_native_extended_rollout_path_is_scoped_to_same_home(self):
+        from reasoning_origin import _source_path
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp);sessions=home/'sessions';sessions.mkdir()
+            rollout=sessions/'fixture.jsonl';rollout.write_text('{}\n')
+            self.assertEqual(_source_path('\\\\?\\'+str(rollout),home),rollout.resolve())
+            other=home/'unrelated.jsonl';other.write_text('{}\n')
+            with self.assertRaises(ValueError):_source_path('\\\\?\\'+str(other),home)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

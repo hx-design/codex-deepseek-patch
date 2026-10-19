@@ -14,6 +14,10 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
+import io
+import stat
+import zipfile
 
 import patch as p
 from windows_support import background_options
@@ -21,7 +25,7 @@ from windows_support import background_options
 REPOSITORY = 'limyum-creator/codex-deepseek-patch'
 CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models'}
 CHECK_SECONDS = 3600
-NATIVE_PREFLIGHT_MODULES = ('tests.test_local_history','tests.test_exit_watch','tests.test_official_client','tests.test_official_client_config','tests.test_official_client_host',
+NATIVE_PREFLIGHT_MODULES = ('tests.test_management','tests.test_local_history','tests.test_exit_watch','tests.test_official_client','tests.test_official_client_config','tests.test_official_client_host',
     'tests.test_official_client_update','tests.test_official_client_install','tests.test_official_client_migration','tests.test_legacy_history',
     'tests.test_reasoning_origin','tests.test_chat_completions_compat',
     'tests.test_inference_adapter','tests.test_inference_transport','tests.test_responses_compat',
@@ -44,7 +48,9 @@ def runtime_digest(root, names=None):
 
 def public_get(url, limit=7_000_000):
     parsed=urllib.parse.urlsplit(url)
-    p.require(parsed.scheme=='https' and parsed.hostname=='raw.githubusercontent.com' and not parsed.query and not parsed.fragment,
+    raw = parsed.hostname == 'raw.githubusercontent.com' and parsed.path.startswith('/' + REPOSITORY + '/')
+    archive = parsed.hostname == 'codeload.github.com' and re.fullmatch('/' + re.escape(REPOSITORY) + '/zip/[0-9a-f]{40}', parsed.path)
+    p.require(parsed.scheme=='https' and (raw or archive) and not parsed.query and not parsed.fragment and not parsed.username and not parsed.password,
               'Update files must come from the pinned HTTPS repository')
     from model_sync import NoRedirect
     with urllib.request.build_opener(NoRedirect).open(urllib.request.Request(url,headers={'User-Agent':'CodexModelPatch/1.0'}),timeout=30) as response:
@@ -78,7 +84,42 @@ def validate_release(value, channel, highest=0):
                          'tests/test_official_client_update.py'})
         required.update(name.replace('.','/')+'.py' for name in NATIVE_PREFLIGHT_MODULES)
     p.require(required<=files.keys(),'Incomplete update package')
+    if value.get('archive') is not None:
+        p.require(value['archive'] == archive_descriptor(value['commit']), 'Invalid pinned update archive')
     return value
+
+
+def archive_descriptor(commit):
+    return {'format': 'github-zip-v1', 'url': 'https://codeload.github.com/' + REPOSITORY + '/zip/' + commit}
+
+
+def unpack_archive(raw, release, stage, progress=None):
+    """An archive is transport only; inventory, size and each digest stay mandatory."""
+    prefix = REPOSITORY.split('/')[-1] + '-' + release['commit'] + '/'
+    files = release['files']
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        members = {}
+        for item in archive.infolist():
+            p.require(item.filename.startswith(prefix), 'Archive has a different root')
+            name = item.filename[len(prefix):]
+            path = PurePosixPath(name)
+            p.require(not path.is_absolute() and '..' not in path.parts and '\\' not in name and ':' not in name,
+                      'Unsafe archive path')
+            p.require(not stat.S_ISLNK(item.external_attr >> 16), 'Archive links are not allowed')
+            if item.is_dir():
+                p.require(not name or any(n.startswith(name) for n in files), 'Unexpected archive directory')
+                continue
+            p.require(name in files and name not in members and 0 <= item.file_size <= 100_000,
+                      'Invalid archive inventory or file size')
+            members[name] = item
+        p.require(set(members) == set(files), 'Incomplete update archive')
+        for index, (name, item) in enumerate(members.items(), 1):
+            data = archive.read(item)
+            p.require(hashlib.sha256(data).hexdigest() == files[name], 'Downloaded update digest mismatch: ' + name)
+            destination = Path(stage) / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+            if progress:progress.publish('downloading', index, len(files))
 
 
 def source_package(release, directory, fetch=public_get, progress=None):
@@ -109,8 +150,21 @@ def source_package(release, directory, fetch=public_get, progress=None):
             if progress:
                 with count_lock:
                     count+=1;progress.publish('downloading',count,len(release['files']))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-            list(pool.map(download,release['files'].items()))
+        archived = False
+        if release.get('archive') is not None:
+            p.require(release['archive'] == archive_descriptor(release['commit']), 'Invalid pinned update archive')
+            try:
+                raw = fetch(release['archive']['url'])
+            except (OSError, TimeoutError, urllib.error.URLError):
+                # Older feeds and unavailable archive delivery retain the same
+                # pinned file transport. Integrity failures never fall back.
+                pass
+            else:
+                unpack_archive(raw, release, stage, progress)
+                archived = True
+        if not archived:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(download,release['files'].items()))
         verify(stage)
         if progress:progress.publish('verifying')
         # Do not expose user credentials/configuration to package preflight tests.
@@ -125,6 +179,8 @@ def source_package(release, directory, fetch=public_get, progress=None):
             for command in commands:
                 result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120,**background_options())
                 p.require(result.returncode==0,'Downloaded package preflight failed: '+result.stderr[-1500:])
+        from monitor import atomic_json
+        atomic_json(stage / '.package.json', {'format': 1, 'release': release})
         os.replace(stage,target)
         return target
     finally:
@@ -174,6 +230,89 @@ def activate_runtime(package, directory, expected_edition):
 
 
 NATIVE_RECOVERY = 'native-activation-recovery.json'
+
+
+def prune_update_cache(directory, *, keep=2, min_age=7 * 86400, dry_run=True, now=None, already_locked=False):
+    """Delete only recognized, old, unreferenced artifacts. Recovery chains win."""
+    from contextlib import nullcontext
+    from monitor import load_json, state_lock
+    directory = Path(directory).resolve()
+    now = time.time() if now is None else now
+    p.require(type(keep) is int and keep >= 2 and min_age >= 86400, 'Keep at least two recent rollback artifacts')
+    with (nullcontext(True) if already_locked else state_lock(directory)) as locked:
+        p.require(locked, 'The update monitor is busy')
+        settings = load_json(directory / 'settings.json', {})
+        channel = settings.get('edition')
+        p.require(channel in CHANNELS, 'Cleanup needs an installed channel')
+        state = load_json(directory / 'state.json', {})
+        p.require(state.get('phase') not in ('building', 'installing'), 'Wait for preparation or installation before cleanup')
+        candidates = []
+        for group, parent, pattern in [('packages', directory/'packages', '*'),
+                ('builds', directory/'builds', '*'), ('runtime', directory, 'runtime-backup-*')]:
+            if not parent.is_dir() or parent.is_symlink():continue
+            for path in parent.glob(pattern):
+                if path.is_symlink() or not path.is_dir():continue
+                try:
+                    if group == 'packages':
+                        owner = load_json(path / '.package.json', {})
+                        release = validate_release(owner.get('release'), channel)
+                        if owner.get('format') != 1 or release['commit'] != path.name:continue
+                    elif group == 'builds':
+                        owner = load_json(path / 'manifest.json', {})
+                        if owner.get('edition') != channel or owner.get('architecture') != 'official-client-v1':continue
+                        if owner.get('status') not in ('prepared', 'installed', 'restored', 'rolled_back'):continue
+                    elif edition(path).get('edition') != channel or not all((path/n).is_file() for n in ('patch.py','monitor.py')):
+                        continue
+                    candidates.append((group, path.resolve(), path.stat().st_mtime))
+                except (OSError, ValueError, KeyError, p.PatchError):
+                    continue  # Unknown data is never cleanup material.
+        protected = set()
+        documents = [settings, state]
+        for name in ('updates.json', 'activation-pending.json', NATIVE_RECOVERY, 'progress.context.json'):
+            documents.append(load_json(directory / name, {}))
+        # Even an unreferenced failed build may contain an unfinished rollback.
+        for _, path, _ in candidates:
+            for name in ('native-install-transaction.json', 'native-uninstall-transaction.json'):
+                transaction = load_json(path / name, {})
+                if transaction and transaction.get('phase') not in ('committed', 'complete', 'completed', 'rolled_back'):
+                    protected.add(path)
+                    documents.append(transaction)
+        visited = set()
+        def visit(value):
+            if isinstance(value, dict):
+                for child in value.values():visit(child)
+            elif isinstance(value, list):
+                for child in value:visit(child)
+            elif isinstance(value, str) and len(value) < 4096:
+                path = Path(value)
+                if not path.is_absolute():return
+                path = path.resolve()
+                for _, target, _ in candidates:
+                    if path == target or path.is_relative_to(target):protected.add(target)
+                if path in visited:return
+                visited.add(path)
+                if len(visited) > 4096:raise ValueError('Too many recovery references; cleanup deferred')
+                manifest = path/'manifest.json'
+                if path.is_dir() and manifest.is_file() and not manifest.is_symlink():
+                    data = load_json(manifest, {})
+                    if data.get('edition') == channel:
+                        visit(data)
+                        for name in ('native-install-transaction.json','native-uninstall-transaction.json'):
+                            visit(load_json(path/name, {}))
+        for value in documents:visit(value)
+        for group in ('packages', 'builds', 'runtime'):
+            recent = sorted((row for row in candidates if row[0] == group), key=lambda row: row[2], reverse=True)
+            protected.update(path for _, path, _ in recent[:keep])
+        selected = []
+        for group, path, modified in candidates:
+            if path in protected or now - modified < min_age:continue
+            entries = list(path.rglob('*'))
+            if any(item.is_symlink() for item in entries):continue
+            size = sum(item.stat().st_size for item in entries if item.is_file())
+            selected.append({'group': group, 'name': path.name, 'bytes': size})
+            if not dry_run:shutil.rmtree(path)
+        return {'dry_run': dry_run, 'items': selected, 'bytes': sum(v['bytes'] for v in selected),
+                'protected': len(protected)}
 
 
 def reconcile_native_activation(directory, already_locked=False):
@@ -314,7 +453,8 @@ class UpdateBackend:
         if self.base.baseline:self.persist_architecture(self.base.baseline)
         self.prepared=True
         now=time.time();force=self.settings.get('force_sync',False)
-        if self.settings.get('auto_update',True) and (force or now-self.cache.get('code_checked',0)>=CHECK_SECONDS):
+        force_code=self.settings.get('force_code',False)
+        if (self.settings.get('auto_update',True) or force_code) and (force or force_code or now-self.cache.get('code_checked',0)>=CHECK_SECONDS):
             self.cache['code_checked']=now
             try:
                 branch=CHANNELS[self.edition]
@@ -354,7 +494,7 @@ class UpdateBackend:
         if read_manifest(self.base.baseline).get('architecture')=='official-client-v1':
             p.require(self.desired_architecture=='official-client-v1','Native client updates cannot restore a legacy app patch')
         self.desired_runtime=identity['runtime_digest']
-        if self.settings.get('model_sync',True) and (force or now-self.cache.get('models_checked',0)>=CHECK_SECONDS):
+        if (self.settings.get('model_sync',True) or force) and (force or now-self.cache.get('models_checked',0)>=CHECK_SECONDS):
             self.cache['models_checked']=now
             try:
                 job={'settings':self.settings,'directory':str(self.directory),'baseline':str(self.base.baseline)}

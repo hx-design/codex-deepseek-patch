@@ -17,7 +17,7 @@ Official desktop and bundled CLI
           └─ Registered Chat Completions service → protocol bridge + its own credential
 ```
 
-The native provider retains OpenAI authentication semantics and declares remote compaction unsupported. This selects Codex's native readable-summary compaction. Loopback request compression is disabled so the standard-library service needs no zstd dependency. GPT network handshakes preserve routing/sticky headers; external requests never receive the OpenAI credential.
+The built-in `openai` provider identity and official authentication remain intact. This preserves native composer prediction eligibility. GPT inference and its compaction protocol pass through to the official destination. External native compaction triggers use only the selected service to generate a readable handoff. The native wire carrier has an explicit adapter namespace; it is not OpenAI ciphertext and is expanded before either GPT or external inference. Codex continues to schedule compaction, install history, and apply each model's window. Loopback request compression is disabled so the standard-library service needs no zstd dependency. GPT network handshakes preserve routing/sticky headers; external requests never receive the OpenAI credential.
 
 HTTP CONNECT honors the existing system proxy for external destinations, while local destinations bypass it. HTTP redirects are not followed with credentials. The listener binds numeric loopback only, uses a private token path and validates its installation identity. User-supplied LAN endpoints are explicit connections, not network discovery.
 
@@ -43,7 +43,7 @@ Old GPT compaction blocks are handled lazily without calling GPT. The native req
 
 The selected route summarizes the verified text through its own Responses or Chat Completions endpoint. Recovery uses the declared effective model context, bounded UTF-8 chunks and hierarchical reduction; it does not alter the native context window. Summary requests have no tools. An account/thread/model/endpoint/window-scoped private cache avoids repeat calls, and old official handoff caches are read locally and reduced if the chosen window is smaller.
 
-Missing prefixes, ambiguous identity, invalid ordinal/byte boundaries, malformed records, unresolved rollback records and unsupported storage formats return an explicit recovery error before normal inference continues. The current reader supports uncompressed JSONL and native paginated fork prefixes. Oversized, nonreducing or interrupted summaries are not cached as complete. New native readable-summary compaction continues unchanged.
+Missing prefixes, ambiguous identity, invalid ordinal/byte boundaries, malformed records, unresolved rollback records and unsupported storage formats return an explicit recovery error before normal inference continues. The current reader supports uncompressed JSONL and native paginated fork prefixes. Oversized, nonreducing or interrupted summaries are not cached as complete. New external handoffs are self-contained in native history and do not depend on the recovery cache. Old-history recovery publishes bounded progress metadata and a cancellation marker; no messages, tool contents or credentials appear in those status records.
 
 
 ## Installation and recovery
@@ -60,7 +60,7 @@ Services use launchd on macOS and least-privilege Task Scheduler with pythonw on
 
 DS `main` and extension `codex/existing-proxy-models` have separate versions, increasing feed sequences and immutable source commits. Downloads validate channel, inventory, hashes and isolated tests before activation. A native install rejects a legacy-architecture downgrade.
 
-The monitor is scheduled and exits after each check. It compares app/runtime/model identities and waits for normal app exit. It does not send inference requests. The adapter is a separate small per-user process, with no database, model engine or management UI.
+The monitor is scheduled and exits after each check. It compares app/runtime/model identities and waits for normal app exit. It does not send inference requests. The adapter is a separate small per-user process, with no database or model engine. The on-demand native settings process exits when its window closes.
 
 The repository retains legacy source and tests for recovery and historical compatibility. New builds do not edit ASAR, sign binaries, copy a Windows app or use legacy GUI boot probes. Only source/documentation is published; catalogs containing vendor prompts, app bundles, user credentials and private test evidence remain local.
 
@@ -69,3 +69,14 @@ The repository retains legacy source and tests for recovery and historical compa
 The monitor publishes a small private progress document containing fixed display fields and measured work counts. Unknown-duration phases use an indeterminate bar. Native AppKit/WinForms viewers issue only fixed start/launch/dismiss actions bound to the current update ID; state JSON never supplies a command to execute.
 
 Dismissing the window does not cancel the worker. Starting an update records the user's request; Codex is closed only after preparation and validation. Completion offers a launch button and does not reopen Codex automatically. The Mac panel uses [AppKit's non-activating panel behavior](https://developer.apple.com/documentation/appkit/nspanel/becomeskeyonlyifneeded) to display progress without taking keyboard focus.
+
+
+## Integrated settings and release gates
+
+`management.py` owns an allowlisted action controller and native AppKit/WinForms views. Each view has a per-state-directory singleton lock, asynchronous private request/result files, cancellation, and optimistic revision checks. Credentials are stored in the existing OS credential store or private owned key files; connection documents contain references. Exported diagnosis contains only allowlisted status fields. A separate per-user launcher leaves the original Codex icon and application untouched.
+
+Both editions are built from a single committed core using isolated Git indexes. Source and portable artifact identities remain separate. Promotion requires four receipts (macOS/Windows × DS/extension), exact artifact/core hashes and successful candidate CI. The two feed versions/sequences remain independent and are pushed atomically. Old updaters continue to receive their historical portable paths and a bounded file inventory. New clients prefer an immutable archive with exact per-file verification; integrity failures never fall back to weaker validation.
+
+Explicit checks use a coalesced request under a separate lock and are consumed only by the active monitor owner. Idle maintenance prunes only owned, unreferenced expired artifacts, preserving active/pending/recovery chains and recent rollback versions. No new scheduled or permanent process is added.
+
+Native standalone search (`alpha/search`) is forwarded unchanged to the official service, with official authentication. It is never routed to a selected external model service. Other paths are not a generic proxy. Dot's durable WebSocket belongs to the official app's own networking stack; system DNS/proxy conflicts are diagnosed independently from inference routing.

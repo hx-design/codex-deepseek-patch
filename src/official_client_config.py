@@ -161,16 +161,18 @@ def migrate_legacy_routes(routes, current_config, preferences):
     compact_preferences = preferences.get("compact_limits", {})
     for model, route in result.items():
         maximum = route["max_context_window"]
+        compact = compact_preferences.get(model)
         if model in explicit:
             route["context_window"] = min(explicit[model], maximum) if explicit[model] is not None else maximum
-            route["compact_limit"] = min(compact_preferences.get(model, route["context_window"] * 9 // 10),
-                                         route["context_window"] * 9 // 10)
+            cap = route["context_window"] * 9 // 10
+            route["compact_limit"] = min(compact, cap) if compact is not None else cap
         elif (route["provider"] == "deepseek-desktop"
               and current_config.get("model_provider", "openai") == "openai"
               and current_config.get("model_context_window") == route["context_window"]
               and route["context_window"] < maximum):
             route["context_window"] = maximum
-            route["compact_limit"] = min(compact_preferences.get(model, maximum * 9 // 10), maximum * 9 // 10)
+            cap = maximum * 9 // 10
+            route["compact_limit"] = min(compact, cap) if compact is not None else cap
     return result
 
 
@@ -179,7 +181,8 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
 
     ``builtin`` keeps OpenAI's provider. ``native-summary`` uses the documented
     custom provider capability and preserves native OpenAI authentication.
-    Both modes are experimental until the integration tests approve migration.
+    Legacy native-summary installations migrate through their exact ownership
+    record, preserving the original uninstall baseline and unrelated edits.
     """
     from urllib.parse import urlsplit
     url = urlsplit(base_url)
@@ -191,6 +194,13 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
         raise ValueError("Native model catalog path must be absolute")
     if mode not in ("builtin", "native-summary"):
         raise ValueError("Unknown native integration mode")
+    if mode == 'builtin' and previous and previous.get('provider') is not None:
+        # Keep the owned legacy definition dormant so native metadata rollback
+        # can still resume old provider IDs after an interrupted migration.
+        result, ownership = prepare_config(current, catalog_path, base_url, mode='native-summary', previous=previous)
+        result = _replace_section(result, (), {'model_provider':'openai'})
+        ownership['root']['model_provider'] = 'openai'
+        return result, ownership
     before = tomllib.loads(current)
     if previous:
         for key, value in previous["root"].items():
@@ -207,8 +217,10 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
             "model_context_window": None, "model_auto_compact_token_limit": None}
     if mode == "native-summary":
         root["model_provider"] = PROVIDER
-    elif before.get("model_provider", "openai") != "openai":
-        raise ValueError("Keep the user's chosen provider until migration is verified")
+    else:
+        if before.get("model_provider", "openai") != "openai":
+            raise ValueError("Keep the user's chosen provider until migration is verified")
+        root['model_provider'] = 'openai'
     result = _replace_section(current, (), root)
     result = _replace_section(result, ("features",), {"enable_request_compression": False})
     provider = None

@@ -74,6 +74,45 @@ def safe_error(error):
     return text[:1000]
 
 
+def request_update(directory, *, sync_now=False, code_now=False, retry=False):
+    """Coalesce explicit checks; a busy monitor must not discard a user request."""
+    directory = Path(directory)
+    with state_lock(directory / 'request-control') as locked:
+        if not locked:
+            raise ValueError('Another settings request is being saved; retry shortly')
+        previous = load_json(directory / 'monitor.request.json', {})
+        value = {'format': 1, 'id': uuid.uuid4().hex, 'requested_at': timestamp(),
+                 'sync_now': bool(sync_now or previous.get('sync_now')),
+                 'code_now': bool(code_now or previous.get('code_now')),
+                 'retry': bool(retry or previous.get('retry'))}
+        atomic_json(directory / 'monitor.request.json', value)
+        return value
+
+
+def take_update_request(directory):
+    directory = Path(directory)
+    with state_lock(directory / 'request-control') as locked:
+        if not locked:
+            return None
+        path = directory / 'monitor.request.json'
+        value = load_json(path)
+        if value is None:
+            return None
+        if value.get('format') != 1 or not re.fullmatch(r'[a-f0-9]{32}', value.get('id', '')) or any(
+                type(value.get(k)) is not bool for k in ('sync_now', 'retry')) or type(value.get('code_now',False)) is not bool:
+            raise ValueError('Invalid queued update request')
+        path.unlink()
+        return value
+
+
+def wake_monitor(directory):
+    settings = load_json(Path(directory) / 'settings.json', {})
+    command = service_command(directory, settings.get('python_path'))
+    with (Path(directory) / 'request-worker.log').open('ab') as log:
+        subprocess.Popen(command, cwd=directory, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                         **(background_options() if os.name == 'nt' else {'start_new_session': True}))
+
+
 @contextmanager
 def state_lock(directory):
     """An OS lock releases automatically after crashes, including on Windows."""
@@ -235,6 +274,15 @@ class Monitor:
                 return {"phase": "busy"}
             # Another invocation may have changed state before we acquired the lock.
             self.state = load_json(self.path, self.state)
+            request = take_update_request(self.directory)
+            if request:
+                retry = retry or request['retry']
+                self.state['last_request'] = request
+                settings = getattr(self.backend, 'settings', None)
+                if isinstance(settings, dict) and request['sync_now']:
+                    settings['force_sync'] = True
+                if isinstance(settings, dict) and request.get('code_now'):
+                    settings['force_code'] = True
             self.state["last_checked_at"] = timestamp()
             fingerprint = "snapshot-unavailable"
             try:
@@ -742,7 +790,7 @@ def main(argv=None):
                     if number is not None:value.setdefault(name,{})[args.model]=number
                 if args.reset_context:
                     value.setdefault('context_windows',{})[args.model]=None
-                    value.get('compact_limits',{}).pop(args.model,None)
+                    value.setdefault('compact_limits',{})[args.model]=None
                 hidden=set(value.get('hidden',[]))
                 if args.hide:hidden.add(args.model)
                 if args.show:hidden.discard(args.model)
@@ -771,6 +819,13 @@ def main(argv=None):
                 if recovery:
                     settings["recovery_build"] = recovery
             result = Monitor(args.state_dir, CoreBackend(settings)).run_once(retry=args.retry)
+            if result.get('phase') in ('installed','idle'):
+                from management import maintenance
+                maintenance(args.state_dir)
+            if result.get('phase') != 'busy' and (args.state_dir / 'monitor.request.json').exists():
+                # The running owner drains the next coalesced request after its
+                # lock is released. Contending callers do not spawn a loop.
+                wake_monitor(args.state_dir)
         if not getattr(args, "quiet", False):
             print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if result.get("phase") in ("failed", "incompatible", "unavailable") else 0

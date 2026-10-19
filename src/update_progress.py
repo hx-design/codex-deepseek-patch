@@ -124,25 +124,25 @@ class Progress:
             self.present()
 
     @optional_view
-    def present(self):
+    def present(self, force=False):
         # Only installed monitor settings can display a view. Preflight/unit jobs
         # without a configured app/home/Python remain completely headless.
         settings = load_json(self.directory / 'settings.json', {})
         value = self.read()
         if not value or not all(settings.get(k) for k in ('app', 'codex_home', 'python_path', 'edition')):
             return
-        if settings['edition'] != value['edition'] or settings.get('progress_ui') is False:
+        if settings['edition'] != value['edition'] or settings.get('progress_ui') is False and not force:
             return
         with control_lock(self.directory):
             ui = load_json(self.directory / 'progress.ui.json', {})
             if ui.get('id') != value['id']:
                 ui = {'id': value['id'], 'presented': []}
             category = 'completed' if value['phase'] == 'completed' else 'available'
-            if category in ui['presented']:
+            if category in ui['presented'] and not force:
                 return
             # A live panel already follows the state into completion.
             if ui.get('pid') and _alive(ui['pid']):
-                ui['presented'].append(category)
+                if category not in ui['presented']:ui['presented'].append(category)
                 atomic_json(self.directory / 'progress.ui.json', ui)
                 return
             python, controller = _python(settings), str(self.root / 'update_progress.py')
@@ -150,9 +150,9 @@ class Progress:
                 command = ['/usr/bin/osascript', '-l', 'JavaScript', str(self.root / 'update_progress_macos.js'),
                            str(self.directory), python, controller]
             elif sys.platform == 'win32':
-                command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-WindowStyle', 'Hidden',
-                    '-File', str(self.root / 'update_progress.ps1'), '-StateDirectory', str(self.directory),
-                    '-PythonExecutable', python, '-ControllerPath', controller]
+                from windows_support import native_ui_command
+                command = native_ui_command(self.root/'update_progress.ps1',{'StateDirectory':str(self.directory),
+                    'PythonExecutable':python,'ControllerPath':controller})
             else:
                 return
             try:
@@ -160,7 +160,7 @@ class Progress:
             except OSError:
                 return  # A missing view never blocks a safe update.
             ui['pid'] = child.pid
-            ui['presented'].append(category)
+            if category not in ui['presented']:ui['presented'].append(category)
             atomic_json(self.directory / 'progress.ui.json', ui)
 
     def metadata(self):

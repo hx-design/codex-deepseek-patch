@@ -215,6 +215,31 @@ class NativeModelSyncTests(unittest.TestCase):
                               fetch_native=fetcher,fetch_provider=fetcher)
             fetcher.assert_not_called()
 
+    def test_settings_service_toggles_and_explicit_selection_reach_native_catalog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            baseline,home,state,native,manifest=self.native_fixture(Path(temp))
+            proxy={'base_url':'http://127.0.0.1:8317/v1','config':str(Path(temp)/'proxy.yaml'),'models':['grok-4.7']}
+            document={'locals':[],'proxy':proxy,'proxy_auto_add':False,'proxy_selection_id':'first','deepseek_enabled':False}
+            p.save_json(state/'connections.json',document)
+            prefs={'context_windows':{'grok-4.7':32768},'compact_limits':{'grok-4.7':28000},'hidden':['grok-4.5']}
+            p.save_json(state/'model-preferences.json',prefs)
+            settings={'edition':'proxy','app':'unused','codex_home':str(home)}
+            available={'grok-4.7':{'context_window':500000},'grok-4.5':{'context_window':500000},'grok-4.9':{'context_window':1000000},'deepseek-flash':{'context_window':1048576}}
+            def sync():
+                return m.synchronize(settings,state,baseline,fetch_native=lambda *_:native,fetch_provider=lambda *_:available,
+                    fetch_document=lambda url:'Context window: 1M' if 'grok-4.9' in url else 'Context window: 500000')
+            first=sync();self.assertEqual(set(first['routes']),{'grok-4.7'})
+            self.assertEqual(first['routes']['grok-4.7']['context_window'],32768)
+            self.assertEqual(first['routes']['grok-4.7']['compact_limit'],28000)
+            document['proxy']=None;p.save_json(state/'connections.json',document)
+            self.assertEqual(sync()['routes'],{})
+            document.update(proxy=proxy,deepseek_enabled=True,proxy_selection_id='second')
+            document['proxy']['models']=['grok-4.7','grok-4.9']
+            p.save_json(state/'connections.json',document)
+            last=sync();self.assertEqual(set(last['routes']),{'deepseek-flash','grok-4.7','grok-4.9'})
+            self.assertEqual(last['routes']['grok-4.7']['context_window'],32768)
+            self.assertEqual(last['routes']['grok-4.9']['context_window'],1000000)
+
     def test_first_native_local_outage_retains_32k_and_8k_models_without_prior_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
             baseline,home,state,native,manifest=self.native_fixture(Path(temp))

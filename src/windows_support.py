@@ -6,6 +6,7 @@ read-only. No third party modules, fuse disabling or plaintext credential files.
 from __future__ import annotations
 
 import ctypes
+import base64
 from contextlib import contextmanager
 import hashlib
 import json
@@ -34,6 +35,25 @@ def background_options():
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = subprocess.SW_HIDE
     return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": startup}
+
+
+def native_ui_command(script, parameters):
+    """Host bundled WinForms code as a command, without changing execution policy.
+
+    Parameters travel as encoded data rather than shell fragments. This is the
+    same built-in PowerShell command host used by the other native utilities;
+    system language/application controls remain in force.
+    """
+    if any(not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', key) or not isinstance(value,(str,bool))
+           for key,value in parameters.items()):
+        raise WindowsSupportError('Invalid native UI parameters')
+    value=base64.b64encode(json.dumps({'script':str(Path(script).resolve()),'parameters':parameters}).encode()).decode()
+    code=r'''$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();
+$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__VALUE__'))|ConvertFrom-Json;
+$p=@{};foreach($entry in $v.parameters.PSObject.Properties){$p[$entry.Name]=$entry.Value};
+$ui=[ScriptBlock]::Create([IO.File]::ReadAllText($v.script,[Text.Encoding]::UTF8));& $ui @p'''.replace('__VALUE__',value)
+    return ['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-STA','-WindowStyle','Hidden',
+            '-EncodedCommand',base64.b64encode(code.encode('utf-16le')).decode()]
 
 
 @contextmanager

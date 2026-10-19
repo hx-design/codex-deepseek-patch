@@ -2,7 +2,8 @@
 
 把已有云端接口和本地模型加入 **官方 Codex 的模型菜单**，在同一个聊天中切换，继续使用原登录、聊天记录和原生工具。
 
-扩展版 **0.5.11-proxy.1** · 更新分支 `codex/existing-proxy-models`
+扩展版 **0.6.0-proxy.1** · 更新分支 `codex/existing-proxy-models`
+
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -11,7 +12,7 @@
 | 版本 | 接入范围 | 更新通道 |
 | --- | --- | --- |
 | [DS 版](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | 原生 GPT + DeepSeek Flash | `main` |
-| 本分支扩展版 | 原生 GPT + 已有云端接口 / 本地服务；DeepSeek 可选 | `codex/existing-proxy-models` |
+| [扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) | 原生 GPT + 已有云端接口 / 本地服务；DeepSeek 可选 | `codex/existing-proxy-models` |
 
 两个版本分别发布、分别更新。扩展版不要求配置 DeepSeek，也不管理外部服务的订阅登录。
 
@@ -21,7 +22,7 @@
 - **同聊天切换**：模型菜单使用原生目录。聊天 ID、工作目录、权限和历史保留；等当前回复结束再切换。
 - **原登录和工具**：GPT 沿用官方认证；其他模型只使用各自服务的凭据。原生工具继续由 Codex 发现、授权和执行。
 - **上下文按模型最大值**：规格与选择共用一份目录；用户主动调小的窗口、隐藏型号继续保留。本地服务加载窗口可单独保留。
-- **原生压缩**：使用 Codex 的可读摘要压缩，换模型后仍使用该模型的窗口。跨模型隔离专有思考签名，保留可读对话与工具结果。
+- **原生功能与压缩**：保留 `openai` 原生身份，恢复下一步指令预判。压缩时机和历史管理仍由 Codex 负责；外部模型用自己的接口生成可读摘要，换模型后仍使用该模型的窗口。跨模型隔离专有思考签名，保留可读对话与工具结果。
 - **自动维护**：官方应用更新后验证兼容性；适配层代码、模型列表和规格分别检查。无变化时安静运行，失败保留当前可用版本。模型列表或规格单独变化时静默准备，准备完成后临时监听 Codex 退出事件，退出后触发安装；快速重开会安全延后；新补丁版本仍显示更新进度。
 
 适配器按 **Responses / Chat Completions 协议和显式能力**工作，不按厂商名称决定路由。Claude、GLM、Qwen 等可通过提供这两类兼容接口的现有服务接入；原生 Anthropic Messages API 尚未实现。服务没有提供的规格可以手动声明，不给未知型号套用任意小窗口。
@@ -69,13 +70,18 @@ python3 patch.py connect --name compatible --kind openai --url https://example.c
 
 需要 DeepSeek 时先运行 `python3 patch.py setup-key`，构建加入 `--with-deepseek`；不使用时无需设置。
 
+
+
 ## 构建、验证、安装
 
 macOS 示例，使用新的空输出目录：
 
+
 ```sh
 python3 patch.py build --app /Applications/ChatGPT.app \
   --connections /absolute/path/connections.json --output /absolute/path/build --verify
+```
+```sh
 # 正常退出 Codex 后：
 python3 patch.py install /absolute/path/build
 python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/path/build
@@ -90,6 +96,24 @@ python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/p
 已有聊天继续通过原生接口保留 ID、内容、归档、模型和思考档位。旧 GPT 专有压缩块改为按当前聊天身份与压缩块核对本机可读记录，由当前选择的模型生成并缓存摘要，使用该模型自己的凭据，**无需 GPT 额度**。分叉对话只继承分叉点之前的记录，原文件保持不变。
 
 已有摘要缓存继续复用；长历史按当前模型的有效窗口分块，小窗口也不会直接塞入过大的旧摘要。若可读记录缺失、损坏或格式无法验证，会提示恢复原记录或补充任务摘要，不会悄悄丢弃历史。摘要生成会使用所选服务的额度。
+
+## 可视化设置
+
+安装并开启监测后，从 **Mac 的“应用程序”用户目录**或 **Windows 开始菜单**打开“Codex 模型设置”。也可运行：
+
+```sh
+python3 patch.py settings
+```
+
+窗口分为“概览、模型与连接、更新与维护”三页：
+
+- 检查更新、重新打开进度、诊断并复制脱敏报告。
+- 检测现成接口、勾选型号、管理凭据引用；扩展版可单独启停 DeepSeek。
+- 查看模型最大窗口、服务加载窗口和实际使用值；修改显示、窗口与压缩阈值，或恢复默认。
+- 调整代码更新、模型同步、检查周期、图片工具；清理过期缓存和处理安装恢复。
+- 查看旧历史恢复的分块进度、摘要缓存使用情况，需要时取消恢复。
+
+窗口按需启动，关闭后退出，不增加常驻管理服务。保存采用冲突检查，保留已有连接、手动隐藏和主动调小的窗口。首次安装仍使用上面的命令；设置窗口用于已安装版本的日常管理。
 
 ## 非阻塞更新进度
 
@@ -107,7 +131,7 @@ python3 monitor.py model-options --model MODEL_ID --hide
 python3 monitor.py model-options --model MODEL_ID --reset-context
 ```
 
-监测默认启用代码更新与模型同步，可在启用时分别用 `--no-code-updates` / `--no-model-sync` 关闭。正在使用 Codex 时等待退出后安装。更新包检查版本通道、不可变提交、文件摘要及隔离测试，DS 与扩展不会交叉覆盖。
+监测默认启用代码更新与模型同步，可在启用时分别用 `--no-code-updates` / `--no-model-sync` 关闭。正在使用 Codex 时等待退出后安装。更新包优先一次下载完整源码，再逐文件校验；旧客户端下载方式仍兼容。检查版本通道、不可变提交、文件摘要及隔离测试，DS 与扩展不会交叉覆盖。用户主动检查会排队，不被正在运行的检查丢弃。过期清理只处理本版本拥有、未被安装或恢复链引用的缓存，保留最近回退版本。
 
 ```sh
 python3 patch.py status /absolute/path/build
@@ -127,6 +151,10 @@ python3 patch.py setup-images --proxy-config /absolute/path/config.yaml
 复用已有 CPA 的图片接口，将其注册为可选 MCP 工具。图片模型、账号权限和额度由外部服务提供。聊天模型具备工具能力即可请求调用；不会把“能聊天”自动当成“具备生图权限”。
 
 非官方项目。请勿提交官方程序、生成的模型目录、个人日志、账号配置或凭据。问题反馈请附系统、Codex 版本、适配层版本、接口类型和脱敏错误。真实模型实测与模拟协议覆盖分别记录在[验证文档](docs/VALIDATION.md)。
+
+## 原生云端功能排查
+
+Dot 使用官方客户端自己的云端长连接。若反复重连，先检查系统 DNS 与代理／VPN 的分流；系统代理能访问网页，不代表原生长连接一定走相同路径。适配层不会自动改全局 DNS、关闭 VPN 或修改官方应用。可用设置窗口导出脱敏诊断；反馈时附连接错误和系统版本。
 
 ## 仓库导航
 

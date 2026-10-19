@@ -41,6 +41,22 @@ class NativeConfigTest(unittest.TestCase):
                                                 mode="native-summary", previous=ownership)
         self.assertEqual(tomllib.loads(restore_config(second, next_ownership)), tomllib.loads(text))
 
+    def test_legacy_custom_provider_migrates_to_native_identity_and_rolls_back(self):
+        from official_client_config import rollback_config
+        text = 'model="gpt-6.1-sol"\nmodel_context_window=512000\n[features]\nmemories=true\n'
+        legacy, old = prepare_config(text, self.catalog, self.endpoint, mode='native-summary')
+        legacy += '\n[mcp_servers.user_owned]\ncommand="preserved"\n'
+        migrated, owned = prepare_config(legacy, self.catalog, self.endpoint, previous=old)
+        parsed = tomllib.loads(migrated)
+        self.assertEqual(parsed['model_provider'], 'openai')
+        self.assertEqual(parsed['model_providers'][PROVIDER], owned['provider'])
+        self.assertNotIn('chatgpt_base_url', parsed)
+        self.assertEqual(parsed['mcp_servers']['user_owned']['command'], 'preserved')
+        self.assertEqual(tomllib.loads(rollback_config(migrated, owned, legacy)), tomllib.loads(legacy))
+        expected = tomllib.loads(text)
+        expected['mcp_servers'] = {'user_owned':{'command':'preserved'}}
+        self.assertEqual(tomllib.loads(restore_config(migrated, owned)), expected)
+
     def test_restore_preserves_unrelated_user_edits(self):
         output, owned = prepare_config('model="gpt-6-astra"\n', self.catalog, self.endpoint, mode="native-summary")
         output = output.replace('model="gpt-6-astra"', 'model="gpt-6.1-sol"')
@@ -114,6 +130,16 @@ class NativeConfigTest(unittest.TestCase):
         self.assertEqual(explicit['ds']['context_window'], 256000)
         self.assertEqual(explicit['ds']['compact_limit'], 230400)
         self.assertEqual(migrate_legacy_routes(routes, {**native, 'model_provider':'deepseek-desktop'}, {}), routes)
+
+    def test_explicit_reset_of_compaction_migrates_to_current_model_window(self):
+        routes = {'ds':{'provider':'deepseek-desktop', 'context_window':512000,
+                        'max_context_window':1048576, 'compact_limit':448000}}
+        native = {'model_context_window':512000}
+        for context, expected in (({},1048576), ({'ds':None},1048576), ({'ds':32768},32768)):
+            with self.subTest(context=context):
+                actual=migrate_legacy_routes(routes,native,{'context_windows':context,'compact_limits':{'ds':None}})['ds']
+                self.assertEqual(actual['context_window'],expected)
+                self.assertEqual(actual['compact_limit'],expected*9//10)
 
     def test_existing_native_catalog_does_not_reapply_historical_root_preferences(self):
         catalog={'models':[{'slug':'gpt-fixture','context_window':128000,'max_context_window':1000000,

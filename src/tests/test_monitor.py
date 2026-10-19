@@ -61,6 +61,22 @@ class FakeBackend:
 
 
 class MonitorTests(unittest.TestCase):
+    def test_busy_owner_preserves_and_consumes_coalesced_settings_request_once(self):
+        self.backend.settings={}
+        monitor.request_update(self.directory,sync_now=True)
+        latest=monitor.request_update(self.directory,retry=True,code_now=True)
+        with monitor.state_lock(self.directory) as locked:
+            self.assertTrue(locked)
+            self.assertEqual(self.poll()['phase'],'busy')
+            self.assertTrue((self.directory/'monitor.request.json').exists())
+        self.poll()
+        self.assertTrue(self.backend.settings['force_sync'])
+        self.assertTrue(self.backend.settings['force_code'])
+        self.assertEqual(self.monitor.state['last_request']['id'],latest['id'])
+        self.assertTrue(self.monitor.state['last_request']['retry'])
+        self.assertFalse((self.directory/'monitor.request.json').exists())
+        self.assertIsNone(monitor.take_update_request(self.directory))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
