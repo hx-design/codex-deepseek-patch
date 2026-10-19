@@ -539,10 +539,23 @@ class ServiceReadinessTests(unittest.TestCase):
                 self.assertTrue(result['ready'])
                 self.assertGreater(result['elapsed_seconds'],20)
 
-    def test_wrong_listener_fails_immediately_and_diagnostics_exclude_secrets(self):
+    def test_old_listener_can_finish_handover_without_accepting_its_identity(self):
+        for platform in ('darwin','win32'):
+            with self.subTest(platform=platform),tempfile.TemporaryDirectory() as temp:
+                service=installer.AdapterService('ds',temp)
+                with mock.object(installer.sys,'platform',platform), mock.object(installer.time,'sleep'), \
+                     mock.object(installer,'health_status',side_effect=[
+                         {'ready':False,'reason':'identity_mismatch'}, {'ready':True,'reason':'ready'}]) as check:
+                    service._wait_ready({})
+                self.assertEqual(check.call_count,2)
+                self.assertTrue(json.loads((Path(temp)/'service-startup.json').read_text())['ready'])
+
+    def test_persistent_wrong_listener_fails_and_diagnostics_exclude_secrets(self):
         with tempfile.TemporaryDirectory() as temp:
             service = installer.AdapterService('ds',temp)
             with mock.object(installer,'health_status',return_value={'ready':False,'reason':'identity_mismatch'}) as check, \
+                 mock.object(installer.time,'monotonic',side_effect=[0,0,0,61,61,61]), \
+                 mock.object(installer.time,'sleep'), \
                  self.assertRaisesRegex(RuntimeError,'identity_mismatch'):
                 service._wait_ready({'health_url':'private-token'})
             check.assert_called_once()

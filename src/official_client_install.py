@@ -111,8 +111,9 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
                 atomic_json(self.directory / 'service-startup.json', {
                     'ready': True, 'elapsed_seconds': round(time.monotonic() - started, 3)})
                 return
-            if status['reason'] == 'identity_mismatch':
-                break
+            # Task Scheduler may report End/Run before the former listener has
+            # released its socket. Only the new exact identity is accepted, but
+            # a transient old response must not abort the handover immediately.
             time.sleep(min(.25, max(0, until - time.monotonic())))
         atomic_json(self.directory / 'service-startup.json', {
             **status, 'elapsed_seconds': round(time.monotonic() - started, 3)})

@@ -146,8 +146,9 @@ def execute(action, job, progress=None):
     raise ValueError('Unknown update worker action')
 
 
-if __name__=='__main__':
-    action,path=sys.argv[1],Path(sys.argv[2])
+def main(argv=None):
+    args=sys.argv[1:] if argv is None else argv
+    action,path=args[0],Path(args[1])
     progress=None
     try:
         job=json.loads(path.read_text(encoding='utf-8'))
@@ -156,8 +157,19 @@ if __name__=='__main__':
         if progress and action=='identity':progress.publish('checking',present=True)
         value=execute(action,job,progress)
         p.save_json(path.with_suffix('.result.json'),value)
+        return 0
+    except p.AppRunningError:
+        if action=='install':
+            if progress:progress.publish('waiting_for_exit')
+            return 75
+        if progress:progress.publish('failed',present=True)
+        return 1
     except Exception as error:
         if progress:progress.publish('failed',present=True)
         from monitor import safe_error
         print(safe_error(error),file=sys.stderr)
-        raise SystemExit(1)
+        return 1
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
