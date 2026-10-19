@@ -21,7 +21,7 @@ from windows_support import background_options
 REPOSITORY = 'limyum-creator/codex-deepseek-patch'
 CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models'}
 CHECK_SECONDS = 3600
-NATIVE_PREFLIGHT_MODULES = ('tests.test_official_client','tests.test_official_client_config','tests.test_official_client_host',
+NATIVE_PREFLIGHT_MODULES = ('tests.test_exit_watch','tests.test_official_client','tests.test_official_client_config','tests.test_official_client_host',
     'tests.test_official_client_update','tests.test_official_client_install','tests.test_official_client_migration','tests.test_legacy_history',
     'tests.test_reasoning_origin','tests.test_chat_completions_compat',
     'tests.test_inference_adapter','tests.test_inference_transport','tests.test_responses_compat',
@@ -463,6 +463,10 @@ class UpdateBackend:
         if progress:validated_close(progress)
 
     def is_running(self):return self.base.is_running()
+
+    def watch_exit(self,build):
+        from exit_watch import arm
+        arm(self.directory)
 
     def promote(self, baseline):
         metadata=self.installed_metadata(baseline)

@@ -2,7 +2,7 @@
 
 Add DeepSeek Flash to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-DS **0.4.6**, update branch `main`.
+DS **0.4.7**, update branch `main`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
@@ -41,6 +41,8 @@ Use `python` and Windows paths on Windows; omit `--app` for official installatio
 
 Existing chats migrate through native metadata APIs without SQL or history rewrites. If an old GPT chat contains proprietary compacted state, its first DS request obtains and caches a readable task summary through GPT, using one GPT request.
 
+Normal DS turns use independent credentials even after GPT quota exhaustion. An uncached proprietary GPT compaction block still needs one available GPT request for conversion. Cached handoffs and new native readable summaries do not have that dependency.
+
 ## Non-blocking progress
 
 A native, dismissible progress window appears for a new update. Continue working or close it; background work continues. Pressing Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion offers Launch Codex, without opening it automatically.
@@ -68,4 +70,4 @@ Unofficial project. Source only: never publish app bundles, extracted catalogs, 
 
 ## Repository layout
 
-The root `patch.py` and `monitor.py` remain the public command entries. Implementation, internal tests and maintenance scripts live under [`src/`](src/); design and validation notes live in [`docs/`](docs/). Portable release packages preserve historical paths for existing automatic updaters. Source organization adds no runtime service. Model-only synchronization stages quietly and waits for normal app exit; new code releases retain the update window.
+The root `patch.py` and `monitor.py` remain the public command entries. Implementation, internal tests and maintenance scripts live under [`src/`](src/); design and validation notes live in [`docs/`](docs/). Portable release packages preserve historical paths for existing automatic updaters. Source organization adds no runtime service. Model-only synchronization stages quietly and arms a temporary process-exit observer and applies after app exit; a fast relaunch safely defers installation; new code releases retain the update window.
