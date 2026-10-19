@@ -22,7 +22,7 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.5.0-proxy.1"
+VERSION = "0.5.1-proxy.1"
 EDITION = "proxy"
 ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"
@@ -393,9 +393,24 @@ def require_stopped(app, *, read_only_source=False):
     if sys.platform == "win32":
         from windows_support import require_stopped as stopped
         return stopped(app, read_only_source=read_only_source)
-    commands = subprocess.check_output(["/bin/ps", "-axo", "command="], text=True).splitlines()
+    processes = subprocess.check_output(["/bin/ps", "-axo", "ppid=,comm="], text=True).splitlines()
     roots = {str(app), str(app.resolve())}
-    require(not any(c.strip().startswith(root + "/Contents/") for c in commands for root in roots),
+    active = []
+    for row in processes:
+        fields = row.strip().split(None, 1)
+        if len(fields) != 2:
+            continue
+        parent, executable = fields
+        if not any(executable.startswith(root + "/Contents/") for root in roots):
+            continue
+        # Electron's orphan crash reporter can outlive a normal application quit.
+        # It has no chats or update writes and must not be mistaken for the UI/CLI.
+        orphan_reporter = parent == "1" and any(
+            executable.startswith(root + "/Contents/Frameworks/") for root in roots
+        ) and executable.endswith("/Helpers/browser_crashpad_handler")
+        if not orphan_reporter:
+            active.append(executable)
+    require(not active,
             "Quit the target app normally, then run this command from Terminal. No process was stopped.")
 
 

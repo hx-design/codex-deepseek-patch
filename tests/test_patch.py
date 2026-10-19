@@ -203,5 +203,21 @@ class TransactionTests(unittest.TestCase):
                 exchange.assert_not_called()
 
 
+
+class MacQuitProcessTests(unittest.TestCase):
+    def test_only_orphan_electron_crash_reporter_is_ignored(self):
+        from unittest import mock
+        from pathlib import Path
+        import patch as subject
+        root=Path('/Applications/Codex.app')
+        reporter=str(root)+'/Contents/Frameworks/Codex Framework.framework/Versions/1/Helpers/browser_crashpad_handler'
+        with mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value='1 '+reporter+'\n'):
+            subject.require_stopped(root)
+        for command in ('2 '+reporter, '1 '+str(root)+'/Contents/MacOS/Codex',
+                        '1 '+str(root)+'/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'):
+            with self.subTest(command=command), mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value=command+'\n'):
+                with self.assertRaises(subject.PatchError):
+                    subject.require_stopped(root)
+
 if __name__ == "__main__":
     unittest.main()

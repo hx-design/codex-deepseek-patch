@@ -5,7 +5,8 @@ ObjC.import('Foundation');
 function run(argv) {
     if (argv.length < 3) throw Error('Expected state directory, Python and controller paths');
     const directory = argv[0], python = argv[1], controller = argv[2];
-    const selfTest = argv.indexOf('--self-test') >= 0;
+    const loopTest = argv.indexOf('--self-test-loop') >= 0;
+    const selfTest = argv.indexOf('--self-test') >= 0 || loopTest;
     for (const path of [directory, python, controller]) {
         if (path[0] !== '/' || /[\x00\r\n]/.test(path)) throw Error('Absolute paths required');
     }
@@ -45,8 +46,15 @@ function run(argv) {
             'dismissClicked:': {types: ['void', ['id']], implementation: function (_) {
                 panel.close;
             }},
+            'pollState:': {types: ['void', ['id']], implementation: function (_) {
+                render(readState());
+                if (loopTest && !closing) dismiss.performClick(null);
+                if (closing) app.terminate(null);
+            }},
             'windowWillClose:': {types: ['void', ['id']], implementation: function (_) {
-                closing = true; action('dismiss');
+                closing = true;
+                try { action('dismiss'); } catch (_) {}
+                if (!selfTest || loopTest) app.terminate(null);
             }}
         }
     });
@@ -94,8 +102,12 @@ function run(argv) {
         edition.stringValue = (value.edition === 'ds' ? 'DS 版' : '扩展版') + (value.version ? ' · ' + String(value.version).slice(0, 80) : '');
         detail.stringValue = String(value.detail || '关闭此窗口不影响后台更新。').slice(0, 600);
         const known = Number.isFinite(value.completed) && Number.isFinite(value.total) && value.total > 0;
-        progress.indeterminate = !known;
-        if (known) {
+        const terminal = ['completed','failed','error','launched'].indexOf(value.phase) >= 0;
+        progress.indeterminate = !known && !terminal;
+        if (terminal) {
+            progress.stopAnimation(null);
+            progress.doubleValue = value.phase === 'completed' ? 100 : 0;
+        } else if (known) {
             progress.stopAnimation(null);
             progress.doubleValue = Math.max(0, Math.min(100, value.completed * 100 / value.total));
         } else progress.startAnimation(null);
@@ -106,7 +118,7 @@ function run(argv) {
     render(readState());
     if (!state) throw Error('Update state unavailable');
     app.finishLaunching;
-    if (selfTest) {
+    if (selfTest && !loopTest) {
         // Build and populate actual native widgets without showing a window.
         if (argv.indexOf('--self-test-action') >= 0) primary.performClick(null);
         if (argv.indexOf('--self-test-dismiss') >= 0) panel.close;
@@ -114,13 +126,12 @@ function run(argv) {
             primary:ObjC.unwrap(primary.title),enabled:!!primary.enabled,indeterminate:!!progress.indeterminate,
             visible:!!panel.visible,nonactivating:true,action:currentAction,protocol:'progress-v1'});
     }
-    panel.orderFrontRegardless;
-    let lastPoll = 0;
-    while (!closing) {
-        const event = app.nextEventMatchingMaskUntilDateInModeDequeue(
-            $.NSEventMaskAny, $.NSDate.dateWithTimeIntervalSinceNow(0.25), $.NSDefaultRunLoopMode, true);
-        if (event) app.sendEvent(event);
-        app.updateWindows;
-        if (Date.now() - lastPoll > 400) { render(readState()); lastPoll = Date.now(); }
-    }
+    if (!loopTest) panel.orderFrontRegardless;
+    // AppKit owns event dispatch so native mouse tracking, close controls and
+    // accessibility actions keep running while a timer refreshes update state.
+    const timer = $.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(
+        0.4, receiver, 'pollState:', null, true);
+    $.NSRunLoop.mainRunLoop.addTimerForMode(timer, $.NSRunLoopCommonModes);
+    app.run;
+    timer.invalidate;
 }

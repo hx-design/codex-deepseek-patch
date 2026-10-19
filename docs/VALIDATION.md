@@ -1,3 +1,11 @@
+# Update panel interaction repair
+
+2026-10-19. macOS now uses the native NSApplication event loop with timer-based state refresh. The close button was confirmed by an actual user click; a hidden native event-loop test also exercises the close callback. Failed/completed panels stop animating on both platforms.
+
+The macOS stopped-app check excludes only an orphan Electron browser_crashpad_handler in the target Frameworks/Helpers path. The application, CLI and other active helpers still block installation. No application process is killed by this check.
+
+---
+
 # Official-client refactor: validation record
 
 2026-10-19. DS 0.4.0 and extension 0.5.0-proxy.1 use the original desktop app plus a small external adapter. Results below distinguish real model calls from synthetic protocol fixtures. The older records remain below as historical evidence.
