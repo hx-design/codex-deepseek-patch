@@ -2,11 +2,17 @@
 
 Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. Existing local GPT chats can switch to DeepSeek and back in the same chat.
 
-**v0.3.7** prevents Mac disposable startup checks from waiting on keychain dialogs, retaining the first-message fix and quiet Windows checks. It supports saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
+**v0.3.8** prevents Mac disposable startup checks from waiting on keychain dialogs, retaining the first-message fix and quiet Windows checks. It supports saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
 
 This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
 
 Two independent editions: **this main branch is DS-only**. The [extension branch](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) supports existing cloud endpoints and local models, optional DS, and switching models within the same chat. Each edition updates independently.
+
+### Windows official application update checks
+
+The managed Windows copy now checks the official release feed without requiring MSIX identity for the current process. The native menu reports the actual result; periodic checks notify about a new release and link to the official installation channel.
+
+Update the official application through that channel. With patch monitoring enabled, it detects the new installed package, validates compatibility and reapplies the selected edition after Codex exits. **Patch code and model specifications retain their independent DS / extension feeds.** Available releases are never misreported as downloaded or ready to install, and network failures remain explicit. macOS retains its native Sparkle updater.
 
 ## Compatibility
 

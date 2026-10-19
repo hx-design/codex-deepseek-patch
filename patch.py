@@ -21,7 +21,7 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.3.7"
+VERSION = "0.3.8"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -35,7 +35,7 @@ KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py",
-                         "windows_support.py", "windows_install.py", "scripts/__init__.py",
+                         "windows_support.py", "windows_install.py", "windows_update_ui.py", "windows_update_ui.js", "scripts/__init__.py",
                          "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
@@ -182,20 +182,22 @@ def compare_archives(original, patched, central=CENTRAL):
     ph, pb, _ = archive_header(patched)
     a, b = dict(entries(oh)), dict(entries(ph))
     require(a.keys() == b.keys(), "Archive member inventory changed")
+    expected = {central} if isinstance(central, str) else set(central)
+    require(expected and expected <= a.keys(), "Unknown expected archive member")
     changed = []
     for path, item in a.items():
         other = b[path]
         if "offset" not in item or item.get("unpacked"):
             require(item == other, "Link/unpacked metadata changed: " + path)
             continue
-        if path != central:
+        if path not in expected:
             require(item == other, "Unrelated member metadata changed: " + path)
         old = read_member(original, item, ob)
         new = read_member(patched, other, pb)
         if old != new:
             changed.append(path)
             check_member(new, other)
-    require(changed == [central], "Unexpected changed members: " + repr(changed))
+    require(set(changed) == expected, "Unexpected changed members: " + repr(changed))
     return len(a)
 
 
