@@ -123,6 +123,7 @@ class EnsureTests(unittest.TestCase):
         mac = host.adapter_launchd_plist(settings)
         self.assertEqual(mac["ProgramArguments"], settings["adapter_command"])
         self.assertTrue(mac["KeepAlive"])
+        self.assertEqual(mac["ProcessType"], "Standard")
         settings["adapter_command"][0] = str(Path(sys.executable).resolve().with_name("pythonw.exe"))
         xml = host.adapter_windows_task_xml(settings, "S-1-5-21-123-456-789-1001")
         # Parse the actual bytes written by the Windows installer. A Unicode

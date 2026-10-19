@@ -23,7 +23,7 @@ import patch as p
 from monitor import atomic_json, state_lock, windows_identity_sid, windows_xml_text
 from official_client import ARCHITECTURE
 from official_client_config import prepare_config, rollback_config, restore_config
-from official_client_host import adapter_launchd_plist, adapter_windows_task_xml, healthy
+from official_client_host import adapter_launchd_plist, adapter_windows_task_xml, healthy, health_status
 from official_client_migration import _set_provider, inventory, migrate, native_session, rollback
 from official_client_update import verify_official
 
@@ -98,12 +98,25 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
             self._windows('/Create', '/TN', self.label, '/XML', str(definition), '/F')
             self._windows('/Change', '/TN', self.label, '/Enable')
             self._windows('/Run', '/TN', self.label)
-        until = time.monotonic() + 20
+        self._wait_ready(settings)
+
+    def _wait_ready(self, settings, timeout=60):
+        """Cold starts get a bounded deadline; failures leave safe evidence."""
+        started = time.monotonic()
+        until = started + timeout
+        status = {'ready': False, 'reason': 'unreachable'}
         while time.monotonic() < until:
-            if healthy(settings):
+            status = health_status(settings, timeout=min(1.5, max(.01, until - time.monotonic())))
+            if status['ready']:
+                atomic_json(self.directory / 'service-startup.json', {
+                    'ready': True, 'elapsed_seconds': round(time.monotonic() - started, 3)})
                 return
-            time.sleep(.2)
-        raise RuntimeError('The native adapter service failed its identity health check')
+            if status['reason'] == 'identity_mismatch':
+                break
+            time.sleep(min(.25, max(0, until - time.monotonic())))
+        atomic_json(self.directory / 'service-startup.json', {
+            **status, 'elapsed_seconds': round(time.monotonic() - started, 3)})
+        raise RuntimeError('The native adapter service failed its identity health check: ' + status['reason'])
 
     def remove(self):
         current = self.snapshot()

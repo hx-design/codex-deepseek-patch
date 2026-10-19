@@ -521,6 +521,43 @@ class ShortcutTransactionTests(unittest.TestCase):
             self.assertEqual((fixture.target/'app.asar').read_text(),'official')
 
 
+class ServiceReadinessTests(unittest.TestCase):
+    def test_cold_start_can_finish_after_twenty_seconds_on_both_platforms(self):
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temp:
+                service = installer.AdapterService('proxy', temp)
+                clock = [0.0]
+                def check(*args, **kwargs):
+                    clock[0] += 11
+                    ready = clock[0] >= 33
+                    return {'ready':ready, 'reason':'ready' if ready else 'timeout'}
+                with mock.object(installer.sys,'platform',platform), \
+                     mock.object(installer.time,'monotonic',side_effect=lambda:clock[0]), \
+                     mock.object(installer.time,'sleep'), mock.object(installer,'health_status',side_effect=check):
+                    service._wait_ready({'health_url':'private-token'})
+                result = json.loads((Path(temp)/'service-startup.json').read_text())
+                self.assertTrue(result['ready'])
+                self.assertGreater(result['elapsed_seconds'],20)
+
+    def test_wrong_listener_fails_immediately_and_diagnostics_exclude_secrets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            service = installer.AdapterService('ds',temp)
+            with mock.object(installer,'health_status',return_value={'ready':False,'reason':'identity_mismatch'}) as check, \
+                 self.assertRaisesRegex(RuntimeError,'identity_mismatch'):
+                service._wait_ready({'health_url':'private-token'})
+            check.assert_called_once()
+            self.assertNotIn('private-token',(Path(temp)/'service-startup.json').read_text())
+
+    def test_unavailable_listener_reaches_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            service = installer.AdapterService('ds',temp)
+            with mock.object(installer.time,'monotonic',side_effect=[0,0,0,61,61,61]), \
+                 mock.object(installer.time,'sleep'), \
+                 mock.object(installer,'health_status',return_value={'ready':False,'reason':'unreachable'}), \
+                 self.assertRaisesRegex(RuntimeError,'unreachable'):
+                service._wait_ready({})
+
+
 class WindowsServiceTests(unittest.TestCase):
     def test_snapshot_uses_numeric_running_state_independent_of_registration(self):
         for state, enabled in ((3,True), (1,False), (4,True)):
