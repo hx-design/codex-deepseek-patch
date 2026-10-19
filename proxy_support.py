@@ -122,7 +122,9 @@ def provider_config(settings, helper):
             + 'supports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
             + f'\n[model_providers.{PROVIDER}.auth]\ncommand = ' + json.dumps(str(command)) + '\n'
             + 'args = ' + json.dumps([str(helper), "credential-get", "--config", settings["config"]]) + '\n'
-            + 'refresh_interval_ms = 0\n')
+            # Native zero means cache forever. Recheck the idle-exiting listener
+            # on each inference request so an existing chat can wake it again.
+            + 'refresh_interval_ms = 1\n')
 
 
 def add_catalog(catalog, models):

@@ -3,7 +3,7 @@ import io
 import json
 import unittest
 
-from responses_compat import ToolAdapter, SEARCH_NAME
+from responses_compat import ToolAdapter, SEARCH_NAME, normalize_numeric_arguments
 
 
 SEARCH = {'type': 'tool_search', 'execution': 'client', 'description': 'Find tools',
@@ -14,6 +14,47 @@ LOADED = {'type': 'namespace', 'name': 'files', 'description': 'File tools', 'to
 
 
 class ToolAdapterTests(unittest.TestCase):
+    def test_grok_integral_decimal_tool_argument_becomes_native_integer(self):
+        tool={'type':'function','name':'exec_command','parameters':{'type':'object','properties':{'cmd':{'type':'string'},'yield_time_ms':{'type':'number'}}}}
+        adapter=ToolAdapter({'tools':[tool]})
+        call={'type':'function_call','name':'exec_command','call_id':'same','arguments':'{"cmd":"print(30000.0)","yield_time_ms":30000.0}'}
+        actual=adapter.output_item(call)
+        self.assertEqual(json.loads(actual['arguments']),{'cmd':'print(30000.0)','yield_time_ms':30000})
+        self.assertIs(type(json.loads(actual['arguments'])['yield_time_ms']),int)
+        self.assertEqual(actual['call_id'],'same')
+        self.assertNotIn('namespace',actual)
+
+    def test_normalization_keeps_fractional_strings_unknown_fields_and_exact_numbers(self):
+        schema={'type':'object','properties':{'integer':{'type':'integer'},'fraction':{'type':'number'}}}
+        for value in ['1.5','"30000.0"','true','null','1e99']:
+            raw='{"integer":'+value+'}'
+            self.assertEqual(normalize_numeric_arguments(raw,schema),raw)
+        raw='{"integer":3e4,"fraction":0.123456789012345678901,"unknown":99.0,"command":"30000.0"}'
+        normalized=normalize_numeric_arguments(raw,schema)
+        self.assertIn('"integer":30000',normalized)
+        self.assertIn('0.123456789012345678901',normalized)
+        self.assertIn('"unknown":99.0',normalized)
+        self.assertIn('"command":"30000.0"',normalized)
+        self.assertEqual(normalize_numeric_arguments('{broken',schema),'{broken')
+
+    def test_nested_integer_schema_and_namespace_alias_are_restored(self):
+        schema={'type':'object','$defs':{'count':{'type':['integer','null']}},'properties':{'items':{'type':'array','items':{'$ref':'#/$defs/count'}}}}
+        tool={'type':'namespace','name':'batch','tools':[{'type':'function','name':'read','parameters':schema}]}
+        adapter=ToolAdapter({'tools':[tool]},flatten_namespaces=True)
+        item=adapter.output_item({'type':'function_call','name':'batch__read','arguments':'{"items":[1.0,null,2.5]}','call_id':'c'})
+        self.assertEqual((item['namespace'],item['name']),('batch','read'))
+        self.assertEqual(item['arguments'],'{"items":[1,null,2.5]}')
+
+    def test_stream_normalizes_only_complete_integer_calls(self):
+        adapter=ToolAdapter({'tools':[{'type':'function','name':'shell','parameters':{'type':'object','properties':{'timeout_ms':{'type':'integer'}}}}]})
+        start={'id':'i','type':'function_call','name':'shell','call_id':'c','arguments':''}
+        self.assertEqual(adapter.events({'type':'response.output_item.added','item':start}),[])
+        self.assertEqual(adapter.events({'type':'response.function_call_arguments.delta','item_id':'i','delta':'{"timeout_ms":30000.0}'}),[])
+        done={**start,'arguments':'{"timeout_ms":30000.0}'}
+        events=adapter.events({'type':'response.output_item.done','item':done})
+        self.assertEqual([json.loads(e['item']['arguments']) for e in events],[{'timeout_ms':30000}]*2)
+        self.assertEqual(adapter.response({'output':[done]})['output'][0]['arguments'],'{"timeout_ms":30000}')
+
     def test_search_round_trip_preserves_call_identity_and_loads_only_matches(self):
         adapter = ToolAdapter({'tools': [SEARCH]})
         function = adapter.body['tools'][0]

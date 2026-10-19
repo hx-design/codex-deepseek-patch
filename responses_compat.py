@@ -5,13 +5,71 @@ No tools are executed here. Codex retains discovery, execution and approvals.
 import copy
 import hashlib
 import json
+from decimal import Decimal, InvalidOperation
 
 SEARCH_NAME = 'codex_patch_tool_search'
+
+
+def has_numeric_schema(value, depth=0):
+    if depth > 32 or not isinstance(value, dict):
+        return False
+    kind = value.get('type')
+    if kind in ('integer','number') or isinstance(kind, list) and any(k in kind for k in ('integer','number')):
+        return True
+    return any(has_numeric_schema(child, depth+1) for child in value.values() if isinstance(child, dict)) or any(
+        has_numeric_schema(child, depth+1) for children in value.values() if isinstance(children, list) for child in children)
+
+
+def normalize_numeric_arguments(arguments, schema):
+    """Preserve numeric values; write integral decimals as JSON integers in declared numeric fields."""
+    if not isinstance(arguments, str):
+        return arguments
+    changed = False
+    def walk(value, rule, depth=0):
+        nonlocal changed
+        if depth > 32 or not isinstance(rule, dict):
+            return value
+        reference = rule.get('$ref')
+        if isinstance(reference, str) and reference.startswith('#/'):
+            resolved = schema
+            for part in reference[2:].split('/'):
+                resolved = resolved.get(part.replace('~1','/').replace('~0','~'), {}) if isinstance(resolved,dict) else {}
+            value = walk(value, resolved, depth+1)
+        kind = rule.get('type')
+        numeric = kind in ('integer','number') or isinstance(kind,list) and any(k in kind for k in ('integer','number'))
+        if numeric and isinstance(value,Decimal) and value.is_finite() and -(2**63) <= value <= 2**64-1 and value == value.to_integral_value():
+            changed = True
+            return int(value)
+        if isinstance(value, dict):
+            properties = rule.get('properties', {})
+            for key in value:
+                child = properties.get(key, rule.get('additionalProperties', {}))
+                value[key] = walk(value[key], child, depth+1)
+        elif isinstance(value, list):
+            prefixes = rule.get('prefixItems', [])
+            value = [walk(item, prefixes[i] if i < len(prefixes) else rule.get('items',{}), depth+1) for i,item in enumerate(value)]
+        for keyword in ('allOf','anyOf','oneOf'):
+            for child in rule.get(keyword, []):
+                value = walk(value, child, depth+1)
+        return value
+    def encode(value):
+        if isinstance(value,Decimal):
+            if not value.is_finite():raise ValueError('Nonfinite number')
+            return str(value)
+        if isinstance(value,dict):return '{'+','.join(json.dumps(k)+':'+encode(v) for k,v in value.items())+'}'
+        if isinstance(value,list):return '['+','.join(encode(v) for v in value)+']'
+        return json.dumps(value,allow_nan=False)
+    try:
+        value=walk(json.loads(arguments,parse_float=Decimal),schema)
+        return encode(value) if changed else arguments
+    except (ValueError,TypeError,InvalidOperation,RecursionError):
+        return arguments  # Codex retains validation and reports malformed calls.
 
 
 class ToolAdapter:
     def __init__(self, body, flatten_namespaces=False):
         self.kinds = {}
+        self.schemas = {}
         self.pending = {}
         self.sequence = 0
         self.body = copy.deepcopy(body)
@@ -86,6 +144,10 @@ class ToolAdapter:
                                    'required': ['input'], 'additionalProperties': False}}
         elif tool.get('name') == SEARCH_NAME:
             raise ValueError('Tool name collides with the discovery adapter')
+        elif kind == 'function' and has_numeric_schema(tool.get('parameters')):
+            name=tool['name'];key=name if namespace is None else namespace+'_'+name
+            self.kinds[key]=('function',namespace,name)
+            self.schemas[(namespace,name)]=tool['parameters']
         return tool
 
     def add_loaded(self, tool):
@@ -127,7 +189,11 @@ class ToolAdapter:
         if not descriptor:
             return item
         if descriptor[0]=='function':
-            return {**item,'name':descriptor[2],'namespace':descriptor[1]}
+            result={**item,'name':descriptor[2]}
+            if descriptor[1] is not None:result['namespace']=descriptor[1]
+            schema=self.schemas.get((descriptor[1],descriptor[2]))
+            if schema:result['arguments']=normalize_numeric_arguments(item.get('arguments'),schema)
+            return result
         arguments = item.get('arguments', '{}')
         args = json.loads(arguments) if isinstance(arguments, str) else arguments
         result = {k: v for k, v in item.items() if k in ('id', 'call_id', 'status')}

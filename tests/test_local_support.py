@@ -15,6 +15,14 @@ import local_bridge
 
 
 class LocalTests(unittest.TestCase):
+    def test_only_idle_compatibility_listener_needs_per_request_auth_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);connection={**self.connection(),'key_file':str(root/'key'),'tool_adapter_models':['probe']}
+            normal=p.tomllib.loads(local.provider_config(connection,root/'local_support.py'))['model_providers']['local-test']
+            adapted=p.tomllib.loads(local.provider_config(connection,root/'local_support.py',True))['model_providers']['local-test-compat']
+            self.assertEqual(normal['auth']['refresh_interval_ms'],0)
+            self.assertEqual(adapted['auth']['refresh_interval_ms'],1)
+
     def connection(self):
         return {'id':'local-test','name':'Test','kind':'ollama','base_url':'http://127.0.0.1:11434/v1','models':[]}
 

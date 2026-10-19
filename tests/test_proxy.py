@@ -13,6 +13,12 @@ from test_offline import FakeRpc
 
 
 class ProxyTests(unittest.TestCase):
+    def test_idle_listener_auth_is_rechecked_for_subsequent_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            provider=patch.tomllib.loads(ps.provider_config(self.settings(root),root/'proxy_support.py'))['model_providers'][ps.PROVIDER]
+            self.assertEqual(provider['auth']['refresh_interval_ms'],1)
+
     def settings(self, root):
         return {"config": str(root / "proxy.yaml"), "base_url": "http://127.0.0.1:8317/v1", "models": list(ps.MODELS)}
 

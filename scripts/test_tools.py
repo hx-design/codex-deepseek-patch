@@ -56,6 +56,29 @@ class Stub(http.server.BaseHTTPRequestHandler):
         compact = not tools
         if compact:
             item = self.message('A short synthetic summary. Continue the requested test.')
+        elif phase == 'integer_call':
+            candidates = [(None, t) for t in tools if t.get('type') == 'function']
+            candidates += [(t['name'], child) for t in tools if t.get('type') == 'namespace'
+                           for child in t.get('tools', [])]
+            command = next(((ns, t) for ns, t in candidates if t.get('name') == 'exec_command'), None)
+            if not command:
+                error = 'Native exec_command missing from the test catalog'
+                namespace, declaration = None, {'name': 'exec_command'}
+            else:
+                namespace, declaration = command
+            self.server.integer_schema = declaration.get('parameters')
+            item = {'type': 'function_call', 'id': 'fc_integer_'+str(index), 'call_id': 'integer_'+str(index),
+                    'status': 'completed', 'name': declaration['name'],
+                    'arguments': '{"cmd":"echo INTEGER_TOOL_OK","yield_time_ms":1000.0,"max_output_tokens":300.0}'}
+            if namespace:
+                item['namespace'] = namespace
+            self.server.phase = 'integer_answer'
+        elif phase == 'integer_answer':
+            outputs = [str(i.get('output')) for i in body.get('input', [])
+                       if i.get('type') == 'function_call_output' and str(i.get('call_id', '')).startswith('integer_')]
+            if not outputs or not any('INTEGER_TOOL_OK' in value for value in outputs) or any('failed to parse' in value for value in outputs):
+                error = 'Integral-decimal native command did not execute: '+str(outputs)
+            item = self.message('INTEGER_TOOL_OK')
         elif phase == 'search':
             if len(raw) > 120000 or not any(t.get('name') == SEARCH_NAME for t in tools):
                 error = 'Eager tool catalog or missing native discovery'
@@ -162,6 +185,19 @@ def main(directory):
                         report['models'].append({'model': model, 'turns': 3, 'requests': len(records), 'compactions': 1,
                                                  'context_window': route['context_window'], 'largest_request_bytes': max(r['request_bytes'] for r in records)})
                         print('PASS:', model, '160 MCP tools, discovery/execution before and after compaction', flush=True)
+                    if models:
+                        upstream.phase = 'integer_call'; start = len(upstream.records)
+                        bridge.profile['flatten_namespaces'] = False
+                        thread = rpc.request('thread/start', {'model': models[0], 'modelProvider': 'probe', 'cwd': str(base),
+                            'ephemeral': True, 'approvalPolicy': 'never', 'sandbox': 'read-only',
+                            'baseInstructions': 'Run the harmless synthetic command test.',
+                            'config': {'web_search': 'disabled', 'features.memories': False}})
+                        rpc.turn(thread['thread']['id'])
+                        records = upstream.records[start:]
+                        patch.require(len(records) == 2 and not any(r['error'] for r in records),
+                                      'Native integral-decimal tool regression failed')
+                        report['native_integer_arguments'] = 'passed'
+                        print('PASS: native exec_command accepts schema-normalized integral decimals', flush=True)
                     report['status'] = 'passed'
                 finally:
                     stop_probe(process)
@@ -169,6 +205,7 @@ def main(directory):
         for server in (bridge, upstream):
             server.shutdown(); server.server_close()
         report['requests']=upstream.records
+        report['integer_argument_schema']=getattr(upstream,'integer_schema',None)
         patch.save_json(directory/'tool-loading-probe-result.json', report)
         manifest['tool_loading_probe'] = report['status']; patch.save_json(directory/'manifest.json', manifest)
     return report

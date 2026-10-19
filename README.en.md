@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.7-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.8-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -33,7 +33,13 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.7-proxy.1` update runtime uses **26 source files totaling about 324 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.8-proxy.1` update runtime uses **26 source files totaling about 331 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+
+### 0.4.8 fix: idle gateway failures and numeric tool arguments
+
+- Refresh the helper on each request so an expired idle listener is restarted before sending. The helper still exits after 120 idle seconds.
+- Write integral decimal values such as `30000.0` as JSON integers in declared numeric tool fields. Preserve fractional values, strings, unknown fields and native approvals.
+- Retain the fresh-chat first-message fix and windowless Windows checks. Reopen Codex after installation and continue the existing chat.
 
 ### 0.4.2 fix: Windows background updates
 

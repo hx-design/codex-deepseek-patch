@@ -165,7 +165,7 @@ def provider_config(connection,helper,chat_only=False):
         text+='\n[model_providers.'+connection['id']+'.auth]\ncommand = '+json.dumps(str(executable))+'\n'
         arguments=[str(helper),'credential-get','--key-file',connection['key_file']] if not adapted else [
             str(Path(helper).with_name('local_bridge.py')),'credential-get',str(Path(helper).parent/(connection['id']+'-bridge.json'))]
-        text+='args = '+json.dumps(arguments)+'\nrefresh_interval_ms = 0\n'
+        text+='args = '+json.dumps(arguments)+'\nrefresh_interval_ms = '+('1' if adapted else '0')+'\n'
     return text
 
 
