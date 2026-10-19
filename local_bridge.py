@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -22,6 +23,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads=True
     allow_reuse_address=True
+
+    def server_bind(self):
+        # A numeric loopback listener needs no reverse DNS. HTTPServer's default
+        # getfqdn() can block startup on machines with a slow local resolver.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

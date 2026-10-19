@@ -38,7 +38,7 @@ The `0.4.9-proxy.1` update runtime uses **26 source files totaling about 331 KiB
 ### 0.4.9 fix: test keychains and Windows helper permissions
 
 - Mac disposable startup checks use a mock keychain; the installed application keeps its real login keychain.
-- Starting an adapter no longer requires a writable log file, preventing desktop authentication failures caused by log ownership or permissions.
+- Adapter startup requires neither a writable log file nor reverse DNS, avoiding desktop permission failures and slow resolver stalls.
 - Every bug fix reviews macOS / Windows across both editions, as required by CONTRIBUTING.
 
 ### 0.4.8 fix: idle gateway failures and numeric tool arguments

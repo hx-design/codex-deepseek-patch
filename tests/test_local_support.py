@@ -17,6 +17,14 @@ import local_bridge
 
 
 class LocalTests(unittest.TestCase):
+    def test_loopback_listener_never_waits_for_reverse_dns(self):
+        with mock.object(socket,'getfqdn',side_effect=RuntimeError('A local resolver must not be consulted')):
+            server=local_bridge.Server(('127.0.0.1',0),local_bridge.Handler)
+            try:
+                self.assertEqual(server.server_name,'127.0.0.1')
+                self.assertGreater(server.server_port,0)
+            finally:server.server_close()
+
     def test_native_listener_starts_when_auth_helper_cannot_write_any_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);profile=root/'readonly-bridge.json'
