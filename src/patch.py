@@ -46,6 +46,7 @@ SERVICE_RUNTIME_FILES += ("official_client.py", "official_client_config.py", "of
                           "legacy_history.py", "reasoning_origin.py", "chat_completions_compat.py", "scripts/test_official_client.py")
 SERVICE_RUNTIME_FILES += ("official_client_shortcut.py", "update_progress.py", "update_progress_macos.js", "update_progress.ps1")
 SERVICE_RUNTIME_FILES += ("exit_watch.py", "local_history.py")
+SERVICE_RUNTIME_FILES += ("management.py", "settings_macos.js", "settings_windows.ps1")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -519,7 +520,14 @@ def restore(args):
         if settings.get('edition') == manifest['edition'] and settings.get('baseline') and Path(settings['baseline']).resolve() == directory:
             with monitor.state_lock(state) as locked:
                 require(locked, 'The update monitor is busy; retry restoration after its current check')
+                if getattr(args,'settings_revision',None) is not None:
+                    from management import revision
+                    require(revision(state)==args.settings_revision,'Settings changed; refresh before restoration')
                 monitor.Scheduler(state).disable()
+                result=__import__('official_client_install').uninstall(directory)
+                from management import remove_launcher
+                remove_launcher(state)
+                return result
         return __import__('official_client_install').uninstall(directory)
     if manifest.get("deployment_target"):
         from backend import restore_windows
@@ -619,6 +627,14 @@ def main():
     p=subs.add_parser('recover',help='Recover an interrupted native adapter activation')
     p.add_argument('directory',type=Path)
     p.set_defaults(func=lambda args: __import__('official_client_install').recover(args.directory))
+    p=subs.add_parser('settings',help='Open the integrated native model settings window')
+    p.add_argument('--state-dir',type=Path)
+    p.set_defaults(func=lambda args: __import__('management').main(['show'] +
+        (['--state-dir',str(args.state_dir)] if args.state_dir else [])))
+    p=subs.add_parser('diagnose',help='Print a redacted installation and connection report')
+    p.add_argument('--state-dir',type=Path)
+    p.set_defaults(func=lambda args: __import__('management').main(['diagnose'] +
+        (['--state-dir',str(args.state_dir)] if args.state_dir else [])))
     p = subs.add_parser("setup-key")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
@@ -649,7 +665,9 @@ def main():
     p.set_defaults(func=__import__("local_support").connect)
     args = parser.parse_args()
     try:
-        args.func(args)
+        result = args.func(args)
+        if args.action in ('settings','diagnose'):
+            return result
         if args.action=='build' and args.verify:__import__('update_worker').verify_build(args.output)
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)

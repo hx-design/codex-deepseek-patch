@@ -1,3 +1,18 @@
+# Settings, maintenance and native feature preservation
+
+2026-10-20. The coordinated DS 0.5 / extension 0.6 candidate adds an on-demand AppKit/WinForms settings window, queued update checks, verified archive downloads, conservative owned-cache cleanup, redacted diagnostics and cancellable old-history recovery status.
+
+- Native CLI fixtures pass on macOS and ordinary-user Windows in both editions: legacy-provider metadata migration to builtin `openai`, prediction fork eligibility, original authentication, GPT–DS–Grok–Gemini–GPT switching, local Chat Completions, reasoning selection, 160 tools, native custom tools, per-model windows and automatic/manual compaction.
+- External compaction produces a self-contained readable handoff through the selected service. Native Codex still schedules compaction and installs its history. GPT encrypted history uses the existing selected-model recovery path when switching away; fixtures verify continuation after GPT quota exhaustion.
+- The exact official `alpha/search` endpoint preserves native search authentication and bytes. Other arbitrary endpoints stay rejected; no provider credentials or model routing are applied to native search.
+- Settings tests exercise private asynchronous requests, window close, actual native controls, input validation, stale-edit conflicts, rollback on failed writes, context reset, service toggles, saved reductions/hiding, secret-free diagnostic reports, and owned launcher lifecycle. Routine tests do not show production windows or change system execution policy.
+- Paired candidates require content-bound native/unit receipts for all four combinations plus source CI. Independent channel versions and sequences remain intact. Archive corruption never falls back to unverified downloads; cleanup retains active, recent and recovery-referenced builds.
+- Dot reconnecting on the development Mac was traced separately to conflicting system DNS routing. A user-applied domain-specific resolver restored the original native connection without modifying Codex or disabling Tailscale. This machine-specific resolver is not installed by the patch.
+
+Private receipts, native results and UI captures are retained outside release files. Final receipts describe exact candidate validation; machine installation is verified separately.
+
+---
+
 # Preserve moved workspaces during metadata migration
 
 2026-10-19. A legacy archived chat exposed native resume falling back to its original rollout directory after a later desktop workspace move. Migration now records the complete protected metadata snapshot and supplies the saved cwd explicitly. Windows path comparisons normalize separators and verbatim prefixes while retaining folder case and all other metadata checks. Interrupted older journals require an exact matching original snapshot before recovery.

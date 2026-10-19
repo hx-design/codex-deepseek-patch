@@ -13,6 +13,22 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_explicit_checks_and_model_edits_work_with_automatic_checks_disabled(self):
+        for force_model,force_code in ((False,False),(True,False),(True,True)):
+            with self.subTest(model=force_model,code=force_code),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);obj=object.__new__(u.UpdateBackend)
+                obj.directory=root;obj.edition='ds';obj.prepared=False;obj.base=Mock(baseline=None)
+                obj.cache={};obj.cache_path=root/'updates.json';obj.package=p.ROOT
+                obj.progress=None;obj.warnings=[];obj.model_snapshot=None
+                obj.settings={'auto_update':False,'model_sync':False,'force_sync':force_model,'force_code':force_code}
+                with mock.object(u,'public_get',side_effect=OSError('offline fixture')) as check, \
+                     mock.object(u,'worker',return_value={'edition':'ds','runtime_digest':'fixture','architecture':'official-client-v1'}) as worker, \
+                     mock('official_client_update.read_manifest',return_value={}):
+                    obj.prepare()
+                self.assertEqual(check.call_count,int(force_code))
+                self.assertEqual([call.args[1] for call in worker.call_args_list],['identity']+(['sync-models'] if force_model else []))
+                self.assertFalse(obj.settings['auto_update']);self.assertFalse(obj.settings['model_sync'])
+
     def test_reopen_status_crosses_real_child_process_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -233,3 +249,117 @@ class ExtensionWorkerTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class ArchiveAndReleaseTests(unittest.TestCase):
+    release = UpdateTests.release
+    def archive(self, release, contents, extra=None):
+        import io, zipfile
+        stream = io.BytesIO()
+        prefix = u.REPOSITORY.split('/')[-1] + '-' + release['commit'] + '/'
+        with zipfile.ZipFile(stream, 'w') as package:
+            for name, raw in {**contents, **(extra or {})}.items():package.writestr(prefix + name, raw)
+        return stream.getvalue()
+
+    def test_archive_download_keeps_per_file_integrity_and_old_fallback(self):
+        import urllib.error
+        release, contents = self.release()
+        release['archive'] = u.archive_descriptor(release['commit'])
+        archive = self.archive(release, contents)
+        with tempfile.TemporaryDirectory() as temp, mock.object(u.subprocess, 'run', return_value=Mock(returncode=0,stderr='')):
+            fetch = Mock(return_value=archive)
+            root = u.source_package(release, Path(temp), fetch)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual((root/'edition.json').read_bytes(), contents['edition.json'])
+            self.assertTrue((root/'.package.json').is_file())
+        calls = []
+        def fallback(url):
+            calls.append(url)
+            if 'codeload.github.com' in url:raise urllib.error.URLError('unavailable')
+            return contents[url.split('/'+release['commit']+'/',1)[1]]
+        with tempfile.TemporaryDirectory() as temp, mock.object(u.subprocess, 'run', return_value=Mock(returncode=0,stderr='')):
+            u.source_package(release, Path(temp), fallback)
+        self.assertEqual(len(calls), len(contents)+1)
+
+    def test_archive_corruption_traversal_duplicates_or_foreign_url_never_fall_back(self):
+        import io, zipfile
+        release, contents = self.release();release['archive'] = u.archive_descriptor(release['commit'])
+        corrupt = self.archive(release, {**contents, 'patch.py': b'changed'})
+        unsafe = self.archive(release, contents, {'../escape': b'bad'})
+        for raw in (corrupt, unsafe):
+            with tempfile.TemporaryDirectory() as temp:
+                fetch = Mock(return_value=raw)
+                with self.assertRaises((p.PatchError, ValueError)):u.source_package(release, Path(temp), fetch)
+                self.assertEqual(fetch.call_count,1)
+                self.assertFalse((Path(temp)/'escape').exists())
+        release['archive']['url'] = 'https://example.com/a.zip'
+        with self.assertRaises(p.PatchError):u.validate_release(release,'ds')
+
+    def test_cleanup_preserves_reference_chains_newest_unknown_data_and_other_editions(self):
+        import time
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);old=time.time()-20*86400
+            monitor.atomic_json(root/'settings.json',{'edition':'ds','baseline':str(root/'builds/active')})
+            monitor.atomic_json(root/'state.json',{'phase':'installed'})
+            for name in ('ancestor','active','orphan','fresh','other'):
+                path=root/'builds'/name;path.mkdir(parents=True)
+                manifest={'edition':'proxy' if name=='other' else 'ds','architecture':'official-client-v1','status':'prepared'}
+                if name=='active':manifest['legacy_baseline']=str(root/'builds/ancestor')
+                monitor.atomic_json(path/'manifest.json',manifest)
+                os.utime(path,(old,old))
+            (root/'builds/unknown').mkdir();(root/'builds/unknown/personal.txt').write_text('preserve')
+            os.utime(root/'builds/active',(time.time(),time.time()))
+            os.utime(root/'builds/fresh',(time.time(),time.time()))
+            preview=u.prune_update_cache(root)
+            self.assertEqual([v['name'] for v in preview['items']],['orphan'])
+            self.assertTrue((root/'builds/orphan').exists())
+            result=u.prune_update_cache(root,dry_run=False)
+            self.assertEqual(result['bytes'],preview['bytes'])
+            self.assertFalse((root/'builds/orphan').exists())
+            for name in ('ancestor','active','fresh','other','unknown'):self.assertTrue((root/'builds'/name).exists())
+
+    def test_cleanup_prunes_unreferenced_finished_transactions_but_keeps_incomplete_recovery(self):
+        import time
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);old=time.time()-20*86400
+            monitor.atomic_json(root/'settings.json',{'edition':'ds','baseline':str(root/'builds/active')})
+            monitor.atomic_json(root/'state.json',{'phase':'installed'})
+            for name,phase in [('active','committed'),('recent','committed'),('orphan','committed'),
+                               ('uninstalled','complete'),('pending','config_installed')]:
+                path=root/'builds'/name;path.mkdir(parents=True)
+                monitor.atomic_json(path/'manifest.json',{'edition':'ds','architecture':'official-client-v1','status':'installed'})
+                monitor.atomic_json(path/('native-uninstall-transaction.json' if name=='uninstalled' else 'native-install-transaction.json'),{'phase':phase})
+                age=time.time() if name in ('active','recent') else old
+                os.utime(path,(age,age))
+            self.assertEqual({v['name'] for v in u.prune_update_cache(root)['items']},{'orphan','uninstalled'})
+
+
+class PairedCandidateTests(unittest.TestCase):
+    def test_both_editions_share_one_core_without_changing_checkout_or_feed(self):
+        import subprocess
+        from scripts import release_manifest as release
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'repo';root.mkdir()
+            def git(*args):return subprocess.check_output(['git',*args],cwd=root,text=True,**u.background_options()).strip()
+            git('init','-q');git('config','user.name','Release Test');git('config','user.email','test@example.invalid')
+            (root/'src/tests').mkdir(parents=True)
+            for name in ('patch.py','monitor.py','updater.py','update_worker.py','model_sync.py','common.py','tests/test_stub.py'):
+                (root/'src'/name).write_text('# shared source\n')
+            for name in ('patch.py','monitor.py','README.md','README.en.md'):(root/name).write_text('version 1.0.0\n')
+            bases={}
+            for channel in ('ds','proxy'):
+                metadata={'edition':channel,'branch':u.CHANNELS[channel],'version':'1.0.0','architecture':'official-client-v1'}
+                (root/'src/edition.json').write_text(json.dumps(metadata))
+                (root/'update.json').write_text(json.dumps({**metadata,'sequence':7}))
+                git('add','.');git('commit','-qm',channel);bases[channel]=git('rev-parse','HEAD')
+            before=(root/'update.json').read_bytes();head=git('rev-parse','HEAD')
+            with mock.object(release,'ROOT',root):
+                candidate=release.prepare_pair(head,Path(temp)/'candidate',{'ds':'1.1.0','proxy':'2.0.0-proxy.1'},bases=bases)
+            self.assertEqual(git('rev-parse','HEAD'),head)
+            self.assertEqual((root/'update.json').read_bytes(),before)
+            self.assertEqual(candidate['editions']['ds']['release']['core_sha256'],candidate['editions']['proxy']['release']['core_sha256'])
+            self.assertEqual(candidate['editions']['ds']['release']['sequence'],8)
+            self.assertEqual(candidate['editions']['proxy']['release']['edition'],'proxy')
+            with self.assertRaisesRegex(ValueError,'Missing validation'):release.require_receipts(candidate,Path(temp)/'proof')
+            candidate['editions']['ds']['release']['files']['common.py']='0'*64
+            self.assertNotEqual(candidate['id'],release.candidate_id(candidate))

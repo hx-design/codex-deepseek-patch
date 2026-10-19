@@ -139,10 +139,18 @@ def resolve_request(body, target, *, legacy_origins=None):
 
 
 def _source_path(path, home):
-    source = Path(path)
+    def normalized(value):
+        text = str(value)
+        if os.name == 'nt':
+            if text.startswith('\\\\?\\UNC\\'):
+                text = '\\\\' + text[8:]
+            elif len(text) >= 7 and text.startswith('\\\\?\\') and text[4].isalpha() and text[5:7] == ':\\':
+                text = text[4:]
+        return Path(text)
+    source, home = normalized(path), normalized(home)
     if not source.is_absolute():
         raise ValueError()
-    root = home.resolve(strict=True)
+    root = normalized(home.resolve(strict=True))
     try:
         relative = source.relative_to(home)
         base = home
@@ -157,7 +165,7 @@ def _source_path(path, home):
         cursor /= part
         if cursor.is_symlink():
             raise ValueError()
-    resolved = source.resolve(strict=True)
+    resolved = normalized(source.resolve(strict=True))
     resolved.relative_to(root / relative.parts[0])
     if not source.is_file():
         raise ValueError()

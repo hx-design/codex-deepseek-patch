@@ -145,6 +145,28 @@ class AdapterTests(unittest.TestCase):
     def connect(self, **headers):
         return connect_websocket(self.wsurl, headers, timeout=3)[0]
 
+    def test_native_search_uses_official_origin_and_auth_with_external_model(self):
+        for edition in ('ds', 'proxy'):
+            for account in (None, 'fixture-account'):
+                with self.subTest(edition=edition, account=account):
+                    self.server.profile['edition'] = edition
+                    body = {'model':'deepseek-fixture', 'commands':{'search_query':[{'q':'fixture'}]}}
+                    headers = {'Authorization':'Bearer official-search-fixture'}
+                    if account:
+                        headers['ChatGPT-Account-ID'] = account
+                    status, _, raw = self.request(body,
+                        path=self.path.removesuffix('/responses') + '/alpha/search', headers=headers)
+                    self.assertEqual(status, 200, raw)
+                    path, seen, transmitted, _ = self.upstream.seen[-1]
+                    self.assertEqual(path, ('/chatgpt' if account else '/api') + '/alpha/search')
+                    self.assertEqual(seen['Authorization'], headers['Authorization'])
+                    self.assertEqual(transmitted, encoded(body))
+                    self.assertNotIn(b'independent-ds-fixture-key', raw)
+        for suffix in ('/alpha/search/../responses', '/alpha/search/other', '//evil.invalid'):
+            status, _, _ = self.request({'model':'deepseek-fixture'},
+                path=self.path.removesuffix('/responses') + suffix)
+            self.assertEqual(status, 404)
+
     def receive_terminal(self, ws):
         result = []
         while True:
@@ -303,9 +325,57 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn('tools', actual)
         count = len(self.upstream.seen)
         status, _, raw = self.request({'model': 'deepseek-fixture', 'input': [{'type': 'compaction_trigger'}]})
-        self.assertEqual(status, 501)
-        self.assertEqual(json.loads(raw)['error']['code'], 'remote_compaction_unsupported')
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw)['error']['code'], 'empty_compaction')
         self.assertEqual(len(self.upstream.seen), count)
+
+    def test_native_external_compaction_http_and_ws_and_return_to_official(self):
+        route = self.server.profile['routes']['deepseek-fixture']
+        route['context_window'] = 32768
+        compact = {'model':'deepseek-fixture', 'input':[
+            {'role':'user', 'content':'Preserve the current task and pending work.'},
+            {'type':'compaction_trigger'}]}
+        for edition in ('ds', 'proxy'):
+            self.server.profile['edition'] = edition
+            status, _, raw = self.request(compact, headers={'Authorization':'Bearer official-fixture'})
+            self.assertEqual(status, 200, raw)
+            item = json.loads(raw)['output'][0]
+            self.assertEqual(item['type'], 'compaction')
+            self.assertTrue(item['encrypted_content'].startswith(relay.handoff_item.__globals__['HANDOFF_PREFIX']))
+            path, headers, _, body = self.upstream.seen[-1]
+            self.assertEqual(path, '/ds/responses')
+            self.assertEqual(headers['Authorization'], 'Bearer independent-ds-fixture-key')
+            self.assertNotIn('compaction_trigger', json.dumps(body))
+            self.assertEqual(body['tool_choice'], 'none')
+            status, _, _ = self.request({'model':'gpt-fixture', 'input':[item]},
+                headers={'Authorization':'Bearer official-fixture'})
+            self.assertEqual(status, 200)
+            self.assertNotIn('encrypted_content', json.dumps(self.upstream.seen[-1][3]))
+            self.assertEqual(self.upstream.seen[-1][3]['input'][0]['role'], 'assistant')
+            ws = self.connect(Authorization='Bearer official-fixture')
+            try:
+                ws.send(encoded({**compact, 'type':'response.create', 'stream':True}))
+                events = self.receive_terminal(ws)
+                response = events[-1]['response']
+                self.assertEqual(response['output'][0]['type'], 'compaction')
+                self.assertLess(response['usage']['total_tokens'], 4096)
+                ws.send(encoded({'type':'response.create','model':'deepseek-fixture','input':response['output']}))
+                self.receive_terminal(ws)
+                self.assertNotIn('encrypted_content', json.dumps(self.upstream.seen[-1][3]))
+            finally:
+                ws.close()
+
+    def test_handoff_invalid_data_and_official_compaction_are_not_reinterpreted(self):
+        item = relay.handoff_item('Retain exact file paths and outstanding steps.')
+        item['encrypted_content'] += '!'
+        before = len(self.upstream.seen)
+        status, _, raw = self.request({'model':'gpt-fixture','input':[item]})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw)['error']['code'], 'invalid_adapter_handoff')
+        self.assertEqual(len(self.upstream.seen), before)
+        official = {'model':'gpt-fixture','input':[{'type':'compaction','encrypted_content':'official-opaque'}]}
+        self.request(official)
+        self.assertEqual(self.upstream.seen[-1][3], official)
 
     def test_ws_warmup_and_incremental_native_history(self):
         ws = self.connect(Authorization='Bearer official-fixture')

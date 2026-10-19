@@ -51,6 +51,22 @@ class FakeNative:
 
 
 class MigrationTest(unittest.TestCase):
+    def test_native_identity_upgrade_only_touches_legacy_adapter_and_can_roll_back(self):
+        native = FakeNative()
+        native.threads['1']['modelProvider'] = PROVIDER
+        native.threads['2']['modelProvider'] = PROVIDER
+        before = copy.deepcopy(native.threads)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'native-identity.json'
+            result = migrate(native, {PROVIDER, 'openai'}, path, target='openai')
+            self.assertEqual(result['migrated_chats'], 2)
+            self.assertEqual(native.threads['0'], before['0'])
+            self.assertEqual(native.threads['3'], before['3'])
+            self.assertEqual(native.archived, {'2'})
+            self.assertTrue(all(native.threads[t]['modelProvider']=='openai' for t in ('1','2')))
+            rollback(native, path)
+            self.assertEqual(native.threads, before)
+
     def test_unset_model_and_effort_resolve_natively_without_blocking_migration_or_recovery(self):
         import json
         native=FakeNative()

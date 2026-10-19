@@ -237,6 +237,23 @@ class CacheTests(unittest.TestCase):
         self.assertNotIn('encrypted_content', converted)
 
 
+class RecoveryProgressTests(unittest.TestCase):
+    def test_cancel_interrupts_operation_and_status_does_not_store_history(self):
+        from legacy_history import RecoveryProgress
+        from inference_adapter import Operation
+        with tempfile.TemporaryDirectory() as temporary:
+            operation=Operation();progress=RecoveryProgress(temporary,'local-test',operation)
+            progress.update(phase='summarizing',part=2,total=4,prompt='never store this content')
+            value=json.loads(progress.path.read_text())
+            self.assertNotIn('never store',json.dumps(value))
+            self.assertEqual((value['part'],value['total']),(2,4))
+            progress.cancel_path.write_text('{}')
+            self.assertTrue(operation.cancelled.wait(2))
+            progress.finish(False)
+            self.assertEqual(json.loads(progress.path.read_text())['phase'],'cancelled')
+            self.assertFalse(progress.cancel_path.exists())
+
+
 class SummaryFixture(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -404,9 +421,12 @@ class AdapterConversionTests(unittest.TestCase):
                          ['/target/responses', '/target/responses', '/target/responses'])
         ws.close()
 
-    def test_remote_compaction_trigger_is_rejected_before_any_summary_cost(self):
-        self.assertEqual(self.request(input=[OPAQUE, {'type': 'compaction_trigger'}])[0], 501)
-        self.assertFalse(self.upstream.records)
+    def test_native_compaction_recovers_legacy_history_only_with_selected_provider(self):
+        status, raw = self.request(input=[OPAQUE, {'type': 'compaction_trigger'}])
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)['output'][0]['type'], 'compaction')
+        self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses', '/target/responses'])
+        self.assertNotIn('synthetic-ciphertext', json.dumps([v[3] for v in self.upstream.records]))
 
 
 if __name__ == '__main__':

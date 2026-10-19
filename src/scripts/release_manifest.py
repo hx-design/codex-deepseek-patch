@@ -7,12 +7,20 @@ import os
 import re
 import subprocess
 import tempfile
+import io
+import platform
+import sys
+import time
+import zipfile
 
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
+CHANNELS = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}
+VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHANNELS}
 
 
 def git(*args, **kwargs):
+    if os.name == 'nt':kwargs.setdefault('creationflags',0x08000000)
     return subprocess.check_output(["git", *args], cwd=ROOT, **kwargs)
 
 
@@ -50,16 +58,265 @@ def create(commit,sequence):
     channel=json.loads(read("edition.json"))
     names=git("ls-tree","-r","--name-only",commit,text=True).splitlines()
     files={name:hashlib.sha256(read(name)).hexdigest() for name in names if name!="update.json"}
-    return {"format":1,**channel,"sequence":sequence,"commit":commit,"files":files}
+    if not 8 <= len(files) <= 100:
+        raise ValueError('Portable inventory must remain compatible with installed updaters (8-100 files)')
+    return {"format":1,**channel,"sequence":sequence,"commit":commit,"files":files,
+            "archive": {'format': 'github-zip-v1',
+                        'url': 'https://codeload.github.com/limyum-creator/codex-deepseek-patch/zip/' + commit}}
+
+
+def _json(value):
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode()
+
+
+def _tree(commit):
+    entries = {}
+    for row in git('ls-tree', '-r', commit, text=True).splitlines():
+        head, name = row.split('\t', 1)
+        mode, kind, identity = head.split()
+        if mode != '100644' or kind != 'blob':
+            raise ValueError('Release sources must be ordinary files: ' + name)
+        entries[name] = identity
+    return entries
+
+
+def _commit(entries, parents, message):
+    with tempfile.TemporaryDirectory(prefix='codex-paired-index-') as temp:
+        env = {**os.environ, 'GIT_INDEX_FILE': str(Path(temp) / 'index')}
+        git('read-tree', '--empty', env=env)
+        git('update-index', '--index-info', env=env,
+            input=''.join('100644 ' + identity + '\t' + name + '\n'
+                          for name, identity in sorted(entries.items())).encode())
+        tree = git('write-tree', env=env, text=True).strip()
+    arguments = ['commit-tree', tree]
+    for parent in dict.fromkeys(parents):
+        arguments += ['-p', parent]
+    return git(*arguments, '-m', message, text=True).strip()
+
+
+def _blob(raw):
+    return git('hash-object', '-w', '--stdin', input=raw).decode().strip()
+
+
+def core_digest(release):
+    return hashlib.sha256(_json({name: digest for name, digest in release['files'].items()
+        if name not in ('edition.json', 'README.md', 'README.en.md', 'update.json')})).hexdigest()
+
+
+def candidate_id(value):
+    return hashlib.sha256(_json({k: v for k, v in value.items() if k != 'id'})).hexdigest()
+
+
+def prepare_pair(commit, output, versions, *, bases=None):
+    """Produce both editions from one core, without changing a working tree/ref/feed."""
+    commit = git('rev-parse', commit, text=True).strip()
+    output = Path(output).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ValueError('Candidate output must be empty')
+    output.mkdir(parents=True, exist_ok=True)
+    entries = _tree(commit)
+    if 'src/edition.json' not in entries:
+        raise ValueError('Paired candidates require the canonical source tree')
+    value = {'format': 1, 'source_commit': commit, 'editions': {}}
+    for channel, branch in CHANNELS.items():
+        version = versions[channel]
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[\w.-]+)?', version):
+            raise ValueError('Use a release version for each independent channel')
+        base = git('rev-parse', (bases or {}).get(channel, 'origin/' + branch), text=True).strip()
+        old = json.loads(git('show', base + ':src/edition.json'))
+        previous = json.loads(git('show', base + ':update.json'))
+        if old.get('edition') != channel or previous.get('edition') != channel:
+            raise ValueError('The channel baseline has a different edition')
+        if old['version'] == version:
+            raise ValueError('A published version cannot be reused')
+        tree = dict(entries)
+        metadata = {**old, 'version': version, 'branch': branch, 'edition': channel}
+        tree['src/edition.json'] = _blob(_json(metadata))
+        tree['update.json'] = _blob(git('show', base + ':update.json'))
+        # Both readmes follow the shared candidate, with edition-specific title
+        # and entry description supplied by explicit edition blocks.
+        for name in ('README.md', 'README.en.md'):
+            text = git('show', commit + ':' + name).decode()
+            source_version = json.loads(git('show', commit + ':src/edition.json'))['version']
+            text = text.replace(source_version, version)
+            if channel == 'ds':
+                prior = git('show', base + ':' + name).decode()
+                # Until a document declares shared edition blocks, preserve the
+                # edition's existing introduction and use shared feature docs.
+                if '<!-- EDITION:proxy -->' not in text:
+                    text = prior.replace(old['version'], version)
+                else:
+                    text = re.sub(r'<!-- EDITION:proxy -->.*?<!-- /EDITION -->', '', text, flags=re.S)
+            else:
+                text = re.sub(r'<!-- EDITION:ds -->.*?<!-- /EDITION -->', '', text, flags=re.S)
+            text = re.sub(r'<!-- /?EDITION(?::\w+)? -->\n?', '', text)
+            tree[name] = _blob(text.encode())
+        source = _commit(tree, [base, commit], 'Prepare ' + channel + ' release ' + version + ' from shared core')
+        portable = distribution(source)
+        release = create(portable, previous['sequence'] + 1)
+        release.update(source_commit=source, core_sha256=core_digest(release))
+        feed_tree = _tree(source)
+        feed_tree['update.json'] = _blob(_json(release))
+        feed_commit = _commit(feed_tree, [source], 'Publish verified ' + channel + ' release ' + version)
+        package = git('archive', '--format=zip', portable)
+        (output / (channel + '.zip')).write_bytes(package)
+        value['editions'][channel] = {'release': release, 'feed_commit': feed_commit,
+            'expected_head': base, 'archive': channel + '.zip',
+            'archive_sha256': hashlib.sha256(package).hexdigest()}
+    if len({v['release']['core_sha256'] for v in value['editions'].values()}) != 1:
+        raise ValueError('The two editions do not have identical shared code')
+    value['id'] = candidate_id(value)
+    (output / 'candidate.json').write_bytes(_json(value))
+    return value
+
+
+def read_candidate(path):
+    value = json.loads(Path(path).read_bytes())
+    if value.get('format') != 1 or value.get('id') != candidate_id(value) or set(value.get('editions', {})) != set(CHANNELS):
+        raise ValueError('Invalid candidate identity')
+    for channel, item in value['editions'].items():
+        release = item['release']
+        if release.get('edition') != channel or release.get('branch') != CHANNELS[channel] or core_digest(release) != release['core_sha256']:
+            raise ValueError('Candidate channel/core identity changed')
+    if len({v['release']['core_sha256'] for v in value['editions'].values()}) != 1:
+        raise ValueError('Candidate editions have different cores')
+    return value
+
+
+def verify_candidate(path, channel, app, output):
+    """Run actual portable tests/native CLI on this host; emit a content-bound receipt."""
+    value = read_candidate(path)
+    item = value['editions'][channel]
+    host = {'Darwin': 'macos', 'Windows': 'windows'}.get(platform.system())
+    if host is None:
+        raise ValueError('Native release receipts require macOS or Windows')
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    raw = (Path(path).parent / item['archive']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['archive_sha256']:
+        raise ValueError('Candidate archive changed')
+    with tempfile.TemporaryDirectory(prefix='codex-candidate-') as temp:
+        work = Path(temp)
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            if set(archive.namelist()) - {n for n in archive.namelist() if n.endswith('/')} != set(item['release']['files']):
+                raise ValueError('Candidate inventory changed')
+            for name, digest in item['release']['files'].items():
+                if Path(name).is_absolute() or '..' in Path(name).parts or '\\' in name:
+                    raise ValueError('Unsafe candidate path')
+                data = archive.read(name)
+                if hashlib.sha256(data).hexdigest() != digest:
+                    raise ValueError('Candidate file changed')
+                destination = work / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+        env = {**os.environ, 'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost'}
+        options = {'creationflags': 0x08000000} if os.name == 'nt' else {}
+        logs = {}
+        for name, arguments in (
+            ('unit', ['-m', 'unittest', 'discover', '-s', 'tests', '-q']),
+            ('native', ['scripts/test_official_client.py', '--app', str(Path(app).resolve()),
+                        '--edition', channel, '--reportdir', str(work / 'native-report')]),
+        ):
+            completed = subprocess.run([sys.executable, *arguments], cwd=work, env=env,
+                capture_output=True, timeout=600, **options)
+            data = completed.stdout + completed.stderr
+            (output / (host + '-' + channel + '-' + name + '.log')).write_bytes(data)
+            if completed.returncode:
+                raise ValueError(name + ' validation failed; see the private validation log')
+            logs[name] = hashlib.sha256(data).hexdigest()
+        receipt = {'format': 1, 'candidate_id': value['id'], 'platform': host, 'edition': channel,
+            'commit': item['release']['commit'], 'core_sha256': item['release']['core_sha256'],
+            'status': 'passed', 'checks': {'unit': 'passed', 'native': 'passed'}, 'logs': logs}
+        if os.name == 'nt':
+            import ctypes
+            receipt['execution'] = {'console': int(ctypes.windll.kernel32.GetConsoleWindow()),
+                                    'admin': bool(ctypes.windll.shell32.IsUserAnAdmin())}
+            if receipt['execution'] != {'console': 0, 'admin': False}:
+                raise ValueError('Windows release validation must run windowless as the normal user')
+        (output / (host + '-' + channel + '.json')).write_bytes(_json(receipt))
+    return receipt
+
+
+def require_receipts(candidate, directory):
+    receipts = []
+    for host, channel in sorted(VARIANTS):
+        path = Path(directory) / (host + '-' + channel + '.json')
+        if not path.is_file():
+            raise ValueError('Missing validation: ' + host + '/' + channel)
+        receipt = json.loads(path.read_bytes())
+        release = candidate['editions'][channel]['release']
+        expected = {'candidate_id': candidate['id'], 'platform': host, 'edition': channel,
+                    'commit': release['commit'], 'core_sha256': release['core_sha256'], 'status': 'passed'}
+        if any(receipt.get(k) != v for k, v in expected.items()) or receipt.get('checks') != {'unit': 'passed', 'native': 'passed'}:
+            raise ValueError('Validation belongs to another candidate or is incomplete: ' + str(path.name))
+        if host == 'windows' and receipt.get('execution') != {'console': 0, 'admin': False}:
+            raise ValueError('Windows validation did not use the ordinary hidden execution context')
+        for name in ('unit', 'native'):
+            log = Path(directory) / (host + '-' + channel + '-' + name + '.log')
+            if not log.is_file() or hashlib.sha256(log.read_bytes()).hexdigest() != receipt.get('logs', {}).get(name):
+                raise ValueError('Validation evidence is missing or changed')
+        receipts.append(receipt)
+    return receipts
+
+
+def promotion_commands(path, receipts):
+    candidate = read_candidate(path)
+    require_receipts(candidate, receipts)
+    references = []
+    for channel, branch in CHANNELS.items():
+        item = candidate['editions'][channel]
+        if git('rev-parse', 'origin/' + branch, text=True).strip() != item['expected_head']:
+            raise ValueError('A published channel advanced; prepare and verify a new candidate')
+        references += [item['release']['commit'] + ':refs/tags/v' + item['release']['version'],
+                       item['feed_commit'] + ':refs/heads/' + branch]
+    return ['git', '-c', 'http.version=HTTP/1.1', 'push', '--atomic', 'origin', *references]
+
+
+def promote(path, receipts, *, execute=False):
+    command = promotion_commands(path, receipts)
+    if not execute:
+        return {'ready': True, 'command': command, 'published': False}
+    candidate = read_candidate(path)
+    env = {k: v for k, v in os.environ.items() if k.lower() not in ('http_proxy', 'https_proxy', 'all_proxy')}
+    runs = json.loads(subprocess.check_output(['gh', 'api',
+        'repos/limyum-creator/codex-deepseek-patch/actions/runs?head_sha=' + candidate['source_commit']],
+        env=env, timeout=45))['workflow_runs']
+    matching = [v for v in runs if v.get('path') == '.github/workflows/tests.yml' and v.get('head_sha') == candidate['source_commit']]
+    if not matching or max(matching, key=lambda v: v['run_number']).get('conclusion') != 'success':
+        raise ValueError('The candidate source CI must pass before either channel is published')
+    subprocess.run(command, cwd=ROOT, env=env, check=True, timeout=180)
+    return {'published': True, 'candidate_id': candidate['id']}
 
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--commit",required=True)
-    parser.add_argument("--sequence",required=True,type=int)
+    parser.add_argument("--commit")
+    parser.add_argument("--sequence",type=int)
     parser.add_argument("--distribution",action="store_true",help="Build a portable source commit from src/")
     parser.add_argument("--output",type=Path,default=ROOT/"update.json")
+    parser.add_argument('--prepare-pair', type=Path, metavar='DIRECTORY')
+    parser.add_argument('--ds-version')
+    parser.add_argument('--proxy-version')
+    parser.add_argument('--verify-candidate', type=Path)
+    parser.add_argument('--edition', choices=CHANNELS)
+    parser.add_argument('--app', type=Path)
+    parser.add_argument('--promote', type=Path)
+    parser.add_argument('--receipts', type=Path)
+    parser.add_argument('--execute', action='store_true', help='Publish only after bound four-variant receipts and CI pass')
     args=parser.parse_args()
+    if args.prepare_pair:
+        if not args.commit or not args.ds_version or not args.proxy_version:parser.error('Pair preparation needs a commit and both versions')
+        print(json.dumps(prepare_pair(args.commit, args.prepare_pair, {'ds': args.ds_version, 'proxy': args.proxy_version}), indent=2))
+        raise SystemExit(0)
+    if args.verify_candidate:
+        if not args.edition or not args.app or args.output == ROOT/'update.json':parser.error('Verification needs edition, app, and a private output directory')
+        print(json.dumps(verify_candidate(args.verify_candidate, args.edition, args.app, args.output)))
+        raise SystemExit(0)
+    if args.promote:
+        if not args.receipts:parser.error('Promotion needs four-variant validation receipts')
+        print(json.dumps(promote(args.promote, args.receipts, execute=args.execute)))
+        raise SystemExit(0)
+    if not args.commit or args.sequence is None:parser.error('Use --commit and --sequence, or a candidate operation')
     commit=distribution(args.commit) if args.distribution else args.commit
     value=create(commit,args.sequence)
     if commit!=args.commit:value["source_commit"]=args.commit

@@ -226,7 +226,7 @@ def validate_preferences(value):
     p.require(isinstance(value.get('hidden', []), list) and all(isinstance(x, str) for x in value.get('hidden', [])), 'Invalid hidden model list')
     for name in ('context_windows', 'compact_limits'):
         table = value.get(name, {})
-        p.require(isinstance(table, dict) and all(isinstance(k, str) and (type(v) is int and v > 0 or name == 'context_windows' and v is None) for k,v in table.items()), 'Invalid model reduction settings')
+        p.require(isinstance(table, dict) and all(isinstance(k, str) and (type(v) is int and v > 0 or v is None) for k,v in table.items()), 'Invalid model reduction settings')
     return copy.deepcopy(value)
 
 
@@ -258,7 +258,7 @@ def apply_reductions(entry, preferences, fallback=None):
     entry['context_window'] = min(requested, maximum) if requested else maximum
     entry['effective_context_window_percent'] = 100
     compact = int(entry['context_window'] * .9)
-    return min(preferences.get('compact_limits', {}).get(entry['slug'], compact), compact)
+    return min(preferences.get('compact_limits', {}).get(entry['slug']) or compact, compact)
 
 
 def make_entry(template, model, provider, spec, priority):
@@ -282,7 +282,7 @@ def make_entry(template, model, provider, spec, priority):
 
 
 def snapshot_digest(snapshot):
-    values={k:snapshot[k] for k in ('catalog','routes','locals','deepseek_enabled') if k in snapshot}
+    values={k:snapshot[k] for k in ('catalog','routes','locals','deepseek_enabled','proxy') if k in snapshot}
     return p.sha(json.dumps(values,sort_keys=True,separators=(',',':')).encode())
 
 
@@ -371,6 +371,17 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
             defaults[slug]=entry['context_window']
         entries.append(entry)
     template=p.catalog_template(native)
+    connection_settings = json.loads((directory/'connections.json').read_text(encoding='utf-8')) if (directory/'connections.json').exists() else {}
+    manifest = copy.deepcopy(manifest)
+    if settings['edition'] == 'proxy':
+        if 'deepseek_enabled' in connection_settings:
+            p.require(type(connection_settings['deepseek_enabled']) is bool,'Invalid DeepSeek preference')
+            manifest['deepseek_enabled'] = connection_settings['deepseek_enabled']
+        if 'proxy' in connection_settings:
+            from proxy_support import validate
+            manifest['proxy'] = validate(connection_settings['proxy']) if connection_settings['proxy'] else None
+        manifest['keychain_service'] = manifest.get('keychain_service') or settings.get('keychain_service') or p.KEYCHAIN_SERVICE
+        manifest['keychain_account'] = manifest.get('keychain_account') or settings.get('keychain_account') or __import__('getpass').getuser()
     deepseek=manifest.get('deepseek_enabled',p.PROVIDER in current.get('model_providers',{}))
     providers=[('deepseek-desktop',[p.MODEL],{'deepseek-flash'})] if deepseek else []
     locals=manifest.get('locals',[])
@@ -379,13 +390,23 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
         import local_support
         locals=local_support.load(connections)
     if settings['edition']=='proxy' and manifest.get('proxy'):
-        providers.append(('easycli-desktop',manifest['proxy']['models'],{'grok','gemini-flash','opus'}))
+        providers.append(('easycli-desktop',manifest['proxy']['models'],{'grok','gemini-flash','opus'} if connection_settings.get('proxy_auto_add',True) else set()))
     resolved={};direct_specs={}
     for provider, initial, allowed in providers:
         state=policy.setdefault(provider,{})
         selected=state.get('selected',initial)
         try:
-            connection=native_provider(manifest,profile,provider) if profile is not None else current['model_providers'][provider]
+            if profile is not None and provider in ('easycli-desktop','deepseek-desktop') and connection_settings:
+                from official_client import adapter_routes
+                route = adapter_routes(manifest, {'metadata-only':{'provider':provider}})['metadata-only']
+                connection = {'base_url':route['base_url'],'credential':route.get('credential')}
+                # An explicit selection edit replaces policy, while discovery
+                # continues to retain deliberately hidden model preferences.
+                if provider == 'easycli-desktop' and connection_settings.get('proxy_selection_id'):
+                    if state.get('selection_revision') != connection_settings['proxy_selection_id']:
+                        selected=list(initial);state['selection_revision']=connection_settings['proxy_selection_id']
+            else:
+                connection=native_provider(manifest,profile,provider) if profile is not None else current['model_providers'][provider]
             available=fetch_provider(connection)
             if provider=='deepseek-desktop':
                 for model,row in available.items():
@@ -491,6 +512,7 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
               'architecture':'official-client-v1' if native_mode else 'legacy',
               'specs':specs,'policy':policy,'defaults':defaults,'warnings':sorted(set(warnings)),
               'locals':locals,'deepseek_enabled':deepseek,'native_catalog_source':native_source}
+    if 'proxy' in connection_settings:snapshot['proxy']=manifest.get('proxy')
     snapshot['digest']=snapshot_digest(snapshot)
     p.save_json(directory/'models.json',snapshot)
     return snapshot
