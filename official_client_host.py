@@ -107,19 +107,29 @@ def _settings(value):
     return result
 
 
-def healthy(settings, timeout=0.4):
-    """Check the installation identity, never accept an unrelated local listener."""
+def health_status(settings, timeout=0.4):
+    """Return bounded, credential-free diagnostics for the exact local identity."""
     try:
         request = urllib.request.Request(settings["health_url"], method="GET")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         with opener.open(request, timeout=timeout) as response:
             if response.status != 200:
-                return False
+                return {'ready': False, 'reason': 'http_status'}
             value = json.loads(response.read(8193))
-        return (value.get("ok") is True and value.get("identity") == settings["health_identity"]
-                and (settings.get("edition") is None or value.get("edition") == settings["edition"]))
+        ready = (value.get("ok") is True and value.get("identity") == settings["health_identity"]
+                 and (settings.get("edition") is None or value.get("edition") == settings["edition"]))
+        return {'ready': ready, 'reason': 'ready' if ready else 'identity_mismatch'}
+    except TimeoutError:
+        return {'ready': False, 'reason': 'timeout'}
+    except urllib.error.URLError as error:
+        return {'ready': False, 'reason': 'timeout' if isinstance(error.reason, TimeoutError) else 'unreachable'}
     except Exception:
-        return False
+        return {'ready': False, 'reason': 'invalid_response'}
+
+
+def healthy(settings, timeout=0.4):
+    """Check the installation identity, never accept an unrelated local listener."""
+    return health_status(settings, timeout)['ready']
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -166,7 +176,9 @@ def adapter_launchd_plist(value, label="com.limyum.codex-model-adapter"):
     _require(label and all(c.isalnum() or c in ".-" for c in label), "Invalid service label")
     return {"Label": label, "ProgramArguments": settings["adapter_command"],
             "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 5,
-            "ProcessType": "Background", "WorkingDirectory": settings.get("working_directory") or
+            # This listener is on the critical path of foreground model turns.
+            # Background I/O throttling can starve a cold start during updates.
+            "ProcessType": "Standard", "WorkingDirectory": settings.get("working_directory") or
             str(Path(settings["adapter_command"][0]).parent)}
 
 
