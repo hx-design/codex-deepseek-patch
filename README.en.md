@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.3-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.4-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -33,7 +33,7 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.3-proxy.1` update runtime uses **25 source files totaling about 296 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.4-proxy.1` update runtime uses **26 source files totaling about 316 KiB**, including verification scripts. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
 
 ### 0.4.2 fix: Windows background updates
 
@@ -97,6 +97,23 @@ Existing EasyCLIProxyAPI: add these build arguments, using your already configur
 Only the client API key is read; existing software keeps responsibility for subscription login and refresh. Remote proxy endpoints require HTTPS. Select any subset of supported IDs.
 
 DeepSeek: run `python3 patch.py setup-key` and add `--with-deepseek`. Credentials use macOS Keychain or Windows Credential Manager. Fresh extension installs omit DS by default; updates inherit the installed choice. `--without-deepseek` removes a previously managed DS provider unless it is still the global default.
+
+## Optional image tools
+
+Custom chat providers do not automatically receive Codex's native `image_gen`. The extension offers a separate optional MCP tool so the chat model and image model can be chosen independently: Grok or Gemini can call GPT Image, Grok Imagine, or a Gemini image model through existing CPA accounts.
+
+```sh
+python patch.py setup-images --proxy-config "/path/to/CPA/config.yaml"
+# With automatic updates, point to this edition's stable runtime:
+python patch.py setup-images --proxy-config "/path/to/CPA/config.yaml" \
+  --script "/path/to/extension-monitor/runtime/cpa_images.py"
+```
+
+Restart Codex, then use `cpa_images.list_image_models` to discover available image IDs and `cpa_images.generate_image` to generate/edit. The result includes inline images and exact local paths. Up to five reference images are supported; specify an absolute output directory. New files are created without overwriting existing images.
+
+GPT Image and Grok Imagine use the existing Images generation/edit endpoints; Gemini image models use native `generateContent`. GPT accepts `size`/`background`, while Grok and Gemini accept `aspect_ratio`/`resolution`. Actual availability comes from the existing account connection. No credentials are copied, no additional HTTP listener or third-party package is added, and generation is never retried automatically. Codex manages the stdio process.
+
+Setup backs up the complete config and preserves unrelated settings. Conflicting user-owned MCP entries are left intact. `python patch.py setup-images --disable` removes only this managed tool. This optional capability belongs to the extension edition; the DS channel stays independent.
 
 ## Update and preferences
 

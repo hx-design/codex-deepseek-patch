@@ -1,3 +1,17 @@
+# v0.4.4-proxy.1：可选图片生成工具
+
+2026-10-19，为自定义聊天模型添加独立的 stdio 图片工具，直接复用既有 CPA 接口。
+
+- 205 项 Python 回归（Mac 204 通过、1 项 Windows 专属跳过），包括 27 项图片接口、脱敏、输出保存和配置保护检查；Node 路由检查通过。
+- 真实 Codex CLI 离线验证三路按需发现、MCP 调用、图片保存和内联图片回传，使用合成接口，无外部生成。
+- Windows 实际账户验证：Gemini 聊天调用 Gemini 图片模型、Grok 4.7 调用 GPT Image 均完成一次图片生成并返回文件。
+- Grok 4.7 能发起 Imagine 请求；测试账户的上游返回 `personal-team-blocked:spending-limit`。错误码被保留为可读提示；补丁不自动重试生成。
+- CLI 配置启用、重复启用、更新与禁用有完整备份，保护已有其他 MCP、默认模型、多行 TOML 和 Windows 换行；正式配置沿用用户审批规则。
+- 图片请求分别使用 GPT/Grok Images 和 Gemini generateContent，模型可用性按现成账户查询，返回 PNG/JPEG/WebP 新文件和图片内容。
+- 功能随扩展版独立更新，DS 直连通道保持独立。
+
+---
+
 # v0.4.3-proxy.1：固定 macOS 签名与更新授权
 
 2026-10-19，修复每次临时重签导致的应用身份变化，并恢复可本地使用的能力声明。

@@ -21,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-VERSION = "0.4.3-proxy.1"
+VERSION = "0.4.4-proxy.1"
 EDITION = "proxy"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -34,7 +34,7 @@ MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py", "responses_compat.py",
-                         "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py",
+                         "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py", "cpa_images.py",
                          "windows_support.py", "windows_install.py", "scripts/__init__.py",
                          "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/test_tools.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 
@@ -558,6 +558,13 @@ def main():
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=setup_key)
+    p = subs.add_parser("setup-images", help="Enable optional image tools through an existing CPA interface")
+    p.add_argument("--proxy-config", type=Path, help="Existing CPA config; no credential is copied")
+    p.add_argument("--proxy-base-url", default="http://127.0.0.1:8317/v1")
+    p.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex"))))
+    p.add_argument("--script", type=Path, default=ROOT/"cpa_images.py", help="Stable image tool script path")
+    p.add_argument("--disable", action="store_true", help="Remove only this patch's image MCP entry")
+    p.set_defaults(func=lambda args: print(json.dumps(__import__("cpa_images").configure(args), ensure_ascii=False, indent=2)))
     p = subs.add_parser("setup-signing", help="Create or verify the persistent local macOS signing identity")
     p.set_defaults(func=lambda args: print(json.dumps(__import__("macos_signing").ensure_identity(), indent=2)))
     p = subs.add_parser("test-boot", help="Launch only the prepared copy with temporary user data")

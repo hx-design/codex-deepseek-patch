@@ -66,3 +66,7 @@ Windows 任务的工作目录使用监测状态目录，runtime 替换前也主�
 签名从内到外执行，不使用 `--deep` 重签；验证仍使用严格深层完整性检查。修改的 Codex Framework 及其应用辅助程序与外层应用使用本机证书，其他供应商代码保持原签名。可本地使用的能力声明保留，厂商应用标识、团队、应用组及钥匙串组不复制到本地签名。构建记录每个组件的身份要求与能力声明，安装前后核对。
 
 独立 macOS CI 创建临时签名身份、两个代码不同的原生应用和测试钥匙串项目：第二版必须满足第一版身份要求，并在禁止授权弹窗的条件下读取该项目；临时签名对照必须被拒绝。测试结束删除测试钥匙串，保留原搜索列表中的其他条目。实际麦克风、录屏等权限仍通过 macOS 的正常授权流程。
+
+## Optional image tools
+
+`cpa_images.py` is a stdlib stdio MCP separate from chat transport. It discovers image models via the existing CPA model endpoint, reads the existing client key for each request, uses Images for GPT/Grok and native generateContent for Gemini, and returns validated PNG/JPEG/WebP bytes plus new local output paths. No OAuth material or API key is stored in Codex configuration. `setup-images` adds only its managed MCP section with a full config backup; the stable extension runtime path keeps future updates on the selected edition. Generation has no automatic retry.

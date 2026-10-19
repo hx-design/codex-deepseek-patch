@@ -5,6 +5,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "cpa_images.py", "tests/test_cpa_images.py",
     "macos_signing.py", "tests/test_macos_signing.py", "scripts/test_macos_signing.py",
     "responses_compat.py", "tests/test_responses_compat.py", "scripts/test_tools.py",
     "local_support.py", "local_bridge.py", "tests/test_local_support.py", "scripts/test_switching.py", "scripts/route_driver.cjs",

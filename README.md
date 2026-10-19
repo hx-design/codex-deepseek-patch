@@ -4,7 +4,7 @@
 
 支持 **Gemini、Grok、Opus、Ollama、LM Studio 和其他 Responses 兼容接口**，保留原生 GPT。使用现有模型服务与登录配置，在 Codex 内完成模型选择和聊天。
 
-本分支为多模型扩展版 **`0.4.3-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
+本分支为多模型扩展版 **`0.4.4-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -12,6 +12,7 @@
 - 思考程度按模型实际能力选择，逐回合生效。
 - 上下文默认使用模型最大值；保留用户主动调小的窗口，修复旧聊天保存的 128K 默认值与压缩后的窗口回落。
 - 工具按需发现，只加载命中的工具定义，避免大量 MCP 工具反复挤满上下文。
+- 可选生图工具复用现成 EasyCLI/CLIProxyAPI：聊天中的 Grok、Gemini、GPT 等模型可调用 GPT Image、Grok Imagine 或 Gemini 图片模型。
 - Codex 更新后检测兼容性；兼容时自动补装。补丁自身、模型列表与规格也可自动更新。
 - Python / Node.js 标准库，无第三方依赖、数据库或额外管理界面。完整支持原生工具协议的接口可以直连；现有代理与需要适配的本地模型使用按需启动、空闲 120 秒后退出的小兼容进程。
 
@@ -31,7 +32,7 @@
 | 简化接入操作 | `connect` 发现并保存连接，`build --verify` 合并安装前检查 | 减少手改配置和逐项执行验证的步骤 |
 | 复用已有会话 | 通过原生接口恢复同一个聊天 ID，保留历史、权限与工作目录 | 不维护另一套聊天数据库或迁移历史副本 |
 
-`0.4.3-proxy.1` 的更新监测运行文件共 **25 个，约 296 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+`0.4.4-proxy.1` 的更新监测运行文件共 **26 个，约 316 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
 
 ### 0.4.2 修复：Windows 后台自动更新
 
@@ -101,6 +102,35 @@ python3 patch.py setup-key
 ```
 
 然后构建时加 `--with-deepseek`。密钥进入 macOS 钥匙串或 Windows 凭据管理器。**扩展版首次安装默认不添加 DS；更新旧安装则继承原来的选择。** 已有 DS 可用 `--without-deepseek` 移除；若它是全局默认模型，先在 Codex 选择保留的默认模型。
+
+## 可选：在聊天里调用生图
+
+自定义聊天模型不会自动获得 Codex 原生 `image_gen`。扩展版提供一个独立的图片工具入口，聊天模型和出图模型可以分别选择。例如用 Grok 4.7 聊天，让它调用 Gemini 图片模型或 GPT Image 生成图片。
+
+先在现成的 EasyCLI/CLIProxyAPI 中配置相应账户。启用时只读取其配置文件位置，不复制 OAuth 或 API 密钥：
+
+```sh
+python patch.py setup-images --proxy-config "/path/to/CPA/config.yaml"
+```
+
+Windows 同样使用 `python`，将路径替换为本机实际位置。启用自动更新时，让工具指向该版本通道的固定运行目录，后续随扩展版更新：
+
+```sh
+python patch.py setup-images --proxy-config "/path/to/CPA/config.yaml" \
+  --script "/path/to/extension-monitor/runtime/cpa_images.py"
+```
+
+重启 Codex 后，模型可发现 `cpa_images.list_image_models` 与 `cpa_images.generate_image`。先查询当前账户暴露的图片型号，再按用户要求选择型号。生成或编辑返回图片预览及准确本地文件路径；支持最多 5 张本地参考图。输出目录使用绝对路径，生成新文件，不覆盖原图。
+
+| 图片后端 | 接口 | 参数 |
+| --- | --- | --- |
+| GPT Image | `/v1/images/generations`、`/v1/images/edits` | `size`、`background` |
+| Grok Imagine | 同上 | `aspect_ratio`、`resolution` |
+| Gemini 图片模型 / Nano | `/v1beta/models/{model}:generateContent` | `aspect_ratio`、`resolution` |
+
+这里只调用用户已有 CPA 接口，使用该账户实际开放的模型；普通 Gemini/Grok 聊天型号与图片型号分别处理。此功能通过可选 MCP 提供，不冒用 Codex 原生工具身份。它使用 Python 标准库、无额外依赖，不新增 HTTP 监听服务；由 Codex 管理 stdio 进程，只在调用时发起图片请求，失败不自动重试生成。
+
+配置前保存完整备份；同名的用户自定义工具配置会保留并提示核对。移除本工具使用 `python patch.py setup-images --disable`，保留模型、凭证与其他 MCP 配置。DS 独立直连版不安装这项可选功能。
 
 ## 2. 构建、验证、安装
 
