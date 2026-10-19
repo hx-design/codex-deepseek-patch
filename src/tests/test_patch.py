@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch as mock
@@ -71,6 +73,18 @@ class ArchiveTests(unittest.TestCase):
 
 
 class SourceTests(unittest.TestCase):
+    def test_fresh_parser_uses_each_package_edition_instead_of_a_copied_constant(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for name in ('patch.py','windows_support.py'):
+                (root/name).write_bytes((patch.ROOT/name).read_bytes())
+            for edition in ('ds','proxy'):
+                with self.subTest(edition=edition):
+                    (root/'edition.json').write_text(json.dumps({'edition':edition,'version':'fixture-version'}))
+                    raw=subprocess.check_output([sys.executable,'-c',
+                        'import patch; print(patch.EDITION, patch.VERSION)'],cwd=root,text=True,**patch.background_options())
+                    self.assertEqual(raw.strip(),edition+' fixture-version')
+
     def fixture(self):
         return "\n".join(old for old, new in patch.EDITS)
 
