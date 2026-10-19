@@ -5,6 +5,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "windows_update_ui.py", "windows_update_ui.js", "tests/test_windows_update_ui.py", "tests/test_windows_update_contract.py",
     "cpa_images.py", "tests/test_cpa_images.py",
     "macos_signing.py", "tests/test_macos_signing.py", "scripts/test_macos_signing.py",
     "responses_compat.py", "tests/test_responses_compat.py", "scripts/test_tools.py",

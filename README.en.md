@@ -4,9 +4,15 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.9-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.10-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
+
+### Windows official application update checks
+
+The managed Windows copy now checks the official release feed without requiring MSIX identity for the current process. The native menu reports the actual result; periodic checks notify about a new release and link to the official installation channel.
+
+Update the official application through that channel. With patch monitoring enabled, it detects the new installed package, validates compatibility and reapplies the selected edition after Codex exits. **Patch code and model specifications retain their independent DS / extension feeds.** Available releases are never misreported as downloaded or ready to install, and network failures remain explicit. macOS retains its native Sparkle updater.
 
 ## Features
 
@@ -33,7 +39,7 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.9-proxy.1` update runtime uses **26 source files totaling about 331 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.10-proxy.1` update runtime uses **28 source files totaling about 341 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
 
 ### 0.4.9 fix: test keychains and Windows helper permissions
 

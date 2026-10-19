@@ -108,9 +108,18 @@ def inspect_source(app, node=None, routes=None, native_contexts=None):
         result = p.run([node, p.ROOT / "scripts/check_compatibility.cjs", path], capture_output=True, text=True, timeout=60)
         probe = json.loads(result.stdout)
         p.require(probe.get("status") == "passed", "App-server request contract probe failed")
+    windows_update = None
+    if sys.platform == "win32":
+        from windows_update_ui import locate_bundle as locate_updater
+        member, updated, contract = locate_updater(layout["asar"])
+        with tempfile.TemporaryDirectory(prefix="codex-update-contract-") as temp:
+            script = Path(temp)/'updater.cjs'
+            script.write_text(updated, encoding='utf-8')
+            p.run([node, '--check', script], capture_output=True, timeout=60)
+        windows_update = {"member": member, "patched": updated, "evidence": contract}
     p.require(p.file_sha(layout["asar"]) == source_hash, "App changed during compatibility checks")
     return {"central": central, "patched": patched, "evidence": evidence, "probe": probe,
-            "publisher": publisher, "source_asar": source_hash}
+            "publisher": publisher, "source_asar": source_hash, "windows_update": windows_update}
 
 
 def build_compatible(args):
@@ -235,7 +244,11 @@ def build_compatible(args):
     p.verify_app(original, original_hash)
     archive = p.app_layout(original)["asar"]
     stage_archive = p.app_layout(stage)["asar"]
-    new_hash = p.repack(archive, output / "patched.asar", {prepared["central"]: patched})
+    replacements = {prepared["central"]: patched}
+    if prepared.get("windows_update"):
+        update = prepared["windows_update"]
+        replacements[update["member"]] = update["patched"].encode('utf-8')
+    new_hash = p.repack(archive, output / "patched.asar", replacements)
     os.replace(output / "patched.asar", stage_archive)
     if sys.platform == "win32":
         from windows_support import update_integrity
@@ -253,14 +266,14 @@ def build_compatible(args):
         signing = sign_app(stage, previous=(managed or {}).get("macos_signing"))
     patched_hash = p.file_sha(stage_archive)
     p.verify_app(stage, patched_hash)
-    count = p.compare_archives(archive, stage_archive, prepared["central"])
+    count = p.compare_archives(archive, stage_archive, list(replacements))
     manifest = {"format": 1, "adaptive": True, "tool_version": p.VERSION,
                 "app_version": layout["version"], "app_build": layout["build"],
                 "target": str(app), "codex_home": str(home), "status": "prepared",
                 "original_asar": original_hash, "patched_asar": patched_hash,
                 "catalog_sha256": p.file_sha(output / "desktop-models.json"),
                 "keychain_account": args.keychain_account, "keychain_service": args.keychain_service,
-                "changed_members": [prepared["central"]], "archive_members": count,
+                "changed_members": list(replacements), "archive_members": count,
                 "managed": managed, "contract_assertions": prepared["probe"].get("assertions"),
                 "built_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if sys.platform == "win32":
