@@ -324,6 +324,11 @@ def configure(args):
 
 
 def main():
+    # MCP stdio is UTF-8 even when Windows redirects pipes using CP936/GBK.
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if callable(reconfigure):
+            reconfigure(encoding='utf-8', errors='strict')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint', default='http://127.0.0.1:8317')
     parser.add_argument('--config', required=True)

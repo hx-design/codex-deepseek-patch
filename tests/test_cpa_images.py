@@ -3,6 +3,7 @@ import base64
 import http.server
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -246,6 +247,33 @@ class ImagesTests(unittest.TestCase):
         self.assertEqual([t['name'] for t in replies[1]['result']['tools']], ['list_image_models', 'generate_image'])
         self.assertNotIn('synthetic-client-key', result.stdout + result.stderr)
         self.assertEqual([r[0] for r in self.server.records], ['GET'])
+
+    def test_stdio_main_accepts_in_memory_text_streams(self):
+        input_stream = io.StringIO(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-03-26'}}) + '\n')
+        output_stream = io.StringIO()
+        arguments = [str(Path(images.__file__)), '--config', str(self.config), '--endpoint', self.server.endpoint]
+        with patch.object(sys, 'stdin', input_stream), patch.object(sys, 'stdout', output_stream), patch.object(sys, 'argv', arguments):
+            images.main()
+        self.assertEqual(json.loads(output_stream.getvalue())['result']['serverInfo']['name'], 'cpa-images')
+
+    def test_stdio_utf8_chinese_generation_with_gbk_process_default(self):
+        prompt = '中文提示词：蓝色方块'
+        output_dir = self.root / '中文输出'
+        requests = [
+            {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-03-26'}},
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'generate_image', 'arguments': self.args(prompt=prompt, output_dir=str(output_dir))}},
+        ]
+        environment = {**os.environ, 'PYTHONIOENCODING': 'gbk'}
+        result = subprocess.run([sys.executable, str(Path(images.__file__)), '--config', str(self.config), '--endpoint', self.server.endpoint],
+            input=('\n'.join(json.dumps(request, ensure_ascii=False) for request in requests) + '\n').encode('utf-8'),
+            capture_output=True, env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        replies = [json.loads(line) for line in result.stdout.decode('utf-8').splitlines()]
+        self.assertFalse(replies[1]['result'].get('isError'), replies[1])
+        self.assertEqual(self.server.records[-1][2]['prompt'], prompt)
+        files = replies[1]['result']['structuredContent']['files']
+        self.assertEqual(Path(files[0]).parent, output_dir)
+        self.assertEqual(Path(files[0]).read_bytes(), PNG)
 
 
 class ConfigureTests(unittest.TestCase):
