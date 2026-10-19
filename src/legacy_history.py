@@ -1,7 +1,7 @@
 """Lazy, account-scoped readable handoff cache for official compaction items.
 
-Only the official service receives opaque compaction data. The cache stores its
-visible task summary, never credentials, ciphertext, or original conversation.
+The cache stores readable task summaries, never credentials, ciphertext, or
+original conversations. Summarization is supplied by the selected model route.
 """
 from __future__ import annotations
 
@@ -154,14 +154,14 @@ class LegacyHistory:
             finally:
                 os.close(fd)
 
-    def _read(self, path, *, matching_model=True):
+    def _read(self, path, *, matching_model=True, expected_model=None):
         try:
             if path.is_symlink() or path.stat().st_size > self.max_summary_bytes + 4096:
                 return None
             value = json.loads(path.read_text(encoding='utf-8'))
             summary = value.get('summary')
             if (value.get('format') != 1 or not isinstance(value.get('summary_model'), str)
-                    or matching_model and value['summary_model'] != self.summary_model
+                    or matching_model and value['summary_model'] != (expected_model or self.summary_model)
                     or not isinstance(summary, str) or not summary.strip()
                     or len(summary.encode()) > self.max_summary_bytes
                     or not isinstance(value.get('created_at'), (int, float))
@@ -206,7 +206,7 @@ class LegacyHistory:
             if temporary:
                 Path(temporary).unlink(missing_ok=True)
 
-    def convert(self, body, headers, *, cancelled=None, protected_reasoning=()):
+    def convert(self, body, headers, *, cancelled=None, protected_reasoning=(), cache_scope=b'', fallback_models=(), normalize_cached=None):
         result = visible_reasoning(body, protected_reasoning=protected_reasoning)
         items = result.get('input')
         if not isinstance(items, list):
@@ -220,17 +220,27 @@ class LegacyHistory:
                 continue
             if not isinstance(item.get('encrypted_content'), str) or not item['encrypted_content']:
                 raise LegacyHistoryError('legacy_compaction_invalid', 'The historical compaction item is incomplete', 400)
-            key = hashlib.sha256(scope + b'\0' + _json(item) + b'\0' + self.summary_model.encode()).hexdigest()
+            key = hashlib.sha256(scope + cache_scope + b'\0' + _json(item) + b'\0' + self.summary_model.encode()).hexdigest()
             path = self.directory / (key + '.json')
             with self._lock(cancelled):
                 self._prune()
                 summary = self._read(path)
+                uncached = summary is None
+                # Reuse a valid pre-upgrade handoff without contacting GPT.
+                for old_model in fallback_models if summary is None else ():
+                    old_key = hashlib.sha256(scope + b'\0' + _json(item) + b'\0' + old_model.encode()).hexdigest()
+                    summary = self._read(self.directory / (old_key + '.json'), expected_model=old_model)
+                    if summary is not None:
+                        break
                 if summary is None:
                     summary = self.summarizer(copy.deepcopy(item), self.summary_model, headers, cancelled)
+                elif uncached and normalize_cached is not None:
+                    summary = normalize_cached(summary)
+                if uncached:
                     if cancelled.is_set():
                         raise LegacyHistoryError('request_cancelled', 'The model request was cancelled', 499)
                     if not isinstance(summary, str) or not summary.strip() or len(summary.encode()) > self.max_summary_bytes:
-                        raise LegacyHistoryError('legacy_summary_invalid', 'The official service did not return a usable task summary')
+                        raise LegacyHistoryError('legacy_summary_invalid', 'The selected model did not return a usable task summary')
                     authorization = next((v for k, v in headers.items() if k.lower() == 'authorization'), '')
                     if authorization[7:].strip() in summary:
                         raise LegacyHistoryError('legacy_summary_invalid', 'The task summary contains authentication data')

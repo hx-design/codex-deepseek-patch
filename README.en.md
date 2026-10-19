@@ -2,7 +2,7 @@
 
 Add DeepSeek Flash to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-DS **0.4.8**, update branch `main`.
+DS **0.4.9**, update branch `main`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
@@ -39,9 +39,9 @@ python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/p
 
 Use `python` and Windows paths on Windows; omit `--app` for official installation discovery. Verification is background-only using the original CLI and synthetic interfaces, without paid inference. Legacy migration uses `--baseline`; on Mac select the verified `original.app` backup with `--app` and the installation path with `--install-target`. The first migration restores the official app; later updates only replace adapter/configuration artifacts.
 
-Existing chats migrate through native metadata APIs without SQL or history rewrites. If an old GPT chat contains proprietary compacted state, its first DS request obtains and caches a readable task summary through GPT, using one GPT request.
+Existing chats retain their native identity, content, archive state, model and reasoning preference. Old GPT compaction is recovered from locally verified readable records and summarized by the selected external model with its own credentials. **No GPT request or GPT quota is needed.** Shared fork history stops at the exact fork boundary; original files are not rewritten.
 
-Normal DS turns use independent credentials even after GPT quota exhaustion. An uncached proprietary GPT compaction block still needs one available GPT request for conversion. Cached handoffs and new native readable summaries do not have that dependency.
+Existing handoff caches remain usable. Long records and oversized old summaries are reduced within the selected model's effective context. Missing, corrupt or unsupported local records produce an explicit recovery message instead of silent history loss. Summarization uses the selected service's quota.
 
 ## Non-blocking progress
 

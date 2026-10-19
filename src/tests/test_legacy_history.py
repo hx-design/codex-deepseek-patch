@@ -18,7 +18,9 @@ from legacy_history import LegacyHistory, LegacyHistoryError, visible_reasoning
 
 
 OPAQUE = {'type': 'compaction', 'id': 'cmp_fixture', 'encrypted_content': 'synthetic-ciphertext-never-cache'}
-HEADERS = {'Authorization': 'Bearer official-secret-never-cache', 'ChatGPT-Account-ID': 'account-fixture'}
+THREAD = '11111111-1111-4111-8111-111111111111'
+HEADERS = {'Authorization': 'Bearer official-secret-never-cache', 'ChatGPT-Account-ID': 'account-fixture',
+           'x-codex-turn-metadata':json.dumps({'thread_id':THREAD,'session_id':THREAD})}
 
 
 def process_conversion(directory, count, results):
@@ -250,7 +252,10 @@ class SummaryFixture(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
-        text = 'Task goal MARKER_FACT; preserve constraints; pending verification.' if self.path.startswith('/official/') else 'TARGET_OK'
+        summary = str(body.get('instructions','')).startswith('Create a factual handoff')
+        if summary and getattr(self.server,'fail_target_summary',False):
+            self.send_response(429);self.send_header('Content-Length','0');self.end_headers();return
+        text = 'Task goal MARKER_FACT; preserve constraints; pending verification.' if summary else 'TARGET_OK'
         response = {'id': 'resp_fixture', 'status': 'completed', 'model': body['model'],
             'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}]}
         if body.get('stream'):
@@ -275,8 +280,16 @@ class AdapterConversionTests(unittest.TestCase):
         self.profile = {'format': 1, 'edition': 'ds', 'identity': 'legacy-fixture', 'token': 'x' * 40, 'port': 0,
             'gpt': {'chatgpt_base_url': endpoint + '/official', 'api_base_url': endpoint + '/official'},
             'routes': {'deepseek-fixture': {'base_url': endpoint + '/target',
-                       'credential': {'kind': 'file', 'path': '/synthetic-only'}}},
-            'legacy_history_dir': str(Path(self.temporary.name) / 'cache'), 'summary_model': 'gpt-fixture'}
+                       'credential': {'kind': 'file', 'path': '/synthetic-only'},'context_window':32768}},
+            'legacy_history_dir': str(Path(self.temporary.name) / 'cache'), 'summary_model': 'gpt-fixture',
+            'history_home':str(Path(self.temporary.name)/'home')}
+        self.rollout=Path(self.profile['history_home'])/'sessions'/('rollout-'+THREAD+'.jsonl')
+        self.rollout.parent.mkdir(parents=True)
+        rows=[{'type':'session_meta','payload':{'id':THREAD}},
+              {'type':'response_item','payload':{'type':'message','role':'user','content':'Task goal MARKER_FACT'}},
+              {'type':'response_item','payload':{'type':'function_call_output','call_id':'tool1','output':'TOOL_RESULT_OK'}},
+              {'type':'compacted','payload':{'replacement_history':[OPAQUE]}}]
+        self.rollout.write_text(''.join(json.dumps(row)+'\n' for row in rows))
         self.adapter = create_server(self.profile, credential_reader=lambda _: 'independent-target-key')
         for server in (self.upstream, self.adapter):
             threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True).start()
@@ -302,42 +315,64 @@ class AdapterConversionTests(unittest.TestCase):
         self.assertEqual(self.request()[0], 200)
         self.assertEqual(self.request()[0], 200)
         records = self.upstream.records
-        self.assertEqual([v[0] for v in records], ['/official/responses', '/target/responses', '/target/responses'])
+        self.assertEqual([v[0] for v in records], ['/target/responses', '/target/responses', '/target/responses'])
         _, official_headers, _, summary_request = records[0]
-        self.assertEqual(official_headers['Authorization'], HEADERS['Authorization'])
-        self.assertEqual(official_headers['ChatGPT-Account-ID'], HEADERS['ChatGPT-Account-ID'])
+        self.assertEqual(official_headers['Authorization'], 'Bearer independent-target-key')
+        self.assertNotIn('ChatGPT-Account-ID',official_headers)
         self.assertNotIn('X-OpenAI-Internal-Codex-Responses-Lite', official_headers)
         self.assertNotIn('X-Codex-Routing-Hint', official_headers)
         self.assertEqual(summary_request['tools'], [])
         self.assertEqual(summary_request['tool_choice'], 'none')
-        self.assertNotIn('summary', summary_request['reasoning'])
+        self.assertNotIn('summary', summary_request.get('reasoning',{}))
         self.assertTrue(summary_request['stream'])
-        self.assertEqual(summary_request['input'][0], OPAQUE)
+        self.assertIn('MARKER_FACT',summary_request['input'][0]['content'][0]['text'])
+        self.assertIn('TOOL_RESULT_OK',summary_request['input'][0]['content'][0]['text'])
+        self.assertNotIn('synthetic-ciphertext',json.dumps(summary_request))
         for _, headers, raw, body in records[1:]:
             self.assertEqual(headers['Authorization'], 'Bearer independent-target-key')
             self.assertNotIn('ChatGPT-Account-ID', headers)
             self.assertNotIn(b'synthetic-ciphertext', raw)
             self.assertIn('MARKER_FACT', body['input'][0]['content'][0]['text'])
 
-    def test_failed_official_conversion_never_sends_to_target_or_caches(self):
-        self.upstream.fail_summary = True
+    def test_failed_selected_conversion_never_continues_or_caches(self):
+        self.upstream.fail_target_summary = True
         status, raw = self.request()
-        self.assertEqual(status, 502)
-        self.assertEqual(json.loads(raw)['error']['code'], 'legacy_summary_http_403')
+        self.assertEqual(status, 429)
+        self.assertEqual(json.loads(raw)['error']['code'], 'local_summary_http_429')
         self.assertEqual(len(self.upstream.records), 1)
         self.assertFalse(list(Path(self.profile['legacy_history_dir']).glob('*.json')))
 
-    def test_exhausted_gpt_quota_only_blocks_uncached_opaque_history(self):
+    def test_exhausted_gpt_quota_does_not_block_uncached_opaque_history(self):
         self.upstream.fail_summary = True
         self.upstream.summary_error_status = 429
-        status, raw = self.request()
-        self.assertEqual(status, 502)
-        self.assertEqual(json.loads(raw)['error']['code'], 'legacy_summary_http_429')
-        self.assertEqual([v[0] for v in self.upstream.records], ['/official/responses'])
+        self.assertEqual(self.request()[0], 200)
+        self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses','/target/responses'])
+        self.assertTrue(all(v[1]['Authorization']=='Bearer independent-target-key' for v in self.upstream.records))
+
+    def test_missing_local_source_never_falls_back_to_gpt(self):
+        self.rollout.unlink()
+        status,raw=self.request()
+        self.assertEqual(status,409)
+        self.assertEqual(json.loads(raw)['error']['code'],'local_history_unavailable')
+        self.assertFalse(self.upstream.records)
+
+    def test_old_official_summary_cache_needs_no_local_file_or_gpt_request(self):
+        old=LegacyHistory(self.profile['legacy_history_dir'],'gpt-fixture',lambda *args:'Previously cached MARKER_FACT')
+        old.convert({'input':[OPAQUE]},HEADERS)
+        self.rollout.unlink();self.upstream.fail_summary=True
+        self.assertEqual(self.request()[0],200)
+        self.assertEqual([v[0] for v in self.upstream.records],['/target/responses'])
+
+    def test_large_old_cache_is_reduced_for_small_selected_window_and_saved_once(self):
+        old=LegacyHistory(self.profile['legacy_history_dir'],'gpt-fixture',lambda *args:'MARKER_FACT '*1500)
+        old.convert({'input':[OPAQUE]},HEADERS)
+        self.rollout.unlink();self.adapter.profile['routes']['deepseek-fixture']['context_window']=4096
+        self.assertEqual(self.request()[0],200)
+        self.assertGreater(len(self.upstream.records),2)
+        self.assertTrue(all(v[0]=='/target/responses' for v in self.upstream.records))
         self.upstream.records.clear()
-        self.assertEqual(self.request(input=[{'role':'user','content':'continue visible task'}])[0], 200)
-        self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses'])
-        self.assertEqual(self.upstream.records[0][1]['Authorization'], 'Bearer independent-target-key')
+        self.assertEqual(self.request()[0],200)
+        self.assertEqual(len(self.upstream.records),1)
 
     def test_cached_handoff_remains_usable_when_gpt_quota_is_exhausted(self):
         self.assertEqual(self.request()[0], 200)
@@ -347,13 +382,13 @@ class AdapterConversionTests(unittest.TestCase):
         self.assertEqual(self.request()[0], 200)
         self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses'])
 
-    def test_gpt_history_is_untouched_and_unconfigured_route_stays_501(self):
+    def test_gpt_history_is_untouched_and_unconfigured_recovery_is_explicit(self):
         self.assertEqual(self.request(model='gpt-original')[0], 200)
         self.assertEqual(self.upstream.records[-1][3]['input'][0], OPAQUE)
         self.assertFalse(Path(self.profile['legacy_history_dir']).exists())
         self.adapter.profile.pop('legacy_history_dir')
         self.adapter.profile.pop('summary_model')
-        self.assertEqual(self.request()[0], 501)
+        self.assertEqual(self.request()[0], 409)
         self.assertEqual(len(self.upstream.records), 1)
 
     def test_websocket_converts_once_and_reuses_summary_for_incremental_input(self):
@@ -366,7 +401,7 @@ class AdapterConversionTests(unittest.TestCase):
                             'input': [{'role': 'user', 'content': 'next action'}]}))
         self.assertEqual(json.loads(ws.recv()[1])['type'], 'response.completed')
         self.assertEqual([v[0] for v in self.upstream.records],
-                         ['/official/responses', '/target/responses', '/target/responses'])
+                         ['/target/responses', '/target/responses', '/target/responses'])
         ws.close()
 
     def test_remote_compaction_trigger_is_rejected_before_any_summary_cost(self):
