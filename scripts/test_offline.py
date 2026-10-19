@@ -42,7 +42,7 @@ def isolated_environment(base):
 def offline_config(catalog, proxy_models=()):
     result = ("model = " + json.dumps(patch.MODEL) + "\nmodel_provider = " + json.dumps(patch.PROVIDER) +
             "\nmodel_catalog_json = " + json.dumps(str(Path(catalog).resolve())) + "\n" +
-            "web_search = \"disabled\"\n[features]\nmemories = false\n" +
+            "web_search = \"disabled\"\n[features]\nmemories = false\nplugins = false\nremote_plugin = false\n" +
             "\n[model_providers." + patch.PROVIDER + "]\nname = \"DeepSeek offline routing probe\"\n" +
             "base_url = " + json.dumps(LOOPBACK_BASE_URL) + "\nwire_api = \"responses\"\n" +
             "env_key = " + json.dumps(DUMMY_KEY_VARIABLE) + "\nrequires_openai_auth = false\n")
@@ -54,12 +54,17 @@ def offline_config(catalog, proxy_models=()):
     return result
 
 
+def probe_command(app):
+    return [str(patch.cli_path(app)), "--disable", "plugins", "--disable", "remote_plugin",
+            "app-server", "--listen", "stdio://"]
+
+
 def stop_probe(process, timeout=5):
     """Only stop a process/group created by this probe, never a named app."""
     if sys.platform == "win32":
         if process.poll() is None:
             subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, **patch.background_options())
         try:
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -89,7 +94,9 @@ def stop_probe(process, timeout=5):
 
 def launch_options():
     if sys.platform == "win32":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        options = patch.background_options()
+        options['creationflags'] = options.get('creationflags', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+        return options
     return {"start_new_session": True}
 
 
@@ -210,7 +217,7 @@ def main(directory):
             proxy_models = manifest.get("proxy", {}).get("models", [])
             (base / "home/config.toml").write_text(offline_config(directory / "desktop-models.json", proxy_models), encoding="utf-8")
             with (directory / "offline-stderr.log").open("w", encoding="utf-8") as log:
-                process = subprocess.Popen([str(patch.cli_path(app)), "app-server", "--listen", "stdio://"],
+                process = subprocess.Popen(probe_command(app),
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                                            text=True, encoding="utf-8", errors="replace", env=environment,
                                            cwd=work, **launch_options())

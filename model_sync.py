@@ -134,7 +134,7 @@ def provider_models(provider):
     auth = provider.get('auth')
     if auth:
         result = subprocess.run([auth['command']]+auth.get('args', []), capture_output=True, text=True,encoding="utf-8",errors="replace", timeout=15,
-                                cwd=auth.get('cwd'))
+                                cwd=auth.get('cwd'), **p.background_options())
         p.require(result.returncode == 0 and result.stdout.strip(), 'Provider credential helper is unavailable')
         key = result.stdout.strip()
     else:
@@ -156,7 +156,7 @@ def native_catalog(app, home):
             shutil.copy2(auth, Path(temp)/'auth.json')
             if os.name != 'nt': (Path(temp)/'auth.json').chmod(0o600)
         result = subprocess.run([str(p.cli_path(app)), 'debug', 'models'], capture_output=True, text=True,encoding="utf-8",errors="replace",
-                                timeout=90, env={**os.environ, 'CODEX_HOME':temp})
+                                timeout=90, env={**os.environ, 'CODEX_HOME':temp}, **p.background_options())
         p.require(result.returncode == 0, 'Native GPT catalog refresh failed')
         value = json.loads(result.stdout)
         p.require(isinstance(value.get('models'), list) and value['models'], 'Native GPT catalog is empty')

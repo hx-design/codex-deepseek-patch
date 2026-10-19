@@ -19,8 +19,9 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from windows_support import background_options
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 EDITION = "ds"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
@@ -67,7 +68,7 @@ def file_sha(path):
 
 
 def run(args, **kwargs):
-    return subprocess.run([str(x) for x in args], check=True, **kwargs)
+    return subprocess.run([str(x) for x in args], check=True, **(background_options() | kwargs))
 
 
 def mac_only():

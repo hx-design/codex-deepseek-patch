@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import patch
-from scripts.test_offline import isolated_environment, launch_options, stop_probe
+from scripts.test_offline import isolated_environment, launch_options, stop_probe, probe_command
 
 
 class ResponsesStub(http.server.BaseHTTPRequestHandler):
@@ -113,7 +113,7 @@ def main(directory):
     node = ("const fs=require('fs'),vm=require('vm');const x=JSON.parse(fs.readFileSync(0,'utf8'));"
             "const c=vm.createContext({});vm.runInContext(x.route,c);"
             "console.log(JSON.stringify(x.models.map(model=>c.codexPatchAppServerParams('thread/start',{model},'local'))));")
-    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True,encoding="utf-8",errors="replace"))
+    routed = json.loads(subprocess.check_output(['node','-e',node],input=json.dumps({'route':route,'models':models}),text=True,encoding="utf-8",errors="replace",**patch.background_options()))
     expected={m['slug']:m['context_window'] for m in json.loads((directory/'desktop-models.json').read_text(encoding="utf-8"))['models']}
     app = directory/'patched.app' if manifest['status']=='prepared' else Path(manifest['target'])
     server = http.server.ThreadingHTTPServer(('127.0.0.1',0),ResponsesStub)
@@ -137,7 +137,7 @@ def main(directory):
             (base/'home/config.toml').write_text(config,encoding="utf-8")
             work=base/'work';work.mkdir()
             with (directory/'context-probe.log').open('w',encoding='utf-8') as log:
-                process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,
+                process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE,stderr=log,text=True,encoding="utf-8",errors="replace",env=env,cwd=work,**launch_options())
                 try:
                     rpc=Rpc(process)

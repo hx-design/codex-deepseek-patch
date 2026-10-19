@@ -61,6 +61,15 @@ async function savedChatSwitchingTests() {
     .replace(/(\/\* NATIVE_CONTEXT_BEGIN \*\/).*?(\/\* NATIVE_CONTEXT_END \*\/)/s, (_,a,b)=>a+JSON.stringify(native)+b);
   vm.runInContext(source,isolated);
   const manage = isolated.codexPatchManagedRequest;
+  const callsFirst=[];
+  const fresh={hostId:'local',enqueueRequest:async(method)=>{
+    callsFirst.push(method);
+    if(method==='thread/read')return {thread:{id:'new',modelProvider:'deepseek-desktop',preview:'',ephemeral:false,status:{type:'idle'}}};
+    if(method==='thread/resume')throw new Error('no rollout found for thread id new');
+    assert.equal(method,'turn/start');return {sent:true};
+  }};
+  await manage(fresh,'turn/start',{threadId:'new',model:'deepseek-flash'},{});
+  assert.deepEqual(callsFirst,['thread/read','thread/resume','turn/start']);
   let current = {id:'saved-gpt',model:'gpt-6.1-sol',modelProvider:'openai',ephemeral:false,status:{type:'idle'}};
   const retained = {approvalPolicy:'never',approvalsReviewer:'user',sandbox:{type:'readOnly'},
     activePermissionProfile:{id:':read-only'},cwd:'/safe/work',runtimeWorkspaceRoots:['/safe/work','/safe/assets']};

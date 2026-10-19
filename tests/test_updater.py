@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,6 +13,14 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Real Windows background worker')
+    def test_update_worker_has_no_console_and_keeps_result_file_transport(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root/'update_worker.py').write_text("from pathlib import Path\nimport ctypes,json,sys\np=Path(sys.argv[2]); p.with_suffix('.result.json').write_text(json.dumps({'console':int(ctypes.windll.kernel32.GetConsoleWindow()),'input':json.loads(p.read_text())}))\n", encoding='utf-8')
+            self.assertEqual(u.worker(root, 'identity', {'probe':'unchanged'}, root/'job'),
+                             {'console':0, 'input':{'probe':'unchanged'}})
+
     def release(self, edition='ds'):
         names=['patch.py','monitor.py','updater.py','update_worker.py','model_sync.py','edition.json','tests/test_updater.py','tests/test_model_sync.py','tests/route.test.cjs']
         contents={name:b'fixture\n' for name in names}

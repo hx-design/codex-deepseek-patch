@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 import patch as p
+from windows_support import background_options
 
 REPOSITORY = 'limyum-creator/codex-deepseek-patch'
 CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models'}
@@ -94,7 +95,7 @@ def source_package(release, directory, fetch=public_get):
             env=isolated_environment(Path(temp))
             for command in ([sys.executable,'-m','unittest','discover','-s','tests','-q'],
                             [shutil.which('node'),'tests/route.test.cjs']):
-                result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120)
+                result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120,**background_options())
                 p.require(result.returncode==0,'Downloaded package preflight failed: '+result.stderr[-1500:])
         os.replace(stage,target)
         return target
@@ -107,7 +108,7 @@ def worker(root, action, job, work_directory):
     path=directory/('worker-'+action+'.json');p.save_json(path,job)
     with (directory/('worker-'+action+'.log')).open('w',encoding='utf-8') as log:
         result=subprocess.run([sys.executable,str(root/'update_worker.py'),action,str(path)],
-                              cwd=root,stdout=log,stderr=log,timeout=1800)
+                              cwd=root,stdout=log,stderr=log,timeout=1800,**background_options())
     p.require(result.returncode==0,'Update worker failed during '+action+'; see its local log')
     return json.loads(path.with_suffix('.result.json').read_text(encoding="utf-8"))
 

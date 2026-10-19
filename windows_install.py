@@ -55,7 +55,7 @@ def _make_shortcut(path, target):
               "$s.WorkingDirectory=" + quote(target) + "; "
               "$s.Description='Codex with local DeepSeek model selection'; $s.Save()")
     subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                   check=True, capture_output=True)
+                   check=True, capture_output=True, **win.background_options())
     _require(path.is_file(), "Shortcut creation did not produce a file")
 
 

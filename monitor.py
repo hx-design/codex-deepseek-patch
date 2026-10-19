@@ -24,6 +24,7 @@ import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from windows_support import background_options
 
 FORMAT = 1
 DEFAULT_INTERVAL = 300
@@ -125,7 +126,7 @@ def native_notify(kind, message):
                   "Start-Sleep -Seconds 6} finally {$n.Dispose()}")
         encoded = base64.b64encode(script.encode("utf-16-le")).decode()
         subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                       check=True, capture_output=True, timeout=20)
+                       check=True, capture_output=True, timeout=20, **background_options())
 
 
 class CoreBackend:
@@ -367,7 +368,7 @@ def launchd_plist(directory, interval, python=None):
 def windows_identity_sid():
     script = "$ErrorActionPreference='Stop'; [Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
     value = subprocess.check_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                                    text=True, encoding="utf-8", timeout=20).strip()
+                                    text=True, encoding="utf-8", timeout=20, **background_options()).strip()
     if not re.fullmatch(r"S-\d+(?:-\d+)+", value):
         raise ValueError("Windows returned an invalid current-user security identifier")
     return value
@@ -438,7 +439,7 @@ def migrate_windows_working_directory(directory):
         return False
     directory = Path(directory).resolve()
     label = service_label(directory)
-    result = subprocess.run(["schtasks.exe", "/Query", "/TN", label, "/XML"], capture_output=True)
+    result = subprocess.run(["schtasks.exe", "/Query", "/TN", label, "/XML"], capture_output=True, **background_options())
     if result.returncode:
         return False  # An unregistered monitor stays unregistered.
     root = ET.fromstring(windows_xml_text(result.stdout))
@@ -452,7 +453,7 @@ def migrate_windows_working_directory(directory):
     definition = directory / "task-cwd-migration.xml"
     definition.write_bytes(ET.tostring(root, encoding="utf-16", xml_declaration=True))
     subprocess.run(["schtasks.exe", "/Create", "/TN", label, "/XML", str(definition), "/F"],
-                   check=True, capture_output=True)
+                   check=True, capture_output=True, **background_options())
     return True
 
 
@@ -471,7 +472,7 @@ class Scheduler:
                                     capture_output=True, text=True)
             return {"scheduler": "launchd", "enabled": result.returncode == 0, "definition": str(self.plist)}
         if sys.platform == "win32":
-            result = subprocess.run(["schtasks.exe", "/Query", "/TN", self.label, "/XML"], capture_output=True)
+            result = subprocess.run(["schtasks.exe", "/Query", "/TN", self.label, "/XML"], capture_output=True, **background_options())
             registered = result.returncode == 0
             enabled = registered
             if registered:
@@ -511,7 +512,7 @@ class Scheduler:
             task = self.directory / "task.xml"
             task.write_text(windows_task_xml(self.directory, interval), encoding="utf-16")
             subprocess.run(["schtasks.exe", "/Create", "/TN", self.label, "/XML", str(task), "/F"],
-                           check=True, capture_output=True)
+                           check=True, capture_output=True, **background_options())
         else:
             raise ValueError("Native scheduling supports macOS and Windows only")
 
@@ -521,7 +522,7 @@ class Scheduler:
             self.plist.unlink(missing_ok=True)
         elif sys.platform == "win32":
             if self.status()["registered"]:
-                subprocess.run(["schtasks.exe", "/Delete", "/TN", self.label, "/F"], check=True, capture_output=True)
+                subprocess.run(["schtasks.exe", "/Delete", "/TN", self.label, "/F"], check=True, capture_output=True, **background_options())
         else:
             raise ValueError("Native scheduling supports macOS and Windows only")
 

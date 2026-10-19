@@ -12,7 +12,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import patch
 from scripts.test_context import ResponsesStub,Rpc
-from scripts.test_offline import isolated_environment,launch_options,stop_probe
+from scripts.test_offline import isolated_environment,launch_options,stop_probe,probe_command
 
 class Stub(ResponsesStub):
     def do_POST(self):
@@ -58,25 +58,31 @@ def main(directory):
             (base/'home/config.toml').write_text(config,encoding='utf-8')
             patch.save_json(base/'home/auth.json',{'OPENAI_API_KEY':'placeholder'})
             with (directory/'switching-probe.log').open('w',encoding='utf-8') as log:
-                process=subprocess.Popen([str(patch.cli_path(app)),'app-server','--listen','stdio://'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
+                process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
                     text=True,encoding='utf-8',env=env,cwd=work,**launch_options())
                 driver=subprocess.Popen(['node',str(patch.ROOT/'scripts/route_driver.cjs'),str(directory/'compatibility.json')],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True,encoding='utf-8',env=env,**launch_options())
                 try:
                     rpc=Rpc(process);rpc.request('initialize',{'clientInfo':{'name':'switching_probe','version':'1'},'capabilities':{'experimentalApi':True}})
+                    fresh=rpc.request('thread/start',{'model':first,'modelProvider':routes[first]['provider'],'cwd':str(work),'approvalPolicy':'never','sandbox':'read-only',
+                        'baseInstructions':'You are a synthetic local test.','config':{'web_search':'disabled','features.memories':False,
+                        'model_context_window':routes[first]['context_window'],'model_auto_compact_token_limit':routes[first]['compact_limit']}})
                     initial=rpc.request('thread/start',{'model':native,'modelProvider':'openai','cwd':str(work),'approvalPolicy':'never','sandbox':'read-only',
                         'baseInstructions':'You are a synthetic local test.','config':{'web_search':'disabled','features.memories':False,'model_context_window':128000,'model_auto_compact_token_limit':90000}})
                     tid=initial['thread']['id'];rpc.turn(tid)
                     report['checks'].append({'origin_model':native,'origin_provider':'openai'})
-                    def turn(model):
-                        driver.stdin.write(json.dumps({'method':'turn/start','params':{'threadId':tid,'model':model,'input':[{'type':'text','text':'Reply CONTEXT_OK.'}]}})+'\n');driver.stdin.flush()
+                    def turn(model,chat_id=None):
+                        chat_id=chat_id or tid
+                        driver.stdin.write(json.dumps({'method':'turn/start','params':{'threadId':chat_id,'model':model,'input':[{'type':'text','text':'Reply CONTEXT_OK.'}]}})+'\n');driver.stdin.flush()
                         while True:
                             line=driver.stdout.readline()
                             patch.require(line,'Patched request driver stopped')
                             value=json.loads(line)
                             if value.get('done'):
                                 patch.require(not value.get('error'),str(value.get('error')))
-                                return finish(rpc,tid,value['result'])
+                                return finish(rpc,chat_id,value['result'])
+                            if chat_id==fresh['thread']['id']:
+                                patch.require(value['method'] != 'thread/unsubscribe','First turn must retain its newly created session')
                             try:
                                 result=rpc.request(value['method'],value['params'])
                                 if value['method']=='thread/resume':
@@ -86,6 +92,10 @@ def main(directory):
                                 reply={'rpc':value['rpc'],'result':result}
                             except Exception as error:reply={'rpc':value['rpc'],'error':str(error)}
                             driver.stdin.write(json.dumps(reply)+'\n');driver.stdin.flush()
+                    events=turn(first,fresh['thread']['id'])
+                    windows=[e['params']['tokenUsage']['modelContextWindow'] for e in events if e.get('method')=='thread/tokenUsage/updated']
+                    patch.require(windows and set(windows)=={routes[first]['context_window']},'First turn lost its model context')
+                    report['checks'].append({'new_chat_first_turn':'passed','context_window':windows[-1]})
                     events=turn(first)
                     windows=[e['params']['tokenUsage']['modelContextWindow'] for e in events if e.get('method')=='thread/tokenUsage/updated']
                     patch.require(windows[-1]==routes[first]['context_window'],'Saved 128K window was not refreshed')

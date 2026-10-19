@@ -161,7 +161,7 @@ def build_compatible(args):
         verify_official(app)
         with tempfile.TemporaryDirectory(prefix="codex-ds-catalog-") as temp:
             raw = subprocess.check_output([str(p.cli_path(app)), "debug", "models", "--bundled"],
-                stderr=subprocess.PIPE, env={**os.environ, "CODEX_HOME": temp}, timeout=90)
+                stderr=subprocess.PIPE, env={**os.environ, "CODEX_HOME": temp}, timeout=90, **p.background_options())
         catalog = p.make_catalog(json.loads(raw))
         from model_sync import apply_reductions
         config = p.tomllib.loads(current)
