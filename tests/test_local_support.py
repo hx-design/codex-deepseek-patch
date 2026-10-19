@@ -30,7 +30,11 @@ class LocalTests(unittest.TestCase):
                     raise PermissionError('Desktop credential helper cannot write beside its profile')
                 return original_open(path,mode,*args,**kwargs)
             def start(*args,**kwargs):
-                process=original_popen(*args,**kwargs);owned.append(process);return process
+                command=list(args[0])
+                diagnostic='import faulthandler,runpy,sys; faulthandler.dump_traceback_later(10); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")'
+                command=[command[0],'-c',diagnostic,*command[1:]]
+                kwargs['stderr']=subprocess.PIPE
+                process=original_popen(command,**kwargs);owned.append(process);return process
             try:
                 with mock.object(Path,'open',readonly_open), mock.object(local_bridge.subprocess,'Popen',start), mock('builtins.print') as output:
                     local_bridge.credential(profile)
@@ -38,9 +42,16 @@ class LocalTests(unittest.TestCase):
                 self.assertTrue(local_bridge.healthy(value))
                 self.assertFalse(profile.with_suffix('.log').exists())
                 self.assertEqual(len(owned),1)
+            except RuntimeError as error:
+                diagnostics=[]
+                for process in owned:
+                    if process.poll() is None:process.terminate()
+                    diagnostics.append(process.communicate(timeout=10)[1].decode('utf-8',errors='replace'))
+                self.fail(str(error)+'\n'+''.join(diagnostics))
             finally:
                 for process in owned:
-                    process.terminate();process.wait(timeout=10)
+                    if process.poll() is None:process.terminate()
+                    process.communicate(timeout=10)
 
     def test_only_idle_compatibility_listener_needs_per_request_auth_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:
