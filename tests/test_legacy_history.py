@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from inference_adapter import create_server
 from inference_transport import connect_websocket
@@ -74,6 +75,60 @@ class CacheTests(unittest.TestCase):
         if os.name != 'nt':
             self.assertEqual(self.directory.stat().st_mode & 0o777, 0o700)
             self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.directory.iterdir()))
+
+    def test_empty_lock_file_is_locked_without_initializing_or_overwriting_bytes(self):
+        converter = self.converter()
+        path = self.directory / '.conversion.lock'
+        with patch('legacy_history.os.write', side_effect=PermissionError('A competing handle owns byte zero')) as write:
+            for _ in range(2):
+                with converter._lock(threading.Event()):
+                    self.assertEqual(path.stat().st_size, 0)
+        write.assert_not_called()
+
+    def test_lock_initialization_failure_closes_its_file_descriptor(self):
+        converter = self.converter()
+        original_open = os.open
+        descriptors = []
+        def opened(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            descriptors.append(descriptor)
+            return descriptor
+        try:
+            with patch('legacy_history.os.open', side_effect=opened), \
+                 patch('legacy_history.os.chmod', side_effect=PermissionError('Synthetic initialization failure')):
+                with self.assertRaises(PermissionError), converter._lock(threading.Event()):
+                    self.fail('Lock initialization must not enter its body')
+            self.assertEqual(len(descriptors), 1)
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
+        finally:
+            # A regressed implementation must not leak handles into test cleanup.
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows byte-range locking semantics')
+    def test_existing_empty_byte_lock_never_gets_overwritten_before_cancellation(self):
+        import msvcrt
+        converter = self.converter()
+        path = self.directory / '.conversion.lock'
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            cancelled = threading.Event()
+            cancelled.set()
+            try:
+                with self.assertRaises(LegacyHistoryError) as context, converter._lock(cancelled):
+                    self.fail('A cancelled competing handle must not acquire the lock')
+                self.assertEqual(context.exception.code, 'request_cancelled')
+                self.assertEqual(os.fstat(descriptor).st_size, 0)
+            finally:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(descriptor)
 
     def test_multiple_instances_convert_once_across_concurrent_threads(self):
         count, lock = [], threading.Lock()

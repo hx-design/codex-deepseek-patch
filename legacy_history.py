@@ -118,11 +118,12 @@ class LegacyHistory:
             raise LegacyHistoryError('legacy_cache_unavailable', 'The private history cache is unavailable')
         flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0)
         fd = os.open(path, flags, 0o600)
-        os.chmod(path, 0o600)
-        if os.fstat(fd).st_size == 0:
-            os.write(fd, b'\0')
-        deadline, locked = time.monotonic() + 150, False
+        locked = False
         try:
+            os.chmod(path, 0o600)
+            # CRT byte locks may extend past EOF. Do not initialize a byte:
+            # another handle may already own that range while this file is empty.
+            deadline = time.monotonic() + 150
             while not locked:
                 if cancelled.is_set():
                     raise LegacyHistoryError('request_cancelled', 'The model request was cancelled', 499)
@@ -141,15 +142,17 @@ class LegacyHistory:
                     cancelled.wait(.05)
             yield
         finally:
-            if locked:
-                if os.name == 'nt':
-                    import msvcrt
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+            try:
+                if locked:
+                    if os.name == 'nt':
+                        import msvcrt
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _read(self, path, *, matching_model=True):
         try:

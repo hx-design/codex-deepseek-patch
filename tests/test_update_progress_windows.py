@@ -97,7 +97,8 @@ class WindowsProgressNativeTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='codex-progress-native-')
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name) / '状态 有空格'
+        # PowerShell resolves Windows 8.3 aliases before invoking the controller.
+        self.directory = Path(self.temporary.name).resolve() / '状态 有空格'
         self.directory.mkdir()
         self.record = self.directory / 'record.json'
         self.controller = self.directory / 'fake controller.py'
