@@ -1,3 +1,4 @@
+from windows_support import background_options
 import json
 from pathlib import Path
 import shutil
@@ -108,7 +109,7 @@ class CompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'evidence.json'
             path.write_text(json.dumps(evidence))
-            result = subprocess.run(['node', ROOT / 'scripts/check_compatibility.cjs', path], capture_output=True, text=True)
+            result = subprocess.run(['node', ROOT / 'scripts/check_compatibility.cjs', path], capture_output=True, text=True, **background_options())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('Compatibility behavior probe failed', result.stderr)
 
@@ -119,12 +120,12 @@ class CompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'evidence.json'
             path.write_text(json.dumps(evidence))
-            result = subprocess.run(['node', ROOT / 'scripts/check_compatibility.cjs', path], capture_output=True, text=True)
+            result = subprocess.run(['node', ROOT / 'scripts/check_compatibility.cjs', path], capture_output=True, text=True, **background_options())
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertGreater(json.loads(result.stdout)['assertions'], 200)
             js = Path(temp) / 'candidate.mjs'
             js.write_text(patched)
-            syntax = subprocess.run(['node', '--check', js], capture_output=True, text=True)
+            syntax = subprocess.run(['node', '--check', js], capture_output=True, text=True, **background_options())
             self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
 

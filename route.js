@@ -1,6 +1,6 @@
 // CodexDesktopDeepSeekFlashPatch: local provider routing and model-specific defaults.
 function codexPatchModelRoutes() {
-  return /* MODEL_ROUTES_BEGIN */{"deepseek-flash":{"provider":"deepseek-desktop"}}/* MODEL_ROUTES_END */;
+  return /* MODEL_ROUTES_BEGIN */{"deepseek-flash":{"provider":"deepseek-desktop"},"grok-4.5":{"provider":"easycli-desktop","context_window":500000,"max_context_window":500000,"compact_limit":450000},"grok-4.7":{"provider":"easycli-desktop","context_window":500000,"max_context_window":500000,"compact_limit":450000},"gemini-3.8-flash-high":{"provider":"easycli-desktop","context_window":1048576,"max_context_window":1048576,"compact_limit":943718},"claude-opus-4-6-thinking":{"provider":"easycli-desktop","context_window":1000000,"max_context_window":1000000,"compact_limit":900000}}/* MODEL_ROUTES_END */;
 }
 function codexPatchAppServerParams(method, params, hostId) {
   if (hostId !== 'local' || !params || typeof params !== 'object') return params;

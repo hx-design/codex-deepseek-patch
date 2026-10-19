@@ -1,8 +1,56 @@
-# v0.3.8：恢复 Windows 官方应用版本检测
+# Official-client refactor: validation record
+
+2026-10-19. DS 0.4.0 and extension 0.5.0-proxy.1 use the original desktop app plus a small external adapter. Results below distinguish real model calls from synthetic protocol fixtures. The older records remain below as historical evidence.
+
+## Real models and original authentication
+
+- macOS and Windows each completed the same-chat **GPT → DeepSeek → Grok 4.7 → Gemini 3.8 Flash → GPT** sequence. Every turn recalled all earlier synthetic tags; DS/Grok/Gemini executed the native file tool; the final GPT recalled the complete sequence and file marker without a tool.
+- The first two diagnostic runs exposed foreign encrypted reasoning and foreign reasoning-content schema leaking into GPT. Model provenance isolation and readable-message normalization fixed both; the complete rerun passed on both platforms.
+- Tests used the existing ChatGPT access only in an isolated CLI's ephemeral credential store, without refresh or production configuration/history changes. No credential was found in the disposed test state.
+- A separate real GPT/DS/Grok test passed native readable-summary compaction and GPT return. A synthetic old GPT compacted-state fixture also exercised the real one-time readable-summary conversion and cache reuse.
+
+## Native CLI and protocol coverage
+
+The untouched bundled CLI exercises both editions with fake loopback model endpoints. Checks include model catalogs, high/low/high reasoning, per-model context beyond 128K, automatic/manual readable compaction, same-chat switching, original GPT WebSockets and provider credential isolation, local prewarm, 160 lazily discovered MCP tools, integer argument normalization and actual custom-tool file creation.
+
+The extension additionally tests native CLI → Chat Completions → native lazy tool execution and custom tool execution → GPT. Independent HTTP/SSE/WebSocket fixtures cover anonymous local services, arbitrary Claude/GLM/local model names, images, parallel calls, result association, truncation, cancellation, errors and unsupported capabilities. Those arbitrary models have **synthetic protocol coverage**, not credential-backed real-model validation.
+
+The original Mac host's vendor signature, bundled CLI/Node identity, native app tool connection and 53-tool registration were checked. The previously installed legacy Mac app completed an actual Calculator computer-use test; this refactor's new host has not yet repeated that full GUI interaction. Routine verification uses background CLI processes and does not launch desktop test windows.
+
+## Installation and migration
+
+- Windows normal-user pythonw tests verify hidden execution, native metadata migration/restart/reentry/rollback, preserved model/effort/archive/content, and zero inference during migration.
+- Fault-injection tests cover activation phases, configuration rebase, later unrelated edits, independent rollback failures, commit interruption, idempotent recovery and restoring current chat metadata after extended use.
+- Actual Windows Task Scheduler fixtures restore Ready, Disabled and Running states exactly. UTF-16 XML declaration/encoding and CRLF backup restoration are covered.
+- Windows package activation was verified through the original Store AUMID and real package identity APIs. New installation paths never copy the Store app.
+
+## Legacy updater and notification regression
+
+The published extension 0.4.10 updater was exercised on Windows with its parent working directory inside the runtime. This reproduced a directory-lock failure during child activation. The fixed independent native recovery record survives the old updater deleting its activation journal; both immediate parent promotion and injected promotion failure followed by restart restore the native baseline and backend.
+
+A subsequent full Windows legacy-package preflight exposed console flashes from Node/OpenSSL child processes inside tests. A windowless Python parent does not hide those grandchildren. All real test subprocesses now request hidden startup explicitly; a source contract checks this across the full test directory. This is required for both editions, since old updaters run the complete downloaded test suite.
+
+### Final Windows and four-variant gates
+
+- Published old updater, fresh candidate download path: 91/91 source-file digests checked; **484 Python tests passed** (5 platform/tool availability skips) and the legacy Node route suite passed.
+- A normal-user WinEventHook observer covered that entire run: **zero owned terminal/form show events**, zero other show events, and no observer errors.
+- macOS and Windows native suites passed for both editions: DS **9 checks**, extension **12 checks**. Windows uses danger-full-access only inside this deterministic synthetic test's disposable home/work directory, records the actual effective policy, and leaves production settings untouched. Integer tool execution requires completed status, exit code 0 and a standalone output marker; custom tools require completed file changes and exact expected file contents.
+- The final Windows DS suite repeated the window observer with zero show events. The extension's real-model five-step sequence and synthetic Chat Completions suite remain separately recorded above.
+- macOS full suites passed in both branch configurations (483 tests at that checkpoint, 10 Windows skips); later Windows hidden-child enforcement and tool-success regressions were checked separately. Hidden native panels passed four AppKit cases and eleven Windows control/contract cases without showing production windows.
+
+## Lightweight runtime
+
+A private macOS adapter process serving only a health check measured **166,046 bytes across 9 runtime source files** and **31,120 KiB idle RSS** before the later transport close fix. This measures that specific build/process, excluding Python, the official app, test/recovery/update sources, external services and model weights. It does not measure peak inference memory.
+
+The optional update panel uses system AppKit / WinForms, with no web frontend or third-party UI dependency. Native control tests are performed without showing windows or closing production applications. Completion never launches Codex without the user pressing the launch button.
+
+---
+
+# v0.4.10-proxy.1：恢复 Windows 官方应用版本检测
 
 2026-10-19。Windows 受管副本不具备当前进程的 MSIX 包身份，官方更新器因此在初始化阶段退出。本次仅在 Windows 且原因精确匹配时启用兼容检查器，复用官方发布源、schema、版本比较及架构选择，保留原更新策略。
 
-- 单元回归 175 项，其中新增 20 项覆盖真实适配器执行、错误分支、策略撤销、并发检查、通知、安装入口以及源码契约和资源完整性。Mac 下 4 项 Windows 专属测试跳过。
+- 单元回归 240 项，其中新增 20 项覆盖真实适配器执行、错误分支、策略撤销、并发检查、通知、安装入口以及源码契约和资源完整性。Mac 下 4 项 Windows 专属测试跳过。
 - 用实际 Windows 官方 offers class、Zod schema 和版本比较函数进行 9 项受控回放：实时官网下载的当前版本 JSON、较新、相等、较旧版本、HTTP 错误、HTTPS 降级、错误 schema、缺架构、策略撤销，全部通过。网络层注入实时公开快照；没有调用需要包身份的原生更新 API。
 - 检查结果为 available / up_to_date / error / unavailable；发现新版可打开官方安装入口。只发现新版时不宣称安装包已下载，不设置 ready，避免触发原生强制退出安装。官方应用更新后由原有补丁监测接续兼容性检测和补装。
 - Windows 两版均适用，使用相同修复，DS 和扩展保持独立发布及更新源。Windows 构建只改变已声明的客户端路由及 updater 两个 ASAR 成员，原 Store 来源保持只读。
@@ -11,33 +59,82 @@
 
 ---
 
-# v0.3.7：Mac 隔离测试不再等待钥匙串弹窗
+# v0.4.9-proxy.1：Mac 隔离测试不再等待钥匙串弹窗
 
 2026-10-19，针对“测试时没有可用钥匙串，未点击导致更新超时”的反馈，修正临时 HOME 下的 GUI 启动检查。测试专用模拟钥匙串只作用于隔离副本，真实登录钥匙串和正式应用的加密存储保持原样。
 
 - 同一修改同步 DS / 扩展分支；Mac 两版的真实启动检查均通过，并从测试主进程确认 `--use-mock-keychain` 已生效，分别耗时约 6.38 / 6.41 秒。
+- Windows 实际普通用户对话还发现认证助手无法写入由提升权限的诊断进程创建的日志；此前隔离 CLI 使用不同权限，未覆盖该条件。认证助手改为不写日志文件，并新增真实子进程启动、认证健康检查在禁止文件写入时仍成功的回归；安装验证使用交互式普通用户执行。Mac 扩展版共享相同修复，纯 DS 没有该兼容进程。
+- macOS CI 的真实子进程回归进一步定位到 HTTPServer 启动时的反向 DNS 查询阻塞。仅绑定数字 loopback 地址的连接服务跳过该查询，新增禁止 DNS 查询的回归；Mac / Windows 扩展版共用修复，纯 DS 无此服务。
 - Windows 不经过 macOS 钥匙串；回归覆盖 Windows / Linux 的启动参数保持原样，以及其他进程携带模拟参数不能满足本次检查。
-- 本分支单元回归共 155 项；四组合核对规则已加入 CONTRIBUTING。既有首条消息、同聊天切换和 Windows 隐藏自检修复保留。纯 DS 没有扩展版的兼容连接日志，不经过此次 Windows 日志权限故障路径。
+- 本分支单元回归共 220 项；四组合核对规则已加入 CONTRIBUTING。既有 Grok 闲置连接、整数工具参数、首条消息和 Windows 隐藏自检修复保留。
 
 ---
 
-# v0.3.6：首条消息与 Windows 无窗口自检
+# v0.4.8-proxy.1：闲置后 502 与工具数字参数
 
-2026-10-19，独立 DS 通道同步扩展版已验证的两项修复：刚创建的 DS 聊天首条消息记录尚未持久化时，保持已加载的会话发送；Windows 后台工具不创建控制台，GUI 启动测试使用专用隐藏桌面。
+2026-10-19，Windows 实机对照复现同一 Grok 4.7 聊天闲置后的 502。兼容进程正常空闲退出，但旧配置 `refresh_interval_ms=0` 让原生 CLI 永久缓存 helper 结果，后续请求直接连接已关闭的端口。修正适配连接的刷新间隔，保持按需启动和空闲退出。
 
-- Python 回归共 154 项：Mac 150 通过、4 项 Windows 专属跳过；公司 Windows 实机 154 项全部通过。Node 路由覆盖新增首条消息分支与已有 GPT ↔ DS 切换。
-- Mac 与 Windows 完整应用均通过目录、low/high/max 档位、默认 1,048,576 上下文、同聊天切换和隔离启动五项检查。新增真实首条消息检查；已有 GPT → DS → GPT 流程、权限和压缩后窗口继续验证。请求使用 loopback 模拟服务。
-- Windows 子进程专项检查覆盖无控制台管道、worker 结果传递及隐藏桌面生命周期。Windows 完整应用隐藏桌面启动通过，测试结束清理进程和桌面句柄。
-- 隔离检查关闭测试环境中的插件自动下载，避免后台克隆占用临时目录；正式用户插件设置保持原样。
-- DS 直连官方端点，没有扩展版按需监听器退出后的 502 原因。DS 仍使用 main 独立更新通道，没有引入代理依赖或扩展模型。
+- 使用真实内置 CLI 和既有代理，在两个独立测试聊天中各完成首条回复；等待 128 秒，确认两个测试监听器均已退出，再在各自原聊天发送第二条。旧值 0 返回 502，修复值 1 自动恢复并完成回复；共四条简短推理请求。
+- 独立原生缓存行为测试：三回合中旧值只调用 helper 一次，修复值逐回合调用，共三次。
+- 真实 Grok 工具错误为 `floating point 30000.0, expected u64`。原生声明允许 `number`，执行器要求整数。按声明处理完整数字参数，精确保留数值；回归覆盖字符串、小数、未知字段、嵌套引用、命名空间和流式调用。
+- 原生工具检查加入一次无副作用的 echo，实际传入 `yield_time_ms:1000.0` 和 `max_output_tokens:300.0`，检查 Codex 完成命令并返回标记。大工具集、发现、执行、压缩后窗口检查继续保留。
+- Python 回归共 217 项：Mac 213 通过、4 项 Windows 专属跳过；Windows 实机 217 项全部通过。Mac 与 Windows 的真实原生工具执行检查均通过。构建器继续要求目录、思考、上下文、同聊天切换、大工具集和隔离应用启动全部通过才允许安装。
+- DS 直连版没有闲置兼容监听器；它独立发布 0.3.6，同步首条消息和 Windows 无窗口自检修复，更新源互不覆盖。
 
 ---
 
-# v0.3.5：固定 macOS 签名与更新授权
+# v0.4.7-proxy.1：首条消息与 Windows 无窗口检查
+
+2026-10-19，原生复现新 Grok 对话发送首条消息前返回 `no rollout found for thread id`：此前模型切换逻辑会尝试恢复尚无持久记录的空对话。修复只对已加载、空预览、同一目标提供方且返回该对话确切记录缺失错误的情况，沿用创建好的会话发送；其他恢复错误继续正常报告。已有对话仍走原有的权限保留与上下文刷新流程。
+
+- 新增真实原生首条消息检查，确认发送前不卸载会话，并保持模型的上下文窗口。实际 Grok 4.7 首条回复成功，窗口保持 500,000。
+- Windows 调度、模型同步、凭据查询、更新 worker、验证及清理命令统一隐藏控制台，标准输入输出与 UTF-8 通信保留。
+- Windows 桌面启动检查通过原生 `CreateProcessW` 的 `lpDesktop` 运行于本次专用桌面；不切换用户桌面，结束后释放。Python 的 `STARTUPINFO` 不提供该字段，因此此处显式调用原生接口。
+- 全套 211 项 Python 回归；新增真实 Windows 无控制台管道、worker 结果传递和隐藏桌面生命周期检查，并在公司 Windows 机器通过原生隐藏桌面启动验证。
+
+---
+
+# v0.4.6-proxy.1：隔离验证的插件下载
+
+2026-10-19，Windows 安装检查期间，原生 CLI 的后台插件克隆可能占用临时目录，使已通过的模型检查在清理时失败。
+
+- 目录、思考、上下文、切换、工具、连接及启动的隔离检查关闭测试环境中的插件与远端插件自动下载；用户实际 Codex 的插件设置保持原样。
+- 新增 CLI 参数和隔离桌面配置回归；全套 208 项测试覆盖图片工具及既有功能。
+- Grok 生图复核：将代理登录与已验证的 Grok Build 账号对齐，使用其默认图片型号 `grok-imagine-image-quality`，现有 Images 接口单次请求成功返回一张 1024×1024 JPEG；同一账号的 Grok 4.7 聊天也正常。未改写代理路由或请求认证逻辑。
+- 排查 Grok 图片权限或额度错误时，同时核对代理与 Grok Build 的账号、图片型号；本次先前失败使用的是另一账号及 `grok-imagine-image` 型号。保留原始错误记录，复核后明确标注实际成功的组合。
+
+---
+
+# v0.4.5-proxy.1：Windows 中文生图输入
+
+2026-10-19，补充中文系统上的真实管道编码检查。旧图片工具会按 Windows 的 GBK 默认编码解读 Codex 发来的 UTF-8 请求；中文提示词或中文路径可能使工具退出。
+
+- 图片 MCP 的 stdin/stdout 显式使用 UTF-8，保留系统区域设置和其他程序环境。
+- 新增 GBK 子进程接收 UTF-8 中文 JSONL 的回归，验证提示词原文、中文输出目录和准确返回路径；同时保留 StringIO 测试兼容。
+- Mac 与真实中文 Windows Python 3.12 的 29 项图片专项测试通过，无实际生图；全套 207 项回归继续覆盖既有模型、更新通道和安装行为。
+
+---
+
+# v0.4.4-proxy.1：可选图片生成工具
+
+2026-10-19，为自定义聊天模型添加独立的 stdio 图片工具，直接复用既有 CPA 接口。
+
+- 205 项 Python 回归（Mac 204 通过、1 项 Windows 专属跳过），包括 27 项图片接口、脱敏、输出保存和配置保护检查；Node 路由检查通过。
+- 真实 Codex CLI 离线验证三路按需发现、MCP 调用、图片保存和内联图片回传，使用合成接口，无外部生成。
+- Windows 实际账户验证：Gemini 聊天调用 Gemini 图片模型、Grok 4.7 调用 GPT Image 均完成一次图片生成并返回文件。
+- Grok 4.7 能发起 Imagine 请求；测试 `grok-imagine-image` 型号时上游返回 `personal-team-blocked:spending-limit`。错误码被保留为可读提示；补丁不自动重试生成。
+- CLI 配置启用、重复启用、更新与禁用有完整备份，保护已有其他 MCP、默认模型、多行 TOML 和 Windows 换行；正式配置沿用用户审批规则。
+- 图片请求分别使用 GPT/Grok Images 和 Gemini generateContent，模型可用性按现成账户查询，返回 PNG/JPEG/WebP 新文件和图片内容。
+- 功能随扩展版独立更新，DS 直连通道保持独立。
+
+---
+
+# v0.4.3-proxy.1：固定 macOS 签名与更新授权
 
 2026-10-19，修复每次临时重签导致的应用身份变化，并恢复可本地使用的能力声明。
 
-- 本分支 151 项 Python 回归：Mac 150 通过、1 项 Windows 专属跳过；路由检查通过。
+- 本分支 178 项 Python 回归：Mac 177 通过、1 项 Windows 专属跳过；路由检查通过。
 - 隔离原生测试中，两份不同代码哈希的应用共享同一证书与身份要求。第二版在禁止授权弹窗时成功读取第一版创建的测试钥匙串项目；临时签名对照被拒绝。
 - 实际应用两次重建生成不同 ASAR 摘要，10 个本机重签组件全部满足上一版的身份要求；麦克风、相机等声明保持，未修改的 CodexCLI 与 Sparkle 官方签名保留。
 - 扩展版实际 Mac 副本已通过目录、思考档位、上下文、同聊天切换、大工具集及隔离启动六项检查。纯 DS 版实际 Mac 副本也已通过目录、思考档位、上下文、同聊天切换及隔离启动五项检查。验证请求使用本机模拟服务。
@@ -47,37 +144,47 @@
 
 ---
 
-# v0.3.4：Windows 监测程序自身升级
+# v0.4.2-proxy.1：Windows 自动更新修复
 
-2026-10-19，Windows 实机已通过 v0.3.3 的目录、思考档位、上下文、同聊天切换、隔离启动和应用安装。核对发现旧调度任务以 runtime 为工作目录，Windows 因目录占用阻止 runtime 原子替换，激活恢复记录保留。
+2026-10-19，将独立直连版已验证的两项 Windows 后台更新修复同步到扩展版自己的通道。
 
-- 新任务使用监测状态目录作为工作目录；自动更新构建完成后迁移旧任务的工作目录，保留启用状态、触发器、身份和命令。旧进程遗留的激活记录由下一轮自动恢复。
-- 激活前离开将被替换的 runtime 目录，避免后续自身升级再次占用。
-- 新增实际目录切换/替换回归，以及旧任务迁移、未注册/已迁移跳过、禁用状态与原定义备份检查。
-
----
-
-# v0.3.3：Windows 后台自动更新检查
-
-2026-10-19，Windows 实机自动下载 v0.3.2 时，包内配置测试对 `pythonw.exe` 的预期错误：实际凭据子命令正确使用 `python.exe`，测试却要求与无窗口监测进程相同，导致更新预检失败。此时保留旧安装。
-
-- 修正测试预期，并保留已有的无窗口凭据 helper 专项测试。
-- Windows CI 额外通过真正的 `pythonw.exe` 启动全套单元测试，覆盖后台自动更新执行方式。
-- 同一聊天切换实现与 v0.3.2 相同；按不可变发布规则升级版本及更新序号，不替换已发布的源码提交。
+- Mac 170 项单元测试：169 通过、1 项 Windows 专属跳过；Node 路由与同聊天切换检查通过。
+- Windows CI 增加真正的 `pythonw.exe` 全套回归，检查后台校验与控制台凭据 helper 的兼容性。
+- 实际临时目录回归验证：进程从旧 runtime 启动时，先离开目录，再替换为扩展版 runtime，并保留旧副本。
+- 调度任务回归覆盖原定义备份、只修改工作目录、保留禁用状态与触发器，以及未注册/已迁移时跳过。
+- 扩展版专项回归确认：只有全部验证通过后才迁移旧任务；目录、思考、上下文、同聊天切换、大工具集与启动六项检查仍按原顺序执行。
+- 模型路由、代理/本地适配和聊天压缩实现沿用 0.4.1；本次验证更新与后台执行路径，不提交真实模型推理回合。
+- 两个分支各有发布清单与序号；本次只推进扩展版，Windows/Linux 各 Python 3.11/3.13 的结果见本次提交 Actions。
 
 ---
 
-# v0.3.2：已有聊天内 GPT ↔ DS 切换
+# v0.4.1-proxy.1：大量工具下的压缩循环
 
-2026-10-19，纯 DS 通道同步已有聊天切换能力。Mac 应用基线 `26.1013.40934`（20770），CLI `0.163.0-alpha.10.2`。
+2026-10-19，修复 GitHub 旧扩展版默认关闭工具发现造成的 MCP 定义全量注入。故障聊天的窗口始终为 500,000；压缩后约 25K 的历史在下一次请求重新叠加工具开销，回到约 433K。此问题与先前的 128K 窗口回落分别验证。
 
-- Python 141 项回归：Mac 140 通过、1 项 Windows 专属测试跳过；Node 覆盖 GPT → DS → GPT、上下文与权限保留、工作区写入设置、缓存、运行中拒绝切换、其他服务商保留及失败恢复。
-- 全部构建入口共用兼容检查与路由注入；实际客户端 256 项契约断言通过，21,174 个 ASAR 成员仅声明的一个客户端内容变化。官方来源校验、副本签名及隔离 GUI / app-server 启动通过。
-- 真实内置 CLI 与实际修改后的请求方法，通过本机模拟服务从已有 GPT 聊天切入 DS、触发压缩、切回 GPT 再切 DS。六个回合保留在同一聊天，工作目录、审批与沙箱权限一致。
-- 默认 DS 窗口 1,048,576：旧 128K 聊天切换后刷新，压缩后仍为 1,048,576。
-- 自动更新格式的规格快照另测 512,000 窗口、384,000 压缩阈值：往返切换与压缩后保留用户调小值；规格上限仍为 1,048,576。
-- 模型目录、low / high / max 思考档位、普通消息上下文、同聊天切换和隔离启动检查全部通过。`build --verify`、`verify BUILD` 和自动更新使用同一检查入口，安装器拒绝未通过切换测试的新构建。
-- 本次应用回归使用隔离副本、临时配置和 loopback 模拟请求，外部模型推理调用为 0。Windows 实际升级由已启用的 DS 通道在本机完成全部验证后安装；CI 平台结果可在对应提交的 Actions 查看。
+- 166 项 Python 单元测试：Mac 165 通过、1 项 Windows 专属跳过；Node 路由和同聊天切换测试通过。
+- 增加必须通过的真实内置 CLI 大工具集检查：160 个大定义 MCP 工具，7 个支持工具的模型分别完成三轮搜索/执行，在中间强制触发一次自动压缩，随后继续调用工具，窗口保持各自设置。初始请求体积有上限断言，工具执行由合成 MCP 服务实际响应。
+- 隔离目录、逐档思考、上下文、同聊天切换、大工具集和应用启动六组安装检查通过；自动更新使用相同门槛。
+- Grok 4.5、Grok 4.7、Gemini Flash、Opus Thinking 经现有代理完成真实的延迟工具搜索、加载及调用。Grok 4.7 另完成安装包凭据 helper 启动、短回复和临时文件读取。
+- 使用故障聊天的只读副本、160 个合成 MCP 工具和 Grok 4.7 high 继续两轮：输入分别为 42,760 和 42,843 tokens，窗口均为 500,000，压缩次数为 0。原聊天文件前后摘要一致。
+- 修复同时覆盖首次构建、模型规格同步、旧配置迁移，以及本地服务离线时保留旧规格的路径。用户的 8K / 32K 本地窗口和主动调小设置保留。
+- 仅转换工具调用格式；搜索、执行和权限判断保留在原生客户端。压缩请求不会因为历史中包含工具搜索结果而重新启用工具。
+
+---
+
+# v0.4.0-proxy.1：本地模型、可选 DS 与同聊天切换
+
+2026-10-18，扩展版保留独立发布通道。新增本地模型发现、可选 DeepSeek、统一验证命令和同聊天切换。
+
+- Mac 单元测试 158 项：157 通过、1 项 Windows 专属跳过；Node 请求路由、缓存、忙碌保护、显式外部服务商与切换失败回退通过。
+- 实际内置 CLI 验证已保存聊天从 128K 修复为 Grok 500K，强制触发一次真实压缩后仍为 500K；切换 DS、Gemini、原生 GPT 后保留同一聊天 ID、历史、审批、权限和工作目录。
+- 现有 Ollama 0.40.2 的五个模型均返回真实响应：Ellaria 9B、Lumimaid 8B、Llama 3.1 Stheno 8B、Qwen3 8B 和 Qwen3.5 9B；两款 Qwen 另通过 shell 读取临时文件回合。只聊天模型按非空完成响应验证，不要求角色模型逐字服从测试标记。
+- Qwen3.5 原模板拒绝出现在中途的系统消息；按需兼容进程合并前置说明后，回复与工具回合通过。原模型模板、权重与服务配置未修改；实际加载窗口 32,768，目录同时保留模型最大值 262,144。
+- 完整扩展版 10 个自定义模型通过实际 CLI 目录、思考档位、上下文与同聊天切换；隔离应用启动通过。首次启动检查在 180 秒超时，采样定位到 macOS 系统证书读取等待；将等待上限调整为 360 秒后实测 346.62 秒启动，renderer / app-server 均保持运行。
+- 不带 DS 的全新本地模型版本通过五项检查，随后在独立应用目标和临时 Codex home 中实际安装、恢复，原应用摘要及原配置复原；测试明确拒绝任何 DS 凭据访问。
+- 目录和路由分别记录当前窗口与最大值；本地服务较小窗口可以持久保存，卸载模型或断线后不跳回最大值。连接地址变化计入更新摘要。
+- 四款代理模型最低 / 最高思考档位的 8 次真实短响应通过；Gemini 与 Opus 的原生 CLI 同聊天切换低 / 高档也通过。
+- Windows 的独立 DS 0.3.1 已正式安装，139 项实机单元测试及目录、思考、上下文、启动检查通过；自动更新与模型同步开启，官方 Store 来源未改变。扩展版的新增本地接入实测环境为 Mac → 已有 Windows Ollama 服务。
 
 ---
 
@@ -88,9 +195,8 @@
 - 自动同步及初次构建共用档位配置；未知后续型号从文档的 Supported 标题读取，单档模型默认档位保持有效。
 - 新增真实内置 CLI 回归：读取 model/list 的可选档位，在同一聊天逐档切换并回到第一档，检查发往本机模拟接口的 reasoning.effort 完全一致。
 - 安装与自动更新将思考档位测试加入必过门槛。
-- Mac 139 项单元测试：138 通过、1 项 Windows 专属跳过；公司 Windows 实机 139 项全部通过。
-- 公司 Windows 已通过新构建的目录、low/high/max 档位切换、上下文及隔离启动检查。已有 512,000 窗口与 384,000 压缩阈值保留，规格上限为 1,048,576。
-- JSON 与 CLI 文本显式使用 UTF-8，修复中文 Windows 默认 GBK 解码失败；已有同步快照时省去重复查询内置模型目录，兼容无窗口任务。
+- Mac 150 项单元测试：149 通过、1 项 Windows 专属跳过；实际目录、17 个档位及回切、上下文和隔离启动通过。
+- 现有代理的 8 次真实短响应通过：四个模型分别测试最低和最高档，均返回预期内容。
 
 ---
 
@@ -98,11 +204,53 @@
 
 2026-10-18，新增补丁自身更新、原生 GPT 目录刷新、DS 官方规格读取及模型偏好持久化。扩展版同时加入代理模型发现与 Grok / Gemini Flash / Opus 官方规格同步。
 
-- 本分支 137 项 Python 回归测试，Mac 136 项通过、1 项 Windows 专属测试跳过；Node 路由测试通过。
+- 本分支 148 项 Python 回归测试，Mac 147 项通过、1 项 Windows 专属测试跳过；Node 路由测试通过。
 - 回归覆盖：通道隔离、提交与文件摘要、拒绝降级、隔离包测试、缓存篡改、安装后运行时代码激活重试、型号新增与下线、隐藏与主动调小窗口、未知规格等待及断网保留。
 - 真实模型元数据刷新不发送推理回合。通过本机官方 `/models` 与厂商文档核对最大窗口，目录与路由共享同一规格快照。
-- DS 版真实 Mac 官方副本的签名、ASAR、目录路由、两轮模拟上下文与隔离启动通过；启动耗时 92.46 秒。
+- 扩展版真实 Mac 官方副本签名、ASAR、5 个新增模型的目录路由和两轮模拟上下文通过；压缩事件及额外压缩请求均为 0。
+- 首次隔离启动超过 180 秒，未安装；单独复测 6.38 秒通过，renderer 与 app-server 保持存活。DS 版独立副本启动 92.46 秒通过。
+- 两次真实模型规格刷新摘要一致、告警为空，未变化检查不触发重建。
 - 各平台实机及 CI 结果分别记录；下方 v0.2.x 是历史正式安装记录。
+
+---
+
+# 0.2.1-proxy.2：修复上下文上限与频繁压缩
+
+2026-10-18，修正扩展版四个模型统一为 128k 的错误。默认与最大窗口按官网规格设置：Grok 4.5 / 4.7 各 500,000，Gemini 3.8 Flash 为 1,048,576，Opus 4.6 Thinking 为 1,000,000 token。规格来源见 README。
+
+- 目录取消 GPT 模板的 95% 窗口折减；新代理线程填入模型窗口和 90% 自动压缩阈值。显式较小的每线程配置保留，GPT / DS 全局设置保持原样。
+- 实际修改后的客户端请求和预热方法通过 481 项行为断言；Python 单元测试共 126 项，Mac 125 项通过、1 项 Windows 专属测试跳过。
+- 新增本机模拟回归：在全局配置仍为 128k 窗口、90k 压缩阈值时，实际内置 CLI 为每个模型连续处理两轮模拟 180k 占用。各模型回报官网窗口；压缩事件 0，额外压缩请求 0。该测试不连接模型服务商。
+- 四个模型分别通过真实小型回复与读文件工具回合；实际 `modelContextWindow` 分别为 500,000 / 500,000 / 1,048,576 / 1,000,000。
+- Opus 官网 1M 与当前 CLIProxyAPI 8.0.32 Antigravity 静态表 200k 的差异已注明；未执行百万 token 的上游压力请求。
+- 兼容安装和自动监测新增上下文回归通过门槛，避免后续构建重新带入小窗口。
+- 隔离应用冷启动实测耗时约 151 秒；启动探测等待上限从 60 秒调整为已验证的 180 秒，保留 renderer 与 app-server 持续存活条件。
+
+---
+
+# 现有代理扩展分支验证
+
+2026-10-18，在 macOS 的现有 EasyCLIProxyAPI 接口上验证，应用基线 `26.1013.40934` / build `20770`。
+
+| 模型 | Codex 实际回复 | shell 读取临时文件并回传 |
+| --- | --- | --- |
+| Grok 4.5 (`grok-4.5`) | 通过 | 通过 |
+| Grok 4.7 (`grok-4.7`) | 通过 | 通过 |
+| Gemini 3.8 Flash (`gemini-3.8-flash-high`) | 通过 | 通过 |
+| Claude Opus 4.6 Thinking (`claude-opus-4-6-thinking`) | 通过 | 通过 |
+
+- 使用实际内置 app-server、临时配置与临时工作目录，每个模型执行两个真实回合；流式事件、线程提供商和工具执行记录均已核对。
+- 最终构建与联网测试使用相同的模型目录摘要和 CLI 文件摘要。
+- 实际客户端的请求与预热路由共 415 项行为断言通过，GPT、DeepSeek、远端和显式自定义提供商均覆盖。
+- 离线探测读取 13 个可见模型，验证 1 个 DS 与 4 个代理临时线程；推理调用为 0。
+- 签名、ASAR 校验、完整应用语法与隔离 renderer / app-server 启动通过。
+- 124 项 Python 单元测试中，Mac 123 项通过、1 项 Windows 专属测试跳过；Node 路由测试通过。
+- 初次隔离启动使用了 DS 全局默认配置，未就绪；启动探测随后按正式安装行为保留原生默认提供商，通过后才允许安装。
+- 本机接口当时没有提供 Opus 5.5 或 Gemini 4；不注册这些名称。Opus 使用已测试的 4.6 Thinking。
+
+本机已正式安装并重新启动，应用签名与资源完整性通过复核。安装配置仅更新模型目录并新增代理服务商，原 GPT 默认与 DeepSeek 配置保留。自动监测已接续新构建，状态为 installed，周期为 300 秒。
+
+该分支代理接入的实机记录为 macOS。Windows 部署与监测的既有验证见下方 v0.2.x 记录。
 
 ---
 

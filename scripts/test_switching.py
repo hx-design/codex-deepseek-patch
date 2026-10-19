@@ -12,7 +12,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import patch
 from scripts.test_context import ResponsesStub,Rpc
-from scripts.test_offline import isolated_environment,launch_options,stop_probe,probe_command
+from scripts.test_offline import isolated_environment,launch_options,stop_probe, probe_command
 
 class Stub(ResponsesStub):
     def do_POST(self):
@@ -37,7 +37,8 @@ def main(directory):
     routes=manifest.get('model_routes',{})
     candidates=[m for m in routes if routes[m].get('context_window',0)>0]
     patch.require(candidates,'At least one managed model is required for switching verification')
-    first=candidates[0]
+    first=next((m for m in candidates if routes[m]['provider']=='easycli-desktop'),candidates[0])
+    second=next((m for m in candidates if routes[m]['provider']!=routes[first]['provider']),None)
     app=directory/'patched.app' if manifest['status']=='prepared' else Path(manifest.get('deployment_target',manifest['target']))
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Stub);server.daemon_threads=True
     server.requests=[];server.payloads=[];server.next_usage=10
@@ -67,10 +68,9 @@ def main(directory):
                     fresh=rpc.request('thread/start',{'model':first,'modelProvider':routes[first]['provider'],'cwd':str(work),'approvalPolicy':'never','sandbox':'read-only',
                         'baseInstructions':'You are a synthetic local test.','config':{'web_search':'disabled','features.memories':False,
                         'model_context_window':routes[first]['context_window'],'model_auto_compact_token_limit':routes[first]['compact_limit']}})
-                    initial=rpc.request('thread/start',{'model':native,'modelProvider':'openai','cwd':str(work),'approvalPolicy':'never','sandbox':'read-only',
+                    initial=rpc.request('thread/start',{'model':first,'modelProvider':routes[first]['provider'],'cwd':str(work),'approvalPolicy':'never','sandbox':'read-only',
                         'baseInstructions':'You are a synthetic local test.','config':{'web_search':'disabled','features.memories':False,'model_context_window':128000,'model_auto_compact_token_limit':90000}})
                     tid=initial['thread']['id'];rpc.turn(tid)
-                    report['checks'].append({'origin_model':native,'origin_provider':'openai'})
                     def turn(model,chat_id=None):
                         chat_id=chat_id or tid
                         driver.stdin.write(json.dumps({'method':'turn/start','params':{'threadId':chat_id,'model':model,'input':[{'type':'text','text':'Reply CONTEXT_OK.'}]}})+'\n');driver.stdin.flush()
@@ -107,7 +107,9 @@ def main(directory):
                     windows=[e['params']['tokenUsage']['modelContextWindow'] for e in events if e.get('method')=='thread/tokenUsage/updated']
                     patch.require(windows and set(windows)=={routes[first]['context_window']},'Window changed after compaction')
                     report['checks'].append({'after_compaction':windows[-1]})
-                    switches=[native,first]
+                    same_provider=next((m for m in candidates if routes[m]['provider']==routes[first]['provider'] and routes[m]['context_window']!=routes[first]['context_window']),None)
+                    switches=list(dict.fromkeys(([second] if second else [])+([same_provider] if same_provider else [])+
+                        [m for m in candidates if routes[m]['provider'].startswith('local-')]+[native,first]))
                     for model in switches:
                         events=turn(model);expected=routes[model]['provider'] if model in routes else 'openai'
                         patch.require(server.requests[-1]['model']==model and server.requests[-1]['path'].startswith('/'+expected+'/'),'Wrong provider after switching')

@@ -134,6 +134,9 @@ def main(directory):
                     +'base_url="http://127.0.0.1:'+str(server.server_port)+'/v1"\n'
                     +'env_key="CONTEXT_TEST_KEY"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n')
             config += config[config.index('[model_providers.easycli-desktop]'):].replace('model_providers.easycli-desktop','model_providers.deepseek-desktop')
+            template=config[config.index('[model_providers.deepseek-desktop]'):]
+            for provider in {r['provider'] for r in (model_routes or {}).values()}-{'deepseek-desktop','easycli-desktop'}:
+                config+=template.replace('model_providers.deepseek-desktop','model_providers.'+provider)
             (base/'home/config.toml').write_text(config,encoding="utf-8")
             work=base/'work';work.mkdir()
             with (directory/'context-probe.log').open('w',encoding='utf-8') as log:

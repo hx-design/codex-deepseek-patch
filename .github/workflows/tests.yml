@@ -29,7 +29,7 @@ jobs:
           Get-Content 'windowless-test.log'
           if ($Process.ExitCode -ne 0) { exit $Process.ExitCode }
       - run: node tests/route.test.cjs
-      - run: python -m compileall -q patch.py backend.py compatibility.py monitor.py model_sync.py updater.py update_worker.py windows_support.py windows_install.py windows_update_ui.py macos_signing.py scripts tests
+      - run: python -m compileall -q .
       - run: python scripts/check_release.py
   macos-signing:
     runs-on: macos-latest

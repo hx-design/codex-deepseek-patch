@@ -1,102 +1,66 @@
-# 实现说明
+# Official-client architecture
 
-`patch.py` 提供命令入口、ASAR 操作及平台分派。`backend.py` 连接跨版本检查、构建、测试与安装；`compatibility.py` 验证客户端请求契约；`monitor.py` 负责更新监测和本机调度。全部使用 Python / Node.js 标准库。
+## Ownership
 
-## 请求路由
+`official-client-v1` uses the vendor-signed desktop app and bundled CLI without modifying either. macOS keeps the official signing identity. Windows starts the registered Store package, preserving package identity and the vendor updater. A first migration can restore the signed original Mac backup; subsequent installs never write app bytes.
 
-`route.js` 只适配 host ID 为 `local` 的请求：
+The adapter owns a scoped native provider configuration, model catalog, small Python runtime, per-user service and update state. It does not own the original authentication store, tool runtime, permissions, personal history database, external model service or its subscription login.
 
-- `thread/start` 选择 `deepseek-flash`，且提供商未指定或为 `openai` 时，改为 `deepseek-desktop`。
-- 保留动态工具、权限、工作目录等字段；DS 服务档位置空，并沿用关闭原生 web search 的配置。
-- `thread/list` 未明确过滤提供商时使用空过滤列表，使不同提供商的聊天都可列出。
-- `turn/start` 在本机已保存的 GPT / DS 聊天中检查选中模型，按需 `thread/unsubscribe` 后 `thread/resume` 同一 ID，再发送回合；保留工作目录、审批策略、权限配置与工作区根目录。
-- DS 的窗口及压缩阈值来自构建快照；返回 GPT 时从原生目录和用户配置恢复窗口、阈值及网页搜索。相同模型的后续回合复用检查结果，显式恢复/卸载聊天会清除缓存。
-- 运行中的聊天先等待回复完成；切换失败尝试恢复原模型并停止发送。GPT 内部选择、远端与未登记的自定义提供商沿用原路径。
+## Request path
 
-预热请求入口也应用相同路由。本机创建聊天时跳过未按提供商匹配的预热缓存消费，避免复用错误提供商的会话。
+```text
+Official desktop and bundled CLI
+  └─ Native model catalog and native OpenAI-authenticated provider
+      └─ Authenticated loopback adapter (HTTP / WebSocket)
+          ├─ GPT → original OpenAI destination and original auth
+          ├─ Registered Responses service → its own credential
+          └─ Registered Chat Completions service → protocol bridge + its own credential
+```
 
-## 跨版本兼容检查
+The native provider retains OpenAI authentication semantics and declares remote compaction unsupported. This selects Codex's native readable-summary compaction. Loopback request compression is disabled so the standard-library service needs no zstd dependency. GPT network handshakes preserve routing/sticky headers; external requests never receive the OpenAI credential.
 
-v0.3.2 统一所有构建入口，使用自 v0.2 起的兼容检查路径，验证当前官方应用的签名、完整性与受支持语义结构：
+HTTP CONNECT honors the existing system proxy for external destinations, while local destinations bypass it. HTTP redirects are not followed with credentials. The listener binds numeric loopback only, uses a private token path and validates its installation identity. User-supplied LAN endpoints are explicit connections, not network discovery.
 
-1. 在 ASAR 中发现 `webview/assets/app-initial-*.js`，验证成员及分块哈希，要求一个可支持的目标。
-2. 词法扫描排除注释、字符串和模板内的伪锚点；目标作用域中不允许同名覆盖方法。
-3. 验证 `sendRequest` 的 dispatcher guard、配置读取分支、请求队列与插件超时逻辑。压缩变量名可变化。
-4. 验证 `prewarmThreadStart` 的 dispatcher guard、优先级、来源、请求参数、追踪、事件载荷及返回/异常处理；要求唯一预热缓存使用锚点。
-5. 记录三个精确插入位置，按逆序应用，末尾追加本地 helper。其他源文本保留原样；已有补丁标记或未知结构直接停止。
-6. 在 Node VM 中运行实际提取并修改的请求方法、预热前缀和消费 guard，检查 GPT/DS、本机/远端、显式提供商、配置读取及插件超时行为，再对完整修改包执行语法检查。
+## Model capabilities and tools
 
-版本和资源名用于记录，结构契约决定是否继续。检查结果绑定原 ASAR 摘要，构建前及复制后核对，避免检查期间发生更新后误用旧分析。`compatibility.json` 保存本机证据，不提交到仓库。
+Native catalog entries record each model's maximum/effective context, compaction limit, input modalities and reasoning levels. User reductions live separately from provider specifications; sync retains reductions and hidden selections. Unsupported/unknown specifications are reported instead of replaced with a 128K default.
 
-## 构建和资源完整性
+Responses interfaces can preserve native functions. Where required, `responses_compat.py` translates namespace/custom/tool-search items to compatible functions and restores native result shapes. Tool search remains lazy, and Codex performs execution and approval. `additional_tools` declarations are promoted to the applicable current tool definitions, not inserted as chat text.
 
-构建读取内置 CLI 的离线模型目录，并在本机模板上添加 Flash 元数据；完整模型模板不进入仓库。它使用临时 CLI home，避免继承上一版补丁目录。
+`chat_completions_compat.py` translates standard messages, images, calls/results, parallel tool chunks, streaming lifecycle and usage. Reasoning effort is forwarded only when explicitly enabled for that interface. Unsupported modalities produce a capability error. This is not an Anthropic Messages client; Claude and GLM can use an existing compatible endpoint.
 
-ASAR 重打包保留完整原数据区域，追加修改成员，保留共享偏移、链接、unpacked 条目及未知元数据。构建逐项比对原始与新归档，只有声明的客户端文件允许变化。
+Models with declared tool support retain the original CLI tool capabilities. Chat-only models omit tools. Native services continue to control whether individual tools are available in a particular session.
 
-- macOS：验证 OpenAI 签名身份；更新成员/分块、ASAR header、`Info.plist` 与 Framework 配套摘要，再使用固定本机证书重签副本。完整性校验槽保持启用。应用与构建目录需位于同一 APFS 卷。
-- Windows：验证官方发布者和原生完整性载体。Store 包始终作为只读来源；复制后更新 ASAR 与副本的配套完整性记录。运行副本使用 `ChatGPT.exe`。
+## Same-chat switching and compression
 
-## 安装前测试
+All registered models use the same native provider identity, so switching does not unload and reconstruct a chat for each vendor. Original chat ID, working directory and approval/sandbox settings stay in the native session. Native catalog metadata applies the selected model's context and per-turn reasoning effort.
 
-`patch.py verify BUILD` 统一执行安装前检查，也可以使用 `build --verify`：
+External reasoning items receive model provenance. A continuation on the same model restores its exact provider-specific state. A different model receives readable text and tool history, without another model's signature or incompatible reasoning-item fields. This rule uses model identity and protocol shapes, not a hardcoded list of vendors.
 
-- `scripts/test_offline.py BUILD`：使用临时配置、凭据占位值和 loopback 提供商，初始化实际内置 app-server，核对模型目录及临时线程的 DS 路由；不发送推理回合。
-- `scripts/test_reasoning.py BUILD`：验证目录中的思考档位及逐回合发送值。
-- `scripts/test_context.py BUILD`：验证 DS 窗口和正常消息不会被旧 128K 阈值提前压缩。
-- `scripts/test_switching.py BUILD`：用真实 CLI 与精确提取的已修改请求方法，从 GPT 聊天切入 DS、触发压缩、切回 GPT 再切 DS，检查同一 ID、历史、权限和窗口；另测刚创建的 DS 聊天发送首条消息。
-- `patch.py test-boot BUILD`：使用临时 CLI home 和浏览器数据启动副本，检查隔离进程树中的 renderer 与 app-server 持续存活，再关闭该测试进程树。Windows 使用本次专用隐藏桌面，结束后释放；不会切换用户桌面。macOS 使用隔离浏览器配置。
+Older external signatures are identified by a bounded, read-only rollout scan: `turn_context.model` associates known external models with SHA-256 signature hashes. The private index stores hash → model, never ciphertext or chat content. Ambiguous origins are excluded.
 
-监测自动运行全部所需检查，安装器要求对应记录通过。联网 DeepSeek 回复/工具测试是另外的显式操作，具体实测范围见 [VALIDATION.md](VALIDATION.md)。
+Old GPT compaction blocks are handled lazily. On the first external turn, the original GPT endpoint generates a readable task-facts summary; the adapter does not decode private reasoning. An account/model/cipher-hash scoped private cache avoids repeated requests. Normal new compaction uses Codex's native readable summaries and the selected model's context window.
 
-## 配置、安装和恢复
+## Installation and recovery
 
-首次安装添加根级模型目录与 DS 提供商，并检查原有设置保持原意。后续通过 baseline 读取已安装目录和提供商，只刷新已登记的目录路径，保留其他用户编辑。已登记字段被改动时停止核对。
+Staging creates only runtime/config artifacts and immutable digests. Validation checks that staged bytes match the source tested by the background native CLI suite. Installation checks the official publisher, unchanged source, runtime/profile/catalog digests and the exact service command/health identity.
 
-安装前要求目标已正常退出，重新验证应用、构建、目录摘要及全部所需测试记录。macOS 原子交换目标和副本，再更新配置并验证；出错时交换回去并恢复配置。Windows 在 `%LOCALAPPDATA%\CodexDeepSeekPatch\app` 部署独立副本，同时事务更新配置和开始菜单 **Codex DeepSeek** 快捷方式，保留此前副本与快捷方式的恢复数据。
+Under a state lock, activation re-reads current settings and changes only owned fields. Existing chats migrate through native metadata RPC, preserving model, effort, archive state, content and recency. No SQL writes or history copies occur. Archived chats use explicit unarchive/resume/rearchive phases; recovery records the actual phase because unarchive is not idempotent.
 
-原版、副本、配置备份及模型目录保留在构建目录。恢复核对当前应用与配置仍符合安装记录，再恢复上一状态。恢复操作会停止处理已被其他操作改动的目标。
+A durable activation journal covers app restoration, scoped configuration, hash index, metadata migration and service state. Each restoration is attempted independently so a service failure cannot skip app/config recovery. A failed or interrupted activation can recover and retry. Restore follows the ownership chain to the pre-adapter configuration, migrates newer adapter chats to the earlier default provider, and retains the official app.
 
-## 可选更新监测
+Services use launchd on macOS and least-privilege Task Scheduler with pythonw on Windows. Windows task XML has matching UTF-16 declaration/encoding; numeric COM states distinguish Ready, Disabled and Running. Existing task state is restored precisely.
 
-`monitor.py enable` 保存一份独立 runtime 及设置。macOS 使用 launchd；Windows 使用当前用户、无需提升权限的任务计划程序。默认登录时和每五分钟运行一次。首次启用或迁移旧服务时执行 enable；之后由本通道自动更新替换 runtime。
+## Updates and source distribution
 
-监测持久记录观察、稳定等待、检查、构建、等待退出、安装和失败状态，使用 OS 文件锁防止并行执行。发现新指纹后先等待稳定，再检查及构建；安装前重新核对指纹。Windows 跟踪官方来源版本，在独立部署上安装；接续已有部署时也核对其原始来源摘要。
+DS `main` and extension `codex/existing-proxy-models` have separate versions, increasing feed sequences and immutable source commits. Downloads validate channel, inventory, hashes and isolated tests before activation. A native install rejects a legacy-architecture downgrade.
 
-全部验证通过后等待用户正常退出，安装成功或需要处理时通知；同一问题去重，未变化时保持安静。失败及中断保留构建，`run-once --retry` 显式重试。监测按本通道获取补丁代码及模型规格，正常退出后安装；不会结束运行中的聊天或调用付费模型 API。
+The monitor is scheduled and exits after each check. It compares app/runtime/model identities and waits for normal app exit. It does not send inference requests. The adapter is a separate small per-user process, with no database, model engine or management UI.
 
-## 验证范围
+The repository retains legacy source and tests for recovery and historical compatibility. New builds do not edit ASAR, sign binaries, copy a Windows app or use legacy GUI boot probes. Only source/documentation is published; catalogs containing vendor prompts, app bundles, user credentials and private test evidence remain local.
 
-CI 使用合成 ASAR、模型元数据和替身后台，检查资源完整性、路由、配置保留、事务回滚、跨版本拒绝条件及监测状态机。实际应用的签名、启动、离线路由、部署/恢复和联网测试分别按平台记录，不将其中一层的结果扩展为其他层已完成。
+## Non-blocking update progress
 
-## v0.3 自动更新与规格同步
+The monitor publishes a small private progress document containing fixed display fields and measured work counts. Unknown-duration phases use an indeterminate bar. Native AppKit/WinForms viewers issue only fixed start/launch/dismiss actions bound to the current update ID; state JSON never supplies a command to execute.
 
-`edition.json` 固定发布通道；`updater.py` 读取本通道 `update.json`、验证不可变提交及逐文件摘要，在隔离环境运行单元测试，通过 `update_worker.py` 子进程执行新版发现、构建与安装。应用、监测代码、模型目录三个摘要共同决定是否更新；仅时间戳改变不会触发构建。运行代码原子切换，应用安装后的代码激活另有持久恢复记录。
-
-`model_sync.py` 通过原生 CLI、服务商模型列表和官方规格生成可重现的 `synced-models.json`。目录和路由共享该快照，安装前再次校验摘要。模型偏好与已见型号分别持久化，新增系列成员、原有排除项、隐藏项和主动调小窗口不会互相覆盖。官网无法确认新型号规格时保留告警并等待下次同步，已有规格继续使用。
-
-发布流程：先提交并验证源代码，再用 `scripts/release_manifest.py --commit FULL_SHA --sequence N` 生成独立通道的更新清单并提交。清单本身不计入包摘要；序号在各通道内单调递增，已发布序号不得换提交。两个分支分别运行 Windows / Linux、Python 3.11 / 3.13 回归测试。
-
-## v0.3.1 思考档位
-
-`configure_reasoning` 为已验证型号补齐真实可用档位，设置有效默认值及 `supports_reasoning_effort_updates`；目录预设和模型同步都调用它。保留原始代理 ID，原生 CLI 将每回合选择编码为 `reasoning.effort`，已有代理负责上游协议转换。`scripts/test_reasoning.py` 使用实际 CLI、完整菜单数据及 loopback 响应验证各档与回切，构建记录 `reasoning_probe_required` 并要求通过后才能安装。
-
-## macOS 固定本机签名
-
-`macos_signing.py` 在登录钥匙串创建不可导出的 RSA 签名私钥，并把证书指纹固定在独立状态目录。后续构建只读取并复用；身份记录丢失但钥匙串仍有唯一匹配条目时恢复记录，已登记密钥丢失或与 baseline 不一致则停止更新。身份要求绑定证书与各组件原标识，而不绑定每版变化的代码哈希。
-
-签名从内到外执行，不使用 `--deep` 重签；验证仍使用严格深层完整性检查。修改的 Codex Framework 及其应用辅助程序与外层应用使用本机证书，其他供应商代码保持原签名。可本地使用的能力声明保留，厂商应用标识、团队、应用组及钥匙串组不复制到本地签名。构建记录每个组件的身份要求与能力声明，安装前后核对。
-
-独立 macOS CI 创建临时签名身份、两个代码不同的原生应用和测试钥匙串项目：第二版必须满足第一版身份要求，并在禁止授权弹窗的条件下读取该项目；临时签名对照必须被拒绝。测试结束删除测试钥匙串，保留原搜索列表中的其他条目。实际麦克风、录屏等权限仍通过 macOS 的正常授权流程。
-
-## v0.3.6 首条消息与 Windows 后台检查
-
-刚创建且尚无持久记录的 DS 聊天，只有在目标提供方相同、预览为空且恢复错误精确匹配该聊天的记录缺失时，才保留当前已加载会话直接发送；不卸载它。其他恢复错误照常返回，已有 GPT ↔ DS 聊天继续使用原有切换流程。
-
-后台子进程共用无控制台选项并保留标准输入输出管道。GUI 启动检查通过原生 CreateProcessW 指定专用隐藏桌面，随后清理进程树和桌面句柄。隔离检查关闭测试环境插件下载，避免后台克隆进程占用临时目录；用户插件设置不变。纯 DS 直连官方端点，没有扩展版闲置转接进程的生命周期问题。
-
-## macOS 隔离启动的钥匙串
-
-隔离测试创建临时 HOME、Codex 配置和浏览器目录。macOS GUI 进程额外传入 `--use-mock-keychain`，让 Chromium 的测试凭据后端处理临时加密存储；实际进程参数也必须包含该标记才允许通过。正式应用启动和安装配置不添加此参数，原有签名、登录钥匙串与用户凭据保持原样。Windows 继续使用隐藏桌面检查，不传入 Mac 测试参数。
-
-机制参考：[Chromium KeychainKeyProvider](https://github.com/chromium/chromium/blob/main/components/os_crypt/async/browser/keychain_key_provider.mm)。
+Dismissing the window does not cancel the worker. Starting an update records the user's request; Codex is closed only after preparation and validation. Completion offers a launch button and does not reopen Codex automatically. The Mac panel uses [AppKit's non-activating panel behavior](https://developer.apple.com/documentation/appkit/nspanel/becomeskeyonlyifneeded) to display progress without taking keyboard focus.

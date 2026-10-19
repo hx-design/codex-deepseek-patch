@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-only DeepSeek model picker patch for macOS and Windows Codex."""
+"""Lightweight model adapter for the original macOS and Windows Codex client."""
 from __future__ import annotations
 
 import argparse
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -21,8 +22,9 @@ import tempfile
 import tomllib
 from windows_support import background_options
 
-VERSION = "0.3.8"
+VERSION = "0.4.0"
 EDITION = "ds"
+ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"
 APP_BUILD = "20770"
 ORIGINAL_ASAR = "5ddc4e48259aa6f979e04529b1a5a4ae54b0f5c4ad6db5c6e004924c10916ddb"
@@ -33,10 +35,14 @@ PROVIDER = "deepseek-desktop"
 MODEL = "deepseek-flash"
 KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
-SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js",
-                         "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py",
+SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py", "responses_compat.py",
+                         "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py", "cpa_images.py",
                          "windows_support.py", "windows_install.py", "windows_update_ui.py", "windows_update_ui.js", "scripts/__init__.py",
-                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
+                         "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/test_tools.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
+SERVICE_RUNTIME_FILES += ("official_client.py", "official_client_config.py", "official_client_host.py", "official_client_install.py",
+                          "official_client_migration.py", "official_client_update.py", "inference_adapter.py", "inference_transport.py",
+                          "legacy_history.py", "reasoning_origin.py", "chat_completions_compat.py", "scripts/test_official_client.py")
+SERVICE_RUNTIME_FILES += ("official_client_shortcut.py", "update_progress.py", "update_progress_macos.js", "update_progress.ps1")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -248,8 +254,9 @@ def catalog_template(catalog):
     return next((m for m in models if m['slug']=='gpt-6.1-sol'),models[0])
 
 
-def make_catalog(original):
+def make_catalog(original, deepseek=True):
     catalog = copy.deepcopy(original)
+    if not deepseek:return catalog
     flash = copy.deepcopy(catalog_template(catalog))
     # Prompt text remains local: inherit it from the user's installed catalog.
     flash.update(
@@ -288,36 +295,59 @@ def provider_config(account, service, helper=None):
             'command = ' + json.dumps(command) + '\nargs = ' + json.dumps(args) + '\nrefresh_interval_ms = 0\n')
 
 
-def prepared_config(current, catalog, account, service, managed=None, helper=None, proxy=None):
-    parsed = tomllib.loads(current)
+def remove_provider(text, identifier):
+    lines=[];skip=False
+    for line in text.splitlines(keepends=True):
+        header=re.match(r"\s*\[([^]]+)\]",line)
+        if header:
+            name=header.group(1)
+            skip=name=="model_providers."+identifier or name.startswith("model_providers."+identifier+".")
+        if not skip:lines.append(line)
+    return "".join(lines)
+
+
+def prepared_config(current, catalog, account, service, managed=None, helper=None, proxy=None, deepseek=True, locals=None):
+    parsed=tomllib.loads(current)
+    expected=copy.deepcopy(parsed);expected["model_catalog_json"]=str(catalog)
     if managed:
         from backend import refresh_config
-        updated = refresh_config(current, catalog, managed)
+        updated=refresh_config(current,catalog,managed)
     else:
-        require(parsed.get("model_provider", "openai") == "openai", "A different default provider is configured")
-        require("model_catalog_json" not in parsed and PROVIDER not in parsed.get("model_providers", {}),
-                "A custom catalog or desktop DeepSeek provider already exists; review it before installing")
-        updated = ('model_catalog_json = ' + json.dumps(str(catalog)) + '\n' + current
-                   + ("" if current.endswith("\n") else "\n") + provider_config(account, service, helper))
-    expected = copy.deepcopy(parsed)
-    expected["model_catalog_json"] = str(catalog)
-    if not managed:
-        expected.setdefault("model_providers", {})[PROVIDER] = tomllib.loads(provider_config(account, service, helper))["model_providers"][PROVIDER]
-    if proxy:
-        require(EDITION == "proxy", "Proxy providers require the proxy edition")
-        import proxy_support as ps
-        existing = parsed.get("model_providers", {}).get(ps.PROVIDER)
+        require(parsed.get("model_provider","openai")=="openai","A different default provider is configured")
+        require("model_catalog_json" not in parsed,"A custom catalog already exists; review it before installing")
+        updated="model_catalog_json = "+json.dumps(str(catalog))+"\n"+current+("" if current.endswith("\n") else "\n")
+    def add(identifier,addition):
+        nonlocal updated
+        updated+=("" if updated.endswith("\n") else "\n")+addition
+        expected.setdefault("model_providers",{})[identifier]=tomllib.loads(addition)["model_providers"][identifier]
+    existing=parsed.get("model_providers",{}).get(PROVIDER)
+    if deepseek:
         if existing is not None:
-            require(managed and managed.get("proxy_provider") == existing,
-                    "An unmanaged proxy provider exists; review the configuration")
-            # A baseline keeps the helper in its retained build directory.
-            require({k:v for k,v in managed.get("proxy",{}).items() if k!='models'} == {k:v for k,v in proxy.items() if k!='models'},
+            require(managed and managed.get("provider")==existing,"An unmanaged DeepSeek provider exists")
+        else:add(PROVIDER,provider_config(account,service,helper))
+    elif managed and managed.get("deepseek_enabled",True) and existing is not None and managed.get("provider") is not None:
+        require(parsed.get("model_provider","openai")!=PROVIDER and not str(parsed.get("model","")).startswith("deepseek-"),
+                "Select a retained default model before disconnecting DeepSeek")
+        updated=remove_provider(updated,PROVIDER);expected.get("model_providers",{}).pop(PROVIDER,None)
+    if proxy:
+        import proxy_support as ps
+        existing=parsed.get("model_providers",{}).get(ps.PROVIDER)
+        if existing is not None:
+            require(managed and managed.get("proxy_provider")==existing,"An unmanaged proxy provider exists")
+            require({k:v for k,v in managed.get("proxy",{}).items() if k!="models"}=={k:v for k,v in proxy.items() if k!="models"},
                     "The managed proxy connection changed; review before migrating")
-        else:
-            addition = ps.provider_config(proxy, Path(catalog).parent / "proxy_support.py")
-            updated += ("" if updated.endswith("\n") else "\n") + addition
-            expected.setdefault("model_providers", {})[ps.PROVIDER] = tomllib.loads(addition)["model_providers"][ps.PROVIDER]
-    require(tomllib.loads(updated) == expected, "Unrelated configuration changed")
+            updated=remove_provider(updated,ps.PROVIDER)
+        add(ps.PROVIDER,ps.provider_config(proxy,Path(catalog).parent/"proxy_support.py"))
+    if locals:
+        import local_support as ls
+        for connection in locals:
+            for identifier,chat_only in ls.provider_ids(connection):
+                existing=parsed.get("model_providers",{}).get(identifier)
+                if existing is not None:
+                    require(managed and managed.get("local_providers",{}).get(identifier)==existing,"An unmanaged local connection exists")
+                    updated=remove_provider(updated,identifier)
+                add(identifier,ls.provider_config(connection,Path(catalog).parent/"local_support.py",chat_only))
+    require(tomllib.loads(updated)==expected,"Unrelated configuration changed")
     return updated
 
 
@@ -381,9 +411,8 @@ def cli_path(app):
 
 
 def build(args):
-    # Every entry point uses the same verified routes and saved-chat switch hook.
-    from backend import build_compatible
-    return build_compatible(args)
+    from official_client import build as stage_native
+    return stage_native(args)
 
 
 def load_build(directory):
@@ -413,6 +442,8 @@ def install_transaction(app, staged, config, before, after, commit):
 def install(args):
     mac_only()
     directory, manifest = load_build(args.directory)
+    if manifest.get("architecture") == ARCHITECTURE:
+        return __import__('official_client_install').install(directory, manifest)
     if manifest.get("adaptive"):
         from backend import install_compatible
         return install_compatible(directory, manifest)
@@ -445,6 +476,15 @@ def install(args):
 def restore(args):
     mac_only()
     directory, manifest = load_build(args.directory)
+    if manifest.get("architecture") == ARCHITECTURE:
+        import monitor
+        state = Path(getattr(args, 'state_dir', None) or monitor.default_directory())
+        settings = monitor.load_json(state/'settings.json', {})
+        if settings.get('edition') == manifest['edition'] and settings.get('baseline') and Path(settings['baseline']).resolve() == directory:
+            with monitor.state_lock(state) as locked:
+                require(locked, 'The update monitor is busy; retry restoration after its current check')
+                monitor.Scheduler(state).disable()
+        return __import__('official_client_install').uninstall(directory)
     if manifest.get("deployment_target"):
         from backend import restore_windows
         return restore_windows(directory, manifest)
@@ -484,6 +524,11 @@ def setup_key(args):
 
 def status(args):
     directory, manifest = load_build(args.directory)
+    if manifest.get('architecture') == ARCHITECTURE:
+        from official_client_update import verify_official
+        verify_official(Path(manifest['target']))
+        print(json.dumps({key:manifest.get(key) for key in ('tool_version','architecture','edition','app_version','status','native_probe','target')}, indent=2))
+        return
     print(json.dumps({key: manifest.get(key) for key in ("tool_version", "app_version", "status", "boot_probe", "target")}, indent=2))
     if sys.platform in ("darwin", "win32"):
         expected = (manifest["patched_asar"] if manifest["status"] == "installed" else
@@ -497,7 +542,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=VERSION)
     subs = parser.add_subparsers(dest="action", required=True)
-    p = subs.add_parser("build", help="Build a patched copy without changing the installed app")
+    p = subs.add_parser("build", help="Prepare an external adapter without modifying the official app")
     default_app = Path("/Applications/ChatGPT.app")
     if not default_app.exists():
         default_app = Path("/Applications/Codex.app")
@@ -510,32 +555,66 @@ def main():
     p.add_argument("--compatible", action="store_true", help="Check signed source and supported request contracts across app updates")
     p.add_argument("--baseline", type=Path, help="Existing patch build whose managed catalog should be refreshed")
     p.add_argument("--install-target", type=Path, help="Refresh a known installed Mac baseline using an original signed --app backup")
+    p.add_argument("--proxy-config", type=Path, help="Read the client API key from an existing EasyCLIProxyAPI configuration")
+    p.add_argument("--proxy-base-url", default="http://127.0.0.1:8317/v1")
+    p.add_argument("--proxy-models", nargs="+", choices=__import__("proxy_support").MODELS,
+                   help="Explicit model IDs to expose through the existing proxy")
     p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
-    p.add_argument("--verify", action="store_true", help="Run all isolated installation checks after building")
+    p.add_argument("--model-preferences", type=Path, help="Explicit per-model reductions and hidden models")
+    p.add_argument("--connections", type=Path, help="Connections saved by the connect command")
+    p.add_argument("--verify",action="store_true",help="Run all isolated installation checks after building")
+    ds=p.add_mutually_exclusive_group()
+    ds.add_argument("--with-deepseek", dest="deepseek_enabled", action="store_true")
+    ds.add_argument("--without-deepseek", dest="deepseek_enabled", action="store_false")
+    p.set_defaults(deepseek_enabled=None,compatible=True)
+
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=build)
-    p = subs.add_parser("verify", help="Run offline, reasoning, context, switching and isolated boot checks")
-    p.add_argument("directory", type=Path)
-    p.set_defaults(func=lambda args: __import__("update_worker").verify_build(args.directory))
+    p=subs.add_parser("verify",help="Validate native routing, tools, context and switching in an isolated background CLI")
+    p.add_argument("directory",type=Path)
+    p.set_defaults(func=lambda args: __import__('update_worker').verify_build(args.directory))
     for name, function in (("install", install), ("restore", restore), ("status", status)):
         p = subs.add_parser(name)
         p.add_argument("directory", type=Path)
+        if name == 'restore':
+            p.add_argument('--state-dir', type=Path, help='Matching update monitor to disable before restoration')
         p.set_defaults(func=function)
+    p=subs.add_parser('recover',help='Recover an interrupted native adapter activation')
+    p.add_argument('directory',type=Path)
+    p.set_defaults(func=lambda args: __import__('official_client_install').recover(args.directory))
     p = subs.add_parser("setup-key")
     p.add_argument("--keychain-account", default=getpass.getuser())
     p.add_argument("--keychain-service", default=KEYCHAIN_SERVICE)
     p.set_defaults(func=setup_key)
+    p = subs.add_parser("setup-images", help="Enable optional image tools through an existing CPA interface")
+    p.add_argument("--proxy-config", type=Path, help="Existing CPA config; no credential is copied")
+    p.add_argument("--proxy-base-url", default="http://127.0.0.1:8317/v1")
+    p.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex"))))
+    p.add_argument("--script", type=Path, default=ROOT/"cpa_images.py", help="Stable image tool script path")
+    p.add_argument("--disable", action="store_true", help="Remove only this patch's image MCP entry")
+    p.set_defaults(func=lambda args: print(json.dumps(__import__("cpa_images").configure(args), ensure_ascii=False, indent=2)))
     p = subs.add_parser("setup-signing", help="Create or verify the persistent local macOS signing identity")
     p.set_defaults(func=lambda args: print(json.dumps(__import__("macos_signing").ensure_identity(), indent=2)))
     p = subs.add_parser("test-boot", help="Launch only the prepared copy with temporary user data")
     p.add_argument("directory", type=Path)
-    p.set_defaults(func=lambda args: __import__("scripts.test_boot", fromlist=["main"]).main(args.directory))
+    p.set_defaults(func=lambda args: __import__('update_worker').verify_build(args.directory) if load_build(args.directory)[1].get('architecture') == ARCHITECTURE else __import__("scripts.test_boot", fromlist=["main"]).main(args.directory))
+    p=subs.add_parser("connect",help="Discover local/compatible models and save a connection without editing Codex settings")
+    p.add_argument("--url")
+    p.add_argument("--name",default="models")
+    p.add_argument("--kind",choices=["ollama","lmstudio","openai"])
+    p.add_argument("--models",nargs="+")
+    p.add_argument("--key-file",type=Path)
+    p.add_argument("--wire-api",choices=['responses','chat_completions'],default='responses',help='Protocol exposed by the existing model service')
+    p.add_argument("--supports-reasoning-effort",action='store_true',help='Service explicitly accepts Chat Completions reasoning_effort')
+    p.add_argument("--context-window",type=int)
+    p.add_argument("--respect-server-context",action="store_true",help="Keep an existing smaller local-server window")
+    p.add_argument("--state-dir",type=Path,default=__import__("monitor").default_directory())
+    p.set_defaults(func=__import__("local_support").connect)
     args = parser.parse_args()
     try:
         args.func(args)
-        if args.action == "build" and args.verify:
-            __import__("update_worker").verify_build(args.output)
+        if args.action=='build' and args.verify:__import__('update_worker').verify_build(args.output)
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         return 1
@@ -543,8 +622,8 @@ def main():
 
 
 def MonitorBackend(settings):
-    from backend import MonitorBackend as Backend
-    return Backend(settings)
+    from official_client_update import select_backend
+    return select_backend(settings)
 
 
 if __name__ == "__main__":

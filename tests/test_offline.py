@@ -89,6 +89,15 @@ class OfflineTests(unittest.TestCase):
             self.assertTrue((base / "home").is_dir())
             self.assertNotIn("real-", json.dumps(environment))
 
+    def test_isolated_cli_and_gui_disable_background_plugin_downloads(self):
+        with mock.object(patch, "cli_path", return_value=Path("/probe/codex")):
+            command = test_offline.probe_command(Path("/probe/app"))
+        self.assertEqual(command[1:5], ["--disable", "plugins", "--disable", "remote_plugin"])
+        self.assertEqual(command[-3:], ["app-server", "--listen", "stdio://"])
+        config = patch.tomllib.loads(test_offline.offline_config(Path("/probe/catalog.json")))
+        self.assertFalse(config["features"]["plugins"])
+        self.assertFalse(config["features"]["remote_plugin"])
+
     def test_offline_provider_uses_loopback_env_dummy_and_no_credential_command(self):
         config = patch.tomllib.loads(test_offline.offline_config(Path("/tmp/catalog.json")))
         provider = config["model_providers"][patch.PROVIDER]

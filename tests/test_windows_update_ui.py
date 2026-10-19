@@ -1,3 +1,4 @@
+from windows_support import background_options
 """Execute the managed updater against a fake Electron host and official offers."""
 import json
 from pathlib import Path
@@ -94,7 +95,7 @@ class ManagedWindowsUpdateBehaviorTests(unittest.TestCase):
         payload = {"helperPath": str(HELPER), "action": action, "offer": available(), **overrides}
         result = subprocess.run([shutil.which("node"), "-e", NODE_HARNESS],
                                 input=json.dumps(payload), capture_output=True,
-                                text=True, encoding="utf-8", timeout=10)
+                                text=True, encoding="utf-8", timeout=10, **background_options())
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 

@@ -3,7 +3,7 @@
 
 The backend owns compatibility checks, offline build verification and transactional
 installation. This module owns durable orchestration, notifications and per-user
-native scheduling. It never terminates Codex or performs model inference.
+native scheduling. Explicit update-window requests can ask Codex to quit normally.
 """
 from __future__ import annotations
 
@@ -135,6 +135,9 @@ class CoreBackend:
         if settings.get('edition'):
             from updater import UpdateBackend
             return UpdateBackend(settings)
+        if settings.get('architecture')=='official-client-v1':
+            from official_client_update import select_backend
+            return select_backend(settings)
         return patch.MonitorBackend(settings)
 
 
@@ -189,7 +192,14 @@ class Monitor:
             self.event("notification_failed", kind=kind, reason=safe_error(error))
             self.save()
 
+    def progress(self, phase):
+        callback=getattr(self.backend,"progress_phase",None)
+        if callback:
+            try:callback(phase)
+            except Exception:pass  # The optional view must never break recovery.
+
     def terminal(self, phase, fingerprint, reason):
+        self.progress("failed")
         record = {"phase": phase, "reason": reason, "at": timestamp()}
         self.state.update(phase=phase, reason=reason)
         self.state["terminal"][fingerprint] = record
@@ -215,6 +225,7 @@ class Monitor:
         self.state.pop("reason", None)
         self.save()
         self.event("candidate", fingerprint=fingerprint)
+        self.progress("available")
 
     def run_once(self, retry=False):
         with state_lock(self.directory) as locked:
@@ -294,6 +305,9 @@ class Monitor:
                     self.state.update(phase="waiting_for_exit", pending=pending)
                     self.save()
                     self.event("build_prepared", fingerprint=fingerprint, directory=str(output))
+                self.progress("waiting_for_exit")
+                request_close=getattr(self.backend,"request_close",None)
+                if request_close:request_close(pending["build"])
                 if self.backend.is_running():
                     self.state["phase"] = "waiting_for_exit"
                     self.save()
@@ -303,6 +317,7 @@ class Monitor:
                     self.event("install_superseded", fingerprint=fingerprint)
                     self.observe_change(fresh)
                     return self.state
+                self.progress("installing")
                 self.state["phase"] = "installing"
                 self.save()
                 result = self.backend.install(pending["build"], snapshot)
@@ -317,6 +332,7 @@ class Monitor:
                 self.persist_baseline(result.get("baseline"))
                 self.save()
                 self.event("installed", fingerprint=fingerprint, installed_fingerprint=installed_fingerprint)
+                self.progress("completed")
                 self.notify("installed", fingerprint, "The Codex update was checked and the DeepSeek patch was installed. Open Codex normally.")
             except Exception as error:
                 reason = safe_error(error)
@@ -578,10 +594,17 @@ def enable(args):
                 "bundled_catalog": True, "enabled_at": timestamp()}
     settings.update(edition=channel,state_dir=str(directory),auto_update=not getattr(args,'no_code_updates',False),
                     model_sync=not getattr(args,'no_model_sync',False))
+    architecture=getattr(patch,'ARCHITECTURE',None) or existing.get('architecture')
+    if architecture:
+        settings['architecture']=architecture
     for name in ("app", "codex_home", "baseline", "keychain_account", "keychain_service"):
         value = getattr(args, name, None)
         if value is not None:
             settings[name] = str(value.resolve()) if isinstance(value, Path) else value
+    if not settings.get("app") and baseline:
+        installed = load_json(Path(baseline)/'manifest.json', {})
+        if installed.get('architecture') == 'official-client-v1':
+            settings['app'] = installed.get('target')
     if not settings.get("app"):
         raise ValueError("Specify --app on first enable")
     settings.setdefault("codex_home", str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).resolve()))
@@ -589,12 +612,19 @@ def enable(args):
     settings.setdefault("keychain_service", "Codex DeepSeek API Key")
     settings["python_path"] = str(Path(sys.executable).resolve())
     node = shutil.which("node")
-    if not node:
+    if not node and architecture!='official-client-v1':
         raise ValueError("Node.js is required for offline JavaScript syntax validation")
-    settings["node_path"] = str(Path(node).resolve())
+    if node:
+        settings["node_path"] = str(Path(node).resolve())
+    elif architecture=='official-client-v1':
+        settings.pop('node_path',None)
     # Registration validates local app identity; network discovery starts on the
     # first scheduled tick, after settings/runtime registration is committed.
-    backend = patch.MonitorBackend(settings)
+    if baseline and load_json(Path(baseline)/'manifest.json',{}).get('architecture')=='official-client-v1':
+        from official_client_update import NativeMonitorBackend
+        backend = NativeMonitorBackend(settings)
+    else:
+        backend = patch.MonitorBackend(settings)
     backend.snapshot()  # Validate the selected target before registering any service.
     with state_lock(directory) as locked:
         if not locked:
@@ -602,7 +632,7 @@ def enable(args):
         previous_settings = settings_path.read_bytes() if settings_path.exists() else None
         state_path = directory / "state.json"
         previous_state = state_path.read_bytes() if state_path.exists() else None
-        identity_fields = ("app", "codex_home", "baseline", "keychain_account", "keychain_service")
+        identity_fields = ("app", "codex_home", "baseline", "keychain_account", "keychain_service", "architecture")
         reset_state = bool(existing) and any(existing.get(key) != settings.get(key) for key in identity_fields)
         if reset_state and previous_state is not None:
             shutil.copy2(state_path, directory / ("state-backup-" + uuid.uuid4().hex[:12] + ".json"))
@@ -688,7 +718,8 @@ def main(argv=None):
                 for name,number in [('context_windows',args.context_window),('compact_limits',args.compact_limit)]:
                     if number is not None:value.setdefault(name,{})[args.model]=number
                 if args.reset_context:
-                    for name in ('context_windows','compact_limits'):value.get(name,{}).pop(args.model,None)
+                    value.setdefault('context_windows',{})[args.model]=None
+                    value.get('compact_limits',{}).pop(args.model,None)
                 hidden=set(value.get('hidden',[]))
                 if args.hide:hidden.add(args.model)
                 if args.show:hidden.discard(args.model)
@@ -696,6 +727,8 @@ def main(argv=None):
                 updates=load_json(args.state_dir/'updates.json',{});updates['models_checked']=0;atomic_json(args.state_dir/'updates.json',updates)
                 result={'model':args.model,'preferences':value,'applies':'next synchronization, after normal app exit'}
         else:
+            from updater import reconcile_native_activation
+            reconcile_native_activation(args.state_dir)
             settings = load_json(args.state_dir / "settings.json")
             if settings is None:
                 raise ValueError("Monitor settings are missing; run enable first")

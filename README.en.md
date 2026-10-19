@@ -1,172 +1,67 @@
-# Codex DeepSeek Patch
+# Codex DeepSeek Adapter
 
-Add **DeepSeek 4.1 Flash** to the macOS / Windows Codex model picker while retaining GPT models and default settings. Existing local GPT chats can switch to DeepSeek and back in the same chat.
+Add DeepSeek Flash to the **official Codex model picker**, retaining the original login, chat history and native tools.
 
-**v0.3.8** prevents Mac disposable startup checks from waiting on keychain dialogs, retaining the first-message fix and quiet Windows checks. It supports saved-chat **GPT ↔ DS** switching, retaining history, permissions and working directories. Model-specific windows survive switching and compaction. Edition-pinned patch updates, model/specification synchronization and automatic reinstallation preserve explicit smaller context preferences.
+DS **0.4.0**, update branch `main`.
 
-This unofficial repository ships patch source only. It does not redistribute the app, extracted bundles, model system prompts, user configuration, or credentials. [中文文档](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md)
+[中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
-Two independent editions: **this main branch is DS-only**. The [extension branch](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) supports existing cloud endpoints and local models, optional DS, and switching models within the same chat. Each edition updates independently.
+## Editions
 
-### Windows official application update checks
+| Edition | Models | Independent channel |
+| --- | --- | --- |
+| [DS](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | Native GPT + DeepSeek Flash | `main` |
+| [Extension](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) | Native GPT + existing cloud/local services; optional DeepSeek | `codex/existing-proxy-models` |
 
-The managed Windows copy now checks the official release feed without requiring MSIX identity for the current process. The native menu reports the actual result; periodic checks notify about a new release and link to the official installation channel.
+The extension does not require DeepSeek. Existing services continue to own subscription login and inference.
 
-Update the official application through that channel. With patch monitoring enabled, it detects the new installed package, validates compatibility and reapplies the selected edition after Codex exits. **Patch code and model specifications retain their independent DS / extension feeds.** Available releases are never misreported as downloaded or ready to install, and network failures remain explicit. macOS retains its native Sparkle updater.
+## Design
 
-## Compatibility
+The official app stays unchanged: no ASAR edits, macOS re-signing, or copied Windows app. Windows retains its Store package identity and native updater. A small Python standard-library service listens only on loopback, forwarding GPT authentication to its original destination and using separate credentials for registered model services.
 
-- Apple Silicon macOS; app and build directory on the same APFS volume.
-- Windows official Codex app. Store packages are read-only sources; installation uses a separate user-owned copy.
-- Inspected baseline: app **26.1013.40934**, build **20770**. The historical tested CLI is **0.163.0-alpha.10.2**; see validation records for platform-specific evidence.
-- Python **3.11+**, Node.js **18+**. No third-party Python/npm dependencies.
+Model selection, permissions, tool execution and readable-summary compaction remain native. Switch models after the current reply completes. Provider-specific reasoning signatures are isolated across models; readable history and tool results remain available. Context defaults follow model maxima, while explicit reductions and hidden models are preserved.
 
-Compatible mode verifies the official publisher, resource integrity, unique request contracts, and the behavior of extracted methods. Asset hashes, filenames, and minified identifiers may change. Unknown control flow stops the build. All builds now use the verified compatibility path; the existing `--compatible` flag remains accepted.
+The adapter supports Responses and Chat Completions protocols. Claude, GLM, Qwen and other models can use existing services exposing these compatible APIs. Raw Anthropic Messages is not implemented. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
 
-As verified on October 18, 2026, `deepseek-flash` is served by DeepSeek-V4.1-Flash-1017. DeepSeek controls alias updates. [Official API documentation](https://api-docs.deepseek.com/quick_start/agent_integrations/)
+Python 3.11+ and the official macOS/Windows Codex app are required. The native path has no additional Node.js requirement, UI, database or model engine. A per-user system service runs the adapter; a separate scheduled monitor checks code/models and exits. Windows processes are windowless. Legacy code remains for recovery and regression, not new app modification.
 
-## macOS updates and permissions
-
-A persistent local signing certificate replaces per-build ad-hoc identities. Its private key stays in the current user's login keychain; public identity metadata lives in `~/Library/Application Support/CodexDeepSeekPatch/signing/`, outside versioned builds. Both editions reuse that local identity while retaining independent update channels.
-
-Updates keep the same designated requirements and ordinary capabilities such as microphone, camera and Apple Events. Only the changed framework, its helpers and the outer app receive local signatures; untouched vendor code retains its official signatures. Installation verifies identity and capabilities. See [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
-
-**The first migration from an old ad-hoc signature may require one more macOS permission confirmation. Later patched versions retain the new identity.** Vendor-only application/keychain groups require the vendor's identity and are not claimed by local signatures. The patch does not edit TCC records or clear user keychains.
-
-The first build prepares the identity automatically; `python3 patch.py setup-signing` can do this in advance. Retain the **Codex Model Patch Local Signing** keychain entry. A missing or changed established identity stops the update instead of silently rotating the certificate.
-
-## macOS installation
-
-Install and sign in to the official app first. Choose a new build directory that you can retain.
+## Install DS
 
 ```sh
 git clone https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
-python3 --version
-node --version
 python3 patch.py setup-key
-
-PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-20261018"
-python3 patch.py build --output "$PATCH_BUILD" --verify
-
-# Quit Codex normally, then install.
-python3 patch.py install "$PATCH_BUILD"
+python3 patch.py build --app /Applications/ChatGPT.app --output /absolute/path/build --verify
+# Quit Codex:
+python3 patch.py install /absolute/path/build
+python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/path/build
 ```
 
-`setup-key` stores the interactively entered API key in macOS Keychain. `build --verify` works on copies and runs catalog, reasoning, context, saved-chat switching and isolated startup checks. The real bundled CLI sends synthetic requests to a loopback server using temporary configuration and placeholder credentials; no paid provider requests are made. The startup check briefly opens an isolated window, checks the renderer and backend, and stops only its own test processes.
+Use `python` and Windows paths on Windows; omit `--app` for official installation discovery. Verification is background-only using the original CLI and synthetic interfaces, without paid inference. Legacy migration uses `--baseline`; on Mac select the verified `original.app` backup with `--app` and the installation path with `--install-target`. The first migration restores the official app; later updates only replace adapter/configuration artifacts.
 
-The default source is `/Applications/ChatGPT.app`, falling back to `/Applications/Codex.app`. Set `--app "/path/to/ChatGPT.app"` or `--codex-home "$HOME/.codex"` on `build` as needed.
+Existing chats migrate through native metadata APIs without SQL or history rewrites. If an old GPT chat contains proprietary compacted state, its first DS request obtains and caches a readable task summary through GPT, using one GPT request.
 
-## Windows installation
+## Non-blocking progress
 
-Install official Codex, Python 3.11+, and Node.js 18+. In PowerShell, from the repository directory:
+A native, dismissible progress window appears for a new update. Continue working or close it; background work continues. Pressing Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion offers Launch Codex, without opening it automatically.
 
-```powershell
-python --version
-node --version
-python patch.py setup-key
+Known work units show real counts; unknown-duration phases use an activity bar. The same version does not repeatedly reopen the prompt; completion can appear once after a progress view was dismissed. During the first legacy upgrade, the panel becomes available after the new components are downloaded.
 
-$PatchBuild = Join-Path $env:LOCALAPPDATA "CodexDeepSeekPatch\build-20261018"
-python patch.py build --output "$PatchBuild" --verify
-
-# Quit Codex normally, then install.
-python patch.py install "$PatchBuild"
-```
-
-Build discovers the official Store app; use `--app "C:\path\to\app"` for an explicit source. The key is entered interactively and stored in **Windows Credential Manager**.
-
-The patched copy lives at `%LOCALAPPDATA%\CodexDeepSeekPatch\app`. Open **Codex DeepSeek** from the Start menu; its shortcut launches that copy's `ChatGPT.exe`. The official Store app stays in its original location. Keep the build and managed target on the same volume, with space for complete application copies and recovery data.
-
-## Usage and configuration
-
-Open a **new or existing local chat**, select **DeepSeek 4.1 Flash**, then send your next message. Select GPT to switch back in the same chat. Chat ID, history, working directory and permissions remain intact. Wait for the current reply to finish before switching. Remote hosts and unrelated custom providers retain their existing routing.
-
-The next turn reloads the same saved chat with current per-model context and compaction settings, replacing stale 128K defaults while retaining explicit smaller model preferences. Returning to GPT restores its configuration and web-search setting.
-
-Each build needs a fresh output directory. Initial installation rejects custom catalog/default-provider conflicts for review. To update an existing installation, pass `--baseline "PREVIOUS_BUILD"` to `build --compatible`. This refreshes the registered catalog while preserving unrelated user settings. Changes to the managed catalog or DeepSeek provider stop the update for review.
-
-For a manual refresh, select the official updated app at its intended installation path. To rebuild the same version, restore first, then follow the initial installation steps without `--baseline`, since restore also reverts configuration. On macOS, `--app` is also the installation target. A patched copy is rejected as a compatible-build source:
+## Maintenance
 
 ```sh
-NEW_PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-next"
-python3 patch.py build --compatible \
-  --app "/path/to/official/ChatGPT.app" \
-  --baseline "$PATCH_BUILD" --output "$NEW_PATCH_BUILD"
-python3 patch.py verify "$NEW_PATCH_BUILD"
-# Quit the app normally before installing.
-python3 patch.py install "$NEW_PATCH_BUILD"
-```
-
-Use matching `--keychain-account` and `--keychain-service` values with `setup-key` and `build` to customize the credential lookup. Defaults are the current username and `Codex DeepSeek API Key`.
-
-## Reasoning effort selection
-
-The model picker exposes supported effort levels, including changes within the same chat. Synchronization preserves the complete effort list. DeepSeek Flash supports low/high/max.
-
-Installation and automatic updates require the real bundled CLI to pass a loopback test of model-list choices and transmitted per-turn effort values.
-
-## Automatic updates and model synchronization
-
-After the first installation, enable all three functions: application-update reinstallation, patch self-updates, and model/specification refresh.
-
-```sh
-python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"
 python3 monitor.py status
 python3 monitor.py run-once --sync-now
-```
-
-Windows uses `python`, the official Store source for `--app`, and the installed build for `--baseline`. Existing users must run `enable` once with this release to upgrade their saved monitor runtime.
-
-The DS edition follows `main`; the proxy edition follows `codex/existing-proxy-models`. Each publishes its own `update.json` pinned to an immutable commit and SHA-256 file inventory. The monitor rejects cross-edition packages, rollbacks, and changed hashes. The extension can use local or existing compatible endpoints; EasyCLIProxyAPI is needed only for its subscription-proxy integration.
-
-Application checks run every five minutes; code and model checks run hourly. Downloaded code passes isolated regression tests before a compatible app is rebuilt, checked with offline routing, reasoning, context and saved-chat switching probes, and launched in isolation. Installation waits for normal application exit. Runtime activation has a persistent recovery journal. Failures and unknown structures are reported once per issue; unchanged checks are quiet. Checks do not submit inference turns to providers.
-
-Native GPT metadata refreshes through the bundled CLI. DeepSeek metadata comes from its official model endpoint. Proxy IDs come from the configured proxy, with specifications resolved from xAI, Google, and Anthropic documentation. Newly appearing **Grok, Gemini Flash, and Opus** versions are automatically added; DS follows the Flash family. The first successful check records existing IDs without resurrecting older excluded models. Missing models are removed after two successful absent observations and restored if they reappear. New models without verified specifications wait with a notification instead of receiving an arbitrary small context window.
-
-Context defaults follow each model's maximum at 100% effective capacity. Explicit lower per-model preferences and existing GPT/DS global settings survive refreshes; proxy models use their own limits. Automatic compaction defaults to 90% of the configured window, retaining lower user thresholds.
-
-```sh
-python3 monitor.py model-options --model deepseek-flash --context-window 262144
-python3 monitor.py model-options --model deepseek-flash --reset-context
-python3 monitor.py model-options --model deepseek-flash --hide
-python3 monitor.py model-options --model deepseek-flash --show
-python3 monitor.py run-once --retry
+python3 monitor.py model-options --model MODEL_ID --context-window 32768
+python3 monitor.py model-options --model MODEL_ID --hide
+python3 monitor.py model-options --model MODEL_ID --reset-context
+python3 patch.py recover /absolute/path/build
+python3 patch.py restore /absolute/path/build
 python3 monitor.py disable
 ```
 
-Preferences live in the monitor's `model-preferences.json` and apply after synchronization and normal application exit. New chats use the refreshed settings; existing chats apply them on the next DS turn after reopening the app. `enable --no-code-updates` and `--no-model-sync` independently disable either feature. Keep the current and previous recovery builds; update packages and app copies consume disk space.
+Code/model checks are independently configurable and edition-pinned. New Grok, Gemini Flash and Opus family versions are added while explicit exclusions remain. Installation waits for Codex to exit. Interrupted activation is recoverable. Restore reverses this adapter's configuration and keeps the official app; earlier legacy provider definitions are restored as recorded.
 
-## Restore and tests
+macOS privacy/keychain databases are not reset. Returning from a locally signed legacy app to the official identity may require one system permission confirmation; subsequent adapter updates do not re-sign the app.
 
-```sh
-python3 patch.py status "$PATCH_BUILD"
-# Disable the monitor if enabled, then quit the app normally.
-python3 patch.py restore "$PATCH_BUILD"
-
-python3 -m unittest discover -s tests -v
-node tests/route.test.cjs
-```
-
-macOS restore recovers the original signed app and prior configuration. Windows restore recovers the previous managed copy, shortcut, and configuration; the first installation removes its managed copy on restore. Restore stops when configuration or the target has changed since installation.
-
-Keep build directories: installed configuration references their catalogs, and recovery depends on their contents. Compatible builds save `compatibility.json` with source digests, insertion locations, extracted methods, and behavior-check results for local review.
-
-Optional live testing sends two small DeepSeek conversations and incurs API usage. It runs only with explicit `--run`:
-
-```sh
-python3 scripts/test_connection.py "$PATCH_BUILD" --run
-```
-
-Platform/version-specific checks and their scope are recorded in [validation](docs/VALIDATION.md).
-
-## Operational details
-
-The adapter routes new local DS chats to `deepseek-desktop` and reloads existing GPT/DS chats under the same ID when changing providers. Failed switches attempt to restore the previous model and stop the pending turn. Chats from all providers remain listed. Local prewarm reuse is bypassed to prevent provider mismatches; new chat creation may be slightly slower.
-
-The first build uses bundled GPT metadata. The monitor then refreshes native GPT and enabled provider metadata before validated rebuilds. ASAR integrity checks remain enabled: the builder updates member/block hashes, the header hash, and native integrity metadata. macOS copies use a persistent local signing certificate; Windows copies modify the integrity carrier. Features requiring the original signature, including updating, may be affected.
-
-Generated files contain vendor resources and potentially private configuration. Keep them local. See [NOTICE](NOTICE).
-
-## License
-
-[MIT](LICENSE) for original patch code; vendor applications, trademarks, and resources retain their respective ownership and licenses.
+Unofficial project. Source only: never publish app bundles, extracted catalogs, personal configuration, credentials or raw user logs. See the validation document for real-model and synthetic coverage separately.

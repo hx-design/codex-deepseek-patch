@@ -1,207 +1,86 @@
-# Codex DeepSeek Patch
+# Codex DeepSeek 适配器
 
-[![Tests](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml/badge.svg)](https://github.com/limyum-creator/codex-deepseek-patch/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+把 DeepSeek Flash 加入 **官方 Codex 的模型菜单**，在同一个聊天中切换，继续使用原登录、聊天记录和原生工具。
 
-在 macOS / Windows Codex 桌面版的模型菜单中添加 **DeepSeek 4.1 Flash**，保留 GPT 模型和默认设置。本机已有 GPT 聊天也能直接切换到 DS，并在同一聊天切回 GPT。
+DS 版 **0.4.0** · 更新分支 `main`
 
-**v0.3.8** 修复 Mac 隔离自检的钥匙串弹窗等待，保留首条消息与 Windows 无窗口检查修复；支持已有聊天内 **GPT ↔ DS** 切换，保留聊天记录、工作目录和权限；切换与压缩后沿用对应模型的上下文设置。同时提供补丁自动更新、模型列表与规格同步、Codex 更新后兼容检查和自动补装。DS 与代理扩展版分别更新，默认按模型最大上下文同步，并保留用户主动调小的设置。
+[English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
-本仓库有两种版本：**当前 main 为独立 DS 版**；[扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) 支持现有 Gemini / Grok / Opus 接口与本地模型，DeepSeek 可选，并支持同一聊天切换模型。两个版本各自更新。
+## 两个版本
 
-这是非官方、本地安装的补丁。仓库只提供补丁源码，不提供 ChatGPT/Codex 应用、提取后的程序、模型系统提示词或 API 密钥。
+| 版本 | 接入范围 | 更新通道 |
+| --- | --- | --- |
+| [DS 版](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | 原生 GPT + DeepSeek Flash | `main` |
+| [扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) | 原生 GPT + 已有云端接口 / 本地服务；DeepSeek 可选 | `codex/existing-proxy-models` |
 
-[English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md)
+两个版本分别发布、分别更新。扩展版不要求配置 DeepSeek，也不管理外部服务的订阅登录。
 
-### Windows 官方应用版本检查
+## 这一版怎么工作
 
-Windows 受管副本现在直接复用官方发布源检查 Codex 本体的新版本，不再要求当前进程具备 MSIX 包身份。菜单显示真实检查结果；运行期间定期检查，发现新版时通知并提供官方更新入口。
+- **官方应用保持原样**：不改 ASAR、不复制 Windows 应用、不重新签名 Mac 应用。Windows 使用原 Store 包身份，应用自身的更新由官方处理。
+- **同聊天切换**：模型菜单使用原生目录。聊天 ID、工作目录、权限和历史保留；等当前回复结束再切换。
+- **原登录和工具**：GPT 沿用官方认证；其他模型只使用各自服务的凭据。原生工具继续由 Codex 发现、授权和执行。
+- **上下文按模型最大值**：规格与选择共用一份目录；用户主动调小的窗口、隐藏型号继续保留。本地服务加载窗口可单独保留。
+- **原生压缩**：使用 Codex 的可读摘要压缩，换模型后仍使用该模型的窗口。跨模型隔离专有思考签名，保留可读对话与工具结果。
+- **自动维护**：官方应用更新后验证兼容性；适配层代码、模型列表和规格分别检查。无变化时安静运行，失败保留当前可用版本。
 
-官方应用通过原安装渠道更新。开启补丁监测后，监测会发现新的官方包，检查兼容性并在 Codex 退出后补装所选版本。**补丁代码与模型规格继续使用 DS / 扩展各自的更新通道**。可用版本不会被误标为“已下载、可安装”；网络失败会显示检查失败。macOS 保留原生 Sparkle 更新流程。
+扩展版按 **Responses / Chat Completions 协议和显式能力**工作，不按厂商名称决定路由。Claude、GLM、Qwen 等可通过提供这两类兼容接口的现有服务接入；原生 Anthropic Messages API 尚未实现。服务没有提供的规格可以手动声明，不给未知型号套用任意小窗口。
 
-## 支持范围
+## 轻量化设计
 
-| 项目 | 范围 |
-| --- | --- |
-| macOS | Apple Silicon；应用与构建目录位于同一 APFS 卷 |
-| Windows | 官方 Codex 应用；Store 安装作为只读来源，补丁安装到独立的用户目录 |
-| 已检查的基线应用 | `26.1013.40934`，build `20770`；具体平台验证见验证记录 |
-| 历史已验证 CLI | `0.163.0-alpha.10.2` |
-| 新增模型 | `deepseek-flash`，显示为 **DeepSeek 4.1 Flash** |
-| 依赖 | Python **3.11+**、Node.js **18+**；无需第三方 Python/npm 包 |
+运行时是一个仅监听本机回环地址的 Python 标准库进程，负责请求转发与必要的格式转换。没有额外聊天界面、数据库、模型运行引擎或订阅登录系统。模型推理由原有服务完成，工具由 Codex 执行。
 
-兼容模式检查官方签名、资源完整性、唯一请求结构和提取方法的运行行为，允许资源哈希、文件名及压缩变量名变化。请求结构发生未知变化时停止并报告，不靠版本号直接放行。所有构建统一使用兼容检查路径；旧命令中的 `--compatible` 参数仍可使用。
+适配器由系统按用户启动；更新监测由 launchd / Windows 任务计划程序定时执行，检查后退出。Windows 使用无控制台 Python。发布包仅含源码和文档；旧应用修改逻辑保留用于历史版本的恢复和回归，新安装路径不执行它。
 
-2026-10-18 核对时，`deepseek-flash` 对应 **DeepSeek-V4.1-Flash-1017**。后端版本由 DeepSeek 维护，见[官方模型说明](https://api-docs.deepseek.com/quick_start/agent_integrations/)。
+需要 **Python 3.11+** 和已安装的官方 macOS / Windows Codex。新架构安装与自动验证无需额外 Node.js；原生工具使用 Codex 自带运行时。外部模型服务需自行准备。
 
-## macOS 更新与系统授权
+## 安装 DS 版
 
-本版在本机创建并复用固定的代码签名证书，私钥保存在当前用户的登录钥匙串中。签名身份记录独立存放于 `~/Library/Application Support/CodexDeepSeekPatch/signing/`，DS 与扩展版共用本机身份，但继续使用各自的更新通道。
-
-应用更新时沿用相同的身份要求，并保留麦克风、相机、Apple Events 等可本地使用的能力声明。只重签修改过的 Framework、其辅助程序与外层应用；未修改的内置 CLI、Sparkle 等保留官方签名。安装前后都会核对身份和能力声明。macOS 通过签名身份识别跨版本的钥匙串与隐私授权，见 [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
-
-**第一次从旧临时签名迁移时，按 macOS 提示重新确认一次所需权限；后续补丁更新保持这个身份。** 原有官方身份的专属应用组和钥匙串组由厂商证书控制，本地补丁不能冒用。更新不会修改 TCC 授权数据库或清空用户钥匙串。
-
-初次构建自动准备签名身份，也可提前运行 `python3 patch.py setup-signing`。请保留登录钥匙串中的 **Codex Model Patch Local Signing** 条目；已有证书丢失或与已安装版本不一致时，更新会停止并提示恢复，不会偷偷换证书。旧版本构建目录可以按恢复需要管理，签名身份不存放在这些目录内。
-
-## macOS 安装
-
-先安装官方应用并完成正常登录。构建目录保存应用备份和模型目录，请选择可长期保留的位置。
+需要已有 DeepSeek API key，直接连接 DeepSeek API，无需额外代理软件。保留原来的 GPT 登录；只添加 DeepSeek Flash。
 
 ```sh
 git clone https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
-python3 --version
-node --version
-
-# 交互输入 API key，保存到 macOS 钥匙串。
 python3 patch.py setup-key
-
-PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-20261018"
-python3 patch.py build --output "$PATCH_BUILD" --verify
+python3 patch.py build --app /Applications/ChatGPT.app --output /absolute/path/build --verify
+# 正常退出 Codex 后：
+python3 patch.py install /absolute/path/build
+python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/path/build
 ```
 
-`build --verify` 创建副本，并运行目录、思考档位、上下文、同一聊天切换与隔离启动检查。测试通过实际内置 CLI 向本机模拟服务发送合成请求，不使用个人凭据或调用付费模型。启动测试会短暂打开隔离窗口，检查界面和后台启动，再关闭自身测试进程。
+Windows 使用 `python` 和 Windows 路径；`--app` 可省略，自动发现官方安装。
 
-然后**正常退出 Codex/ChatGPT 应用**，在 Terminal 执行：
+验证使用原生 CLI、隔离状态及本机模拟接口，在后台检查 GPT ↔ DS、工具、思考档位、上下文和压缩，不会打开测试桌面窗口或调用付费模型。验证通过后才允许安装。
+
+从旧补丁迁移时加入 `--baseline /path/to/old-build`。Mac 的 `--app` 指向旧构建保留的、通过官方签名验证的 `original.app`，`--install-target` 指向原安装位置；首次迁移恢复官方应用，后续更新只替换适配代码和受管配置。Windows 沿用已注册的官方 Store 应用。
+
+已有聊天通过原生元数据接口保留 ID、模型、思考档位、归档和历史。旧 GPT 聊天若含专有压缩块，首次切至 DS 时通过原 GPT 生成一次可读任务摘要并缓存，会使用一次 GPT 请求。
+
+## 非阻塞更新进度
+
+发现新版本后显示系统原生进度窗口，可继续工作或关闭窗口。点击“开始更新”后，准备和兼容性校验通过才正常关闭 Codex；安装时提示暂勿启动。关窗不会中断后台更新。完成后显示“启动 Codex”按钮，由用户决定何时打开。
+
+有实际文件数量的阶段显示计数，无法预估时使用活动进度条。相同版本不会每次检查都重复弹窗；关闭过程窗口后，完成时会再提示一次。旧版本首次升级在下载到新版组件后开始显示进度；后续从发现版本开始显示。
+
+## 更新与偏好
 
 ```sh
-python3 patch.py install "$PATCH_BUILD"
-```
-
-默认查找 `/Applications/ChatGPT.app`，不存在时尝试 `/Applications/Codex.app`。其他位置可在 `build` 中指定 `--app "/path/to/ChatGPT.app"`；配置目录可用 `--codex-home "$HOME/.codex"` 指定。
-
-## Windows 安装
-
-安装官方 Codex，准备 Python 3.11+ 和 Node.js 18+，在 PowerShell 中进入仓库目录：
-
-```powershell
-python --version
-node --version
-python patch.py setup-key
-
-$PatchBuild = Join-Path $env:LOCALAPPDATA "CodexDeepSeekPatch\build-20261018"
-python patch.py build --output "$PatchBuild" --verify
-
-# 正常退出 Codex 后安装。
-python patch.py install "$PatchBuild"
-```
-
-构建时自动查找官方 Store 应用，也可用 `--app "C:\path\to\app"` 明确指定来源。API key 通过交互输入保存到 **Windows 凭据管理器**。
-
-安装目标为 `%LOCALAPPDATA%\CodexDeepSeekPatch\app`，开始菜单新增 **Codex DeepSeek** 快捷方式，启动该目录中的 `ChatGPT.exe`。以后通过此快捷方式使用补丁版本；Store 中的官方应用保留在原位置。构建目录与安装目标需要处于同一磁盘卷，并为完整应用副本及恢复数据预留空间。
-
-## 使用与配置
-
-重新打开补丁应用，在**已有或新建的本机聊天 → 打开模型菜单 → 选择 DeepSeek 4.1 Flash**，下一条消息就使用 DS；选择 GPT 则切回 GPT。聊天 ID、历史、工作目录和权限保持原样。先等待当前回复完成再切换；远程主机和自行配置的其他提供商沿用原有路由。
-
-切换时重新载入同一聊天，并应用当前模型的窗口和压缩阈值，修正旧聊天遗留的 128K 默认值。用户在模型偏好中主动调小的窗口继续保留；切回 GPT 时恢复 GPT 的配置及网页搜索设置。
-
-每次构建使用新目录。初次安装发现已有自定义模型目录、不同默认服务商或同名 DS 服务商时，会提示核对配置。更新已有补丁可在 `build --compatible` 中增加 `--baseline "旧构建目录"`，刷新已登记的模型目录并保留其他用户设置。已登记的目录或 DS 服务商被手动修改时，工具停止供核对。
-
-手动更新示例：来源选正式安装位置的官方更新版。若要重建同一版本，先恢复原版，再按首次安装步骤构建并省略 `--baseline`，因为恢复也会还原配置。macOS 的 `--app` 同时是安装目标。已打补丁的副本不能作为兼容构建来源。
-
-```sh
-NEW_PATCH_BUILD="$HOME/Library/Application Support/CodexDeepSeekPatch/build-next"
-python3 patch.py build --compatible \
-  --app "/path/to/official/ChatGPT.app" \
-  --baseline "$PATCH_BUILD" --output "$NEW_PATCH_BUILD"
-python3 patch.py verify "$NEW_PATCH_BUILD"
-# 正常退出应用后：
-python3 patch.py install "$NEW_PATCH_BUILD"
-```
-
-凭据默认使用当前用户名和 `Codex DeepSeek API Key`；可用 `--keychain-account`、`--keychain-service` 自定义，`setup-key` 与 `build` 使用相同参数。
-
-## 思考程度选择
-
-新增模型在模型菜单中显示各自支持的思考档位；同一聊天可以逐回合调整。自动同步和重新安装会保留完整档位列表。
-
-DeepSeek Flash 提供 **low / high / max**。本版继续使用 DeepSeek 直连接口；公司 Windows 电脑可以保持独立 DS 更新通道。
-
-安装前的 `test_reasoning.py` 会通过实际内置 CLI 读取菜单模型数据，逐档发送本机模拟请求，并切回第一档检查选择是否生效；自动更新也执行此项检查。
-
-## 自动更新与模型同步
-
-完成一次安装后运行 `monitor.py enable`，即可同时启用 Codex 更新后自动补装、补丁自身更新和模型同步。macOS 使用 launchd，Windows 使用当前用户的任务计划程序。
-
-| 通道 | 跟随分支 | 模型来源 |
-| --- | --- | --- |
-| 独立 DS 版 | `main` | 原生 GPT + DeepSeek 官方接口 |
-| 多模型扩展版 | `codex/existing-proxy-models` | 原生 GPT + 可选 DS / 现有代理 / 本地模型 |
-
-两个通道分别发布 `update.json`，锁定版本、提交和文件摘要。安装时登记的通道保持固定，拒绝跨通道更新、倒退版本和摘要不符的文件。扩展版可按需接入本地或已有兼容接口；使用订阅代理时才需要 EasyCLIProxyAPI。DS 版直接连接 DeepSeek。
-
-```sh
-python3 monitor.py enable --app "/Applications/ChatGPT.app" --baseline "$PATCH_BUILD"
 python3 monitor.py status
-# 立即检查代码、目录和规格；仍等待应用正常退出才安装。
 python3 monitor.py run-once --sync-now
+python3 monitor.py model-options --model MODEL_ID --context-window 32768
+python3 monitor.py model-options --model MODEL_ID --hide
+python3 monitor.py model-options --model MODEL_ID --reset-context
 ```
 
-Windows 将 `python3` 换为 `python`，`--app` 指向官方 Store 来源，`--baseline` 指向已安装构建。已有旧监测服务的用户，安装本次版本后执行一次 `enable` 完成迁移，以后补丁代码自动更新。
-
-默认每 **5 分钟**检查应用变化，每 **1 小时**检查补丁发布和模型规格。发现变化后下载并核对源码，先运行隔离单元测试，再检查官方应用兼容性、构建副本、验证目录、思考档位、上下文与同一聊天切换，再测试隔离启动。全部通过后等待应用正常退出，完成安装与监测程序更新。测试窗口可能短暂出现。未知结构、断网、无规格的新型号或失败会去重通知，保留当前可用版本和恢复数据。相同状态保持安静；检查不向供应商提交推理回合。
-
-GPT 通过内置 CLI 刷新原生目录；DS 优先读取官方 `/models` 的真实规格；扩展版读取现有代理 `/models` 发现型号，再核对 xAI、Google、Anthropic 官方规格。自动加入现有 **Grok、Gemini Flash、Opus** 系列的新型号，DS 同步 Flash 系列。首次同步建立现有型号基线，保留此前未选型号；后续新出现的型号自动加入。暂时下线的型号在连续两次成功查询都缺失后移除，重新出现后恢复。新型号缺少可信规格时保留待处理记录并提醒，不套用小窗口。
-
-默认上下文使用模型支持的**最大值**，不继承模板的折减百分比。保留用户主动调小的单模型设置与已有 GPT / DS 全局设置；代理模型使用各自窗口。自动压缩默认在配置窗口的 90% 触发，用户更低阈值继续保留。最大窗口变大时默认同步增大；用户已设置的较小窗口保持原值。
+监测默认启用代码更新与模型同步，可在启用时分别用 `--no-code-updates` / `--no-model-sync` 关闭。正在使用 Codex 时等待退出后安装。更新包检查版本通道、不可变提交、文件摘要及隔离测试，DS 与扩展不会交叉覆盖。
 
 ```sh
-# 单模型调小；后续自动同步会保留。
-python3 monitor.py model-options --model deepseek-flash --context-window 262144
-# 恢复跟随最大窗口。
-python3 monitor.py model-options --model deepseek-flash --reset-context
-# 隐藏或重新显示；扩展版同样适用于 Grok / Gemini / Opus。
-python3 monitor.py model-options --model deepseek-flash --hide
-python3 monitor.py model-options --model deepseek-flash --show
-# 重试失败版本；停止服务会保留应用、配置与恢复数据。
-python3 monitor.py run-once --retry
+python3 patch.py status /absolute/path/build
 python3 monitor.py disable
+python3 patch.py recover /absolute/path/build  # 恢复中断的安装
+python3 patch.py restore /absolute/path/build  # 撤销本适配层，恢复先前配置
 ```
 
-`model-options` 在下一次同步后应用，修改模型路由需正常退出并重新打开应用，已有聊天在下一次发送 DS 消息时应用新规格，新建聊天同样生效。偏好保存在监测目录的 `model-preferences.json`，状态与告警可通过 `status` 查看。可用 `enable --no-code-updates` 或 `--no-model-sync` 分别关闭对应功能。构建与更新缓存需要磁盘空间，当前及上一份可恢复构建请保留。
+恢复命令保留官方应用；旧补丁迁移前已有的外部提供方配置仍按原记录恢复。Mac 不重置钥匙串或系统隐私权限；首次从旧本地签名切回官方身份时，系统可能要求确认相应权限。日常更新不再重新签名。
 
-## 检查与恢复
-
-```sh
-python3 patch.py status "$PATCH_BUILD"
-
-# 先正常退出应用；如启用了自动监测，先 disable。
-python3 patch.py restore "$PATCH_BUILD"
-```
-
-macOS 恢复原版应用和安装前配置。Windows 恢复此前的受管副本、快捷方式和配置，首次安装则移除本次受管副本。安装后若配置或目标被修改，恢复操作会停止供核对。`config-before.toml` 保存安装前配置。
-
-**保留构建目录**：配置仍引用其中的模型目录，目录中也保存恢复所需文件。
-
-## 测试
-
-离线单元测试不使用 API：
-
-```sh
-python3 -m unittest discover -s tests -v
-node tests/route.test.cjs
-```
-
-兼容构建生成 `compatibility.json`，保存源摘要、精确修改位置、提取方法和行为检查结果，供本机复查。
-
-可选联网测试会向 DeepSeek 发送两次小型测试对话，验证回复和读取临时文件的工具调用，**产生 API 用量**；只有显式传入 `--run` 才执行：
-
-```sh
-python3 scripts/test_connection.py "$PATCH_BUILD" --run
-```
-
-具体平台、版本与实测层级见[验证记录](docs/VALIDATION.md)。
-
-## 实现与注意事项
-
-- 新建本机 DS 聊天时设置 `deepseek-desktop`；已有 GPT / DS 聊天在下一回合前按选中模型重新载入同一 ID。切换失败时尝试恢复原模型并停止发送；本机聊天列表显示各服务商的聊天。
-- 跳过本机新建聊天的预热缓存复用，避免提供商混用；新建聊天可能略慢。
-- 首次构建使用内置目录；启用监测后刷新 GPT、DS 模型及规格，验证后重新构建。
-- 保持 ASAR 资源校验启用，更新成员与分块哈希、包头及原生配套摘要。macOS 副本使用固定本机证书签名；Windows 副本修改完整性载体。依赖官方签名的系统功能或更新可能受到影响。
-- `.local/`、构建产物和配置备份包含程序副本或本机信息。请勿上传到仓库或 Issue。
-
-## 许可证
-
-项目新增补丁代码采用 [MIT](LICENSE) 许可证。ChatGPT、Codex、DeepSeek、Electron 及其程序资源归各自权利人所有，参见 [NOTICE](NOTICE)。
+非官方项目。请勿提交官方程序、生成的模型目录、个人日志、账号配置或凭据。问题反馈请附系统、Codex 版本、适配层版本、接口类型和脱敏错误。真实模型实测与模拟协议覆盖分别记录在[验证文档](docs/VALIDATION.md)。

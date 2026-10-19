@@ -118,6 +118,58 @@ class AdoptionTests(unittest.TestCase):
 
 
 class InstallAdapterTests(unittest.TestCase):
+    def test_proxy_install_requires_context_probe_before_touching_configuration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);catalog=root/'desktop-models.json';catalog.write_text('{}')
+            manifest={'status':'prepared','target':str(root/'app'),'codex_home':str(root),
+                      'original_asar':'old','patched_asar':'new','catalog_sha256':p.file_sha(catalog),
+                      'boot_probe':'passed','offline_probe':'passed','proxy':{'config':'must-not-read'}}
+            with mock('backend.p.require_stopped'), mock('backend.p.verify_app'), \
+                 mock('backend.credential_available',return_value=True), mock('backend.p.install_transaction') as install, \
+                 mock('proxy_support.read_api_key') as credential:
+                with self.assertRaisesRegex(p.PatchError,'context/compaction probe'):
+                    backend.install_compatible(root,manifest)
+            credential.assert_not_called();install.assert_not_called()
+            self.assertFalse((root/'config.toml').exists())
+
+    def test_refresh_verifies_signed_source_and_exact_previous_target_before_exchange(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, current, managed = baseline_fixture(root)
+            home = root/'home';home.mkdir();config = home/'config.toml';config.write_text(current)
+            build = root/'build';build.mkdir();catalog = build/'desktop-models.json';catalog.write_text('{}')
+            source, target = root/'official-backup', root/'installed'
+            source.mkdir();target.mkdir()
+            manifest = {'status':'prepared', 'source_target':str(source), 'target':str(target), 'codex_home':str(home),
+                        'original_asar':'official', 'replaced_asar':'old-patch', 'patched_asar':'new-patch',
+                        'catalog_sha256':p.file_sha(catalog), 'keychain_account':'a', 'keychain_service':'s',
+                        'managed':managed, 'boot_probe':'passed', 'offline_probe':'passed'}
+            def transaction(app, staged, config_arg, before, after, commit):
+                self.assertEqual(app,target)
+                self.assertEqual(before,current)
+                config_arg.write_text(after);commit()
+            with mock('backend.sys.platform','darwin'), mock('backend.p.require_stopped') as stopped, \
+                 mock('backend.p.verify_app') as verify, mock('backend.credential_available',return_value=True), \
+                 mock('backend.p.install_transaction',side_effect=transaction):
+                backend.install_compatible(build,manifest)
+            self.assertIn(((source,'official'),), [(call.args,) for call in verify.call_args_list])
+            self.assertIn(((target,'old-patch'),), [(call.args,) for call in verify.call_args_list])
+            self.assertEqual(stopped.call_args_list[-1].args,(target,))
+            self.assertEqual(manifest['status'],'installed')
+
+    def test_refresh_rejects_changed_target_before_transaction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp);target = root/'target';target.mkdir()
+            manifest = {'status':'prepared','source_target':str(root/'source'),'target':str(target),'codex_home':str(root),
+                        'original_asar':'official','replaced_asar':'old-patch'}
+            def verify(app, expected):
+                if expected=='old-patch': raise p.PatchError('App archive changed')
+            with mock('backend.p.require_stopped'), mock('backend.p.verify_app',side_effect=verify), \
+                 mock('backend.p.install_transaction') as exchange:
+                with self.assertRaisesRegex(p.PatchError,'archive changed'):
+                    backend.install_compatible(root,manifest)
+            exchange.assert_not_called()
+
     def test_mac_install_keeps_unrelated_config_and_records_committed_baseline(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -187,21 +239,6 @@ class InstallAdapterTests(unittest.TestCase):
                     backend.build_compatible(args)
             cli.assert_not_called()
             self.assertFalse(output.exists())
-
-    def test_saved_chat_probe_is_required_before_any_install_transaction(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            catalog = root / 'desktop-models.json'; catalog.write_text('{}')
-            manifest = {'status': 'prepared', 'target': str(root / 'app'), 'codex_home': str(root / 'home'),
-                        'original_asar': 'original', 'patched_asar': 'patched', 'catalog_sha256': p.file_sha(catalog),
-                        'boot_probe': 'passed', 'offline_probe': 'passed', 'reasoning_probe': 'passed',
-                        'context_probe': 'passed', 'switching_probe_required': True}
-            with mock('backend.p.require_stopped'), mock('backend.p.verify_app'), mock('backend.p.install_transaction') as install:
-                for value in [None, 'failed']:
-                    manifest['switching_probe'] = value
-                    with self.subTest(value=value), self.assertRaisesRegex(p.PatchError, 'saved-chat switching'):
-                        backend.install_compatible(root, manifest)
-            install.assert_not_called()
 
     def test_stable_signing_mismatch_stops_install_before_credentials_or_mutation(self):
         with tempfile.TemporaryDirectory() as temp:

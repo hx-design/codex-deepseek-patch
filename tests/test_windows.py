@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import os
@@ -13,6 +14,26 @@ import windows_support as win
 
 
 class BackgroundProcessTests(unittest.TestCase):
+    def test_all_preflight_test_children_explicitly_disable_windows_consoles(self):
+        # A pythonw parent does not suppress a console allocated by its child.
+        # Public updates execute these tests, so their real subprocess calls
+        # follow the same no-window contract as the production worker.
+        root = Path(__file__).resolve().parent
+        missing = []
+        for path in root.glob('test_*.py'):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for call in ast.walk(tree):
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                    continue
+                owner = ast.unparse(call.func.value)
+                if owner not in ('subprocess', 'win.subprocess') or call.func.attr not in ('run','Popen','check_output','check_call'):
+                    continue
+                keywords = [ast.unparse(value.value) for value in call.keywords if value.arg is None]
+                explicit = any(value.arg == 'creationflags' for value in call.keywords)
+                if not explicit and not any('background_options(' in value or 'launch_options(' in value for value in keywords):
+                    missing.append(f'{path.name}:{call.lineno}')
+        self.assertEqual(missing, [], 'Update preflight can flash child consoles: ' + ', '.join(missing))
+
     @unittest.skipUnless(os.name == 'nt', 'Real Windows console and redirected handles')
     def test_console_program_retains_utf8_pipes_without_allocating_a_console(self):
         executable = str(Path(sys.executable).with_name('python.exe'))

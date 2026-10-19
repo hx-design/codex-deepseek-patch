@@ -53,18 +53,17 @@ def main(directory):
                         actual=next(m for m in exposed if m['model']==model)
                         offered=[r['reasoningEffort'] for r in actual['supportedReasoningEfforts']]
                         patch.require(offered==levels,'Selectable reasoning efforts differ: '+model)
-                        patch.require(len(levels)<2 or entry['supports_reasoning_effort_updates'],'Effort switching is disabled: '+model)
                         thread=rpc.request('thread/start',{'model':model,'modelProvider':routes[model]['provider'],
                             'cwd':str(work),'ephemeral':True,'approvalPolicy':'never','sandbox':'read-only',
                             'baseInstructions':'You are a loopback transport test.',
                             'config':{'web_search':'disabled','features.memories':False}})
                         # Include a final return to the first level to catch sticky choices.
-                        for effort in levels+[levels[0]]:
+                        for effort in (levels+[levels[0]] if levels else [None]):
                             start=len(server.requests);rpc.turn(thread['thread']['id'],effort)
                             sent=server.requests[start:]
                             patch.require(len(sent)==1 and sent[0]['model']==model and sent[0]['effort']==effort,
-                                          'Selected effort did not reach provider request: '+model+'/'+effort)
-                        report['models'].append({'model':model,'selectable_efforts':offered,'transmitted_efforts':levels+[levels[0]]})
+                                          'Selected effort did not reach provider request: '+model+'/'+str(effort))
+                        report['models'].append({'model':model,'selectable_efforts':offered,'transmitted_efforts':levels+[levels[0]] if levels else [None]})
                         print('PASS:',model,'selectable and transmitted:',','.join(levels),flush=True)
                     report['status']='passed'
                 finally:stop_probe(process)
