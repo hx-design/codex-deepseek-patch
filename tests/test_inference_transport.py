@@ -240,7 +240,8 @@ class ConnectProxy(http.server.BaseHTTPRequestHandler):
         if host not in ('127.0.0.1', 'localhost'):
             self.send_error(403)
             return
-        upstream = socket.create_connection((host, int(port)), timeout=2)
+        # Both allowed names identify this IPv4 fixture; DNS is not under test.
+        upstream = socket.create_connection(('127.0.0.1', int(port)), timeout=2)
         self.send_response(200)
         self.end_headers()
         self.wfile.flush()
@@ -259,6 +260,24 @@ class ConnectProxy(http.server.BaseHTTPRequestHandler):
         finally:
             upstream.close()
             self.close_connection = True
+
+
+class TLSFixtureServer(http.server.ThreadingHTTPServer):
+    def __init__(self, address, context):
+        super().__init__(address, EchoHandler)
+        self.daemon_threads = True
+        # Configure TLS before serve_forever starts. Handshake in each worker,
+        # so an intentionally rejected certificate never blocks the accept loop.
+        self.socket = context.wrap_socket(self.socket, server_side=True,
+                                          do_handshake_on_connect=False)
+
+    def finish_request(self, request, client_address):
+        request.settimeout(2)
+        try:
+            request.do_handshake()
+        except ssl.SSLError:
+            return
+        super().finish_request(request, client_address)
 
 
 class HandshakeTests(unittest.TestCase):
@@ -362,8 +381,13 @@ class HandshakeTests(unittest.TestCase):
                            check=True, capture_output=True, **background_options())
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(cert, key)
-            # Swap listener before any requests; only local test trust is changed.
-            self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join(2)
+            self.server = TLSFixtureServer(('127.0.0.1', 0), context)
+            self.thread = threading.Thread(target=self.server.serve_forever,
+                kwargs={'poll_interval': .01}, daemon=True)
+            self.thread.start()
             url = f'wss://localhost:{self.server.server_port}/tls'
             with self.assertRaises(ssl.SSLCertVerificationError):
                 connect_websocket(url, timeout=2)
