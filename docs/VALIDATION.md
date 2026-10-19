@@ -364,3 +364,7 @@ v0.2 的联网 DeepSeek 回合没有重新执行；此前真实回复与工具�
 GitHub Actions 执行跨平台离线测试，不执行 macOS 应用启动或 DeepSeek API 请求。实际联网调用必须由使用者显式运行 `scripts/test_connection.py … --run`。
 
 发布物只包含源代码与文档。应用副本、日志、生成的完整模型目录、个人配置及钥匙串数据保留在本地。
+
+## 0.5.11 / 0.4.11: macOS scheduled signature checks
+
+The same read-only signature command was exercised under launchd Background and Standard process classes. Standard completed in approximately one second; Background stalled under I/O throttling. The monitor now uses Standard while retaining its bounded timer, quiet execution, and no KeepAlive. Already-loaded older macOS jobs restore normal scheduling for their own process and children at the start of each check, without stopping the job. Windows task identity, hidden execution and triggers are unchanged.
