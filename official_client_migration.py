@@ -67,10 +67,17 @@ def native_session(app, codex_home):
     args = [str(p.cli_path(app))]
     overrides = {"cli_auth_credentials_store":"ephemeral", "features.hooks":False,
                  "features.apps":False, "features.memories":False, "features.plugins":False,
-                 "features.remote_plugin":False, "openai_base_url":"http://127.0.0.1:9/backend-api/codex",
-                 "model_providers." + PROVIDER + ".base_url":"http://127.0.0.1:9/backend-api/codex"}
+                 "features.remote_plugin":False, "openai_base_url":"http://127.0.0.1:9/backend-api/codex"}
+    # Do not create an incomplete provider table while inspecting a legacy home.
+    # Native configuration validation requires a provider name even when unused.
+    if PROVIDER in current.get("model_providers", {}):
+        overrides["model_providers." + PROVIDER + ".base_url"] = "http://127.0.0.1:9/backend-api/codex"
     for name in current.get("mcp_servers", {}):
-        overrides["mcp_servers." + json.dumps(name) + ".enabled"] = False
+        # Native -c keys are dot-separated strings, not TOML key expressions.
+        # Quoting a hyphenated name creates a new, invalid server entry.
+        if "." in name:
+            raise ValueError("Native metadata isolation cannot override an MCP name containing a dot")
+        overrides["mcp_servers." + name + ".enabled"] = False
     for key, value in overrides.items():
         args += ["-c", key + "=" + json.dumps(value)]
     args += ["app-server", "--listen", "stdio://"]
