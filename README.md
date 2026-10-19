@@ -4,7 +4,7 @@
 
 支持 **Gemini、Grok、Opus、Ollama、LM Studio 和其他 Responses 兼容接口**，保留原生 GPT。使用现有模型服务与登录配置，在 Codex 内完成模型选择和聊天。
 
-本分支为多模型扩展版 **`0.4.8-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
+本分支为多模型扩展版 **`0.4.9-proxy.1`**，更新通道为 `codex/existing-proxy-models`。
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -32,7 +32,13 @@
 | 简化接入操作 | `connect` 发现并保存连接，`build --verify` 合并安装前检查 | 减少手改配置和逐项执行验证的步骤 |
 | 复用已有会话 | 通过原生接口恢复同一个聊天 ID，保留历史、权限与工作目录 | 不维护另一套聊天数据库或迁移历史副本 |
 
-`0.4.8-proxy.1` 的更新监测运行文件共 **26 个，约 331 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+`0.4.9-proxy.1` 的更新监测运行文件共 **26 个，约 331 KiB**，含安装验证脚本。这个数字统计源码，不含 Python、Node.js、Codex 应用、外部模型服务及模型权重。安装仍保留应用副本和恢复备份；旧构建目前需要手动管理。
+
+### 0.4.9 修复：测试钥匙串与 Windows 连接权限
+
+- Mac 隔离启动使用测试专用模拟钥匙串，避免临时用户目录缺少钥匙串而弹窗等待。正式应用的登录钥匙串保持原样。
+- 兼容连接启动不再依赖写入日志文件，避免 Windows 普通用户对话因日志权限失败而显示 502。
+- 每个 bug 同时核对 Mac / Windows 的 DS / 扩展四种组合，维护规则见 CONTRIBUTING。
 
 ### 0.4.8 修复：闲置后 502 与工具数字参数
 

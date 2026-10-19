@@ -2,6 +2,8 @@ import copy
 import http.server
 import json
 from pathlib import Path
+import socket
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -15,6 +17,31 @@ import local_bridge
 
 
 class LocalTests(unittest.TestCase):
+    def test_native_listener_starts_when_auth_helper_cannot_write_any_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);profile=root/'readonly-bridge.json'
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
+            value={'base_url':'http://127.0.0.1:9/v1','port':port,'token':'synthetic-readonly-probe'}
+            profile.write_text(json.dumps(value),encoding='utf-8')
+            original_open=Path.open;original_popen=subprocess.Popen;owned=[]
+            def readonly_open(path,mode='r',*args,**kwargs):
+                if any(flag in mode for flag in 'wax+'):
+                    raise PermissionError('Desktop credential helper cannot write beside its profile')
+                return original_open(path,mode,*args,**kwargs)
+            def start(*args,**kwargs):
+                process=original_popen(*args,**kwargs);owned.append(process);return process
+            try:
+                with mock.object(Path,'open',readonly_open), mock.object(local_bridge.subprocess,'Popen',start), mock('builtins.print') as output:
+                    local_bridge.credential(profile)
+                output.assert_called_once_with(value['token'],end='')
+                self.assertTrue(local_bridge.healthy(value))
+                self.assertFalse(profile.with_suffix('.log').exists())
+                self.assertEqual(len(owned),1)
+            finally:
+                for process in owned:
+                    process.terminate();process.wait(timeout=10)
+
     def test_only_idle_compatibility_listener_needs_per_request_auth_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);connection={**self.connection(),'key_file':str(root/'key'),'tool_adapter_models':['probe']}

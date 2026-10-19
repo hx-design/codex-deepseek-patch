@@ -115,9 +115,10 @@ def credential(profile_path):
     profile=json.loads(profile_path.read_text(encoding='utf-8'))
     if not healthy(profile):
         options={'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {'start_new_session':True}
-        with profile_path.with_suffix('.log').open('a',encoding='utf-8') as log:
-            process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'serve',str(profile_path)],
-                stdin=subprocess.DEVNULL,stdout=log,stderr=log,**options)
+        # Desktop auth helpers may read the profile without permission to write
+        # beside it. Starting a connection must not depend on an optional log.
+        process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'serve',str(profile_path)],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**options)
         for _ in range(50):
             if healthy(profile):break
             if process.poll() is not None:

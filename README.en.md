@@ -4,7 +4,7 @@ Bring **existing cloud endpoints and local models** into the native Codex model 
 
 Connect **Gemini, Grok, Opus, Ollama, LM Studio and other Responses-compatible services**, alongside native GPT. Reuse existing model services and login configuration, with model selection and conversations inside Codex.
 
-This is the **0.4.8-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
+This is the **0.4.9-proxy.1 multi-model extension**, on the independent `codex/existing-proxy-models` update channel.
 
 [中文完整指南](README.md) · [Validation](docs/VALIDATION.md) · [Architecture](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
@@ -33,7 +33,13 @@ Requires Python 3.11+, Node.js 18+, and the official macOS Apple Silicon or Wind
 | Short setup flow | `connect` discovers and saves endpoints; `build --verify` runs all gates | Less manual configuration and fewer separate commands |
 | Existing conversations | Resume the same native chat ID with its history and permissions | No second conversation database or history-copy workflow |
 
-The `0.4.8-proxy.1` update runtime uses **26 source files totaling about 331 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+The `0.4.9-proxy.1` update runtime uses **26 source files totaling about 331 KiB**, including verification scripts. Windows background utilities do not allocate console windows, and the GUI boot check runs on a separate hidden desktop. This measures source size, excluding Python, Node.js, Codex, external services and model weights. Installation still retains application copies and recovery backups; old builds currently require manual management.
+
+### 0.4.9 fix: test keychains and Windows helper permissions
+
+- Mac disposable startup checks use a mock keychain; the installed application keeps its real login keychain.
+- Starting an adapter no longer requires a writable log file, preventing desktop authentication failures caused by log ownership or permissions.
+- Every bug fix reviews macOS / Windows across both editions, as required by CONTRIBUTING.
 
 ### 0.4.8 fix: idle gateway failures and numeric tool arguments
 

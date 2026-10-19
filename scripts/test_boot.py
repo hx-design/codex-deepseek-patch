@@ -54,7 +54,17 @@ def inspect_children(rows, root_pid, browser, cli):
     backend = [row for row in owned if str(cli).casefold() in row["command"].casefold()
                and re.search(r'(?:^|[\s"])app-server(?=$|[\s"])', row["command"])]
     return {"isolated_profile": isolated, "renderer": bool(renderer), "backend": bool(backend),
-            "owned_processes": len(owned)}
+            "owned_processes": len(owned),
+            "mock_keychain": any('--use-mock-keychain' in row['command'].split() for row in root)}
+
+
+def boot_command(executable, browser):
+    args = [str(executable), '--user-data-dir=' + str(browser), '--no-first-run']
+    if sys.platform == 'darwin':
+        # Only the disposable GUI probe uses Chromium's mock credential store.
+        # An empty test HOME otherwise prompts for a missing login keychain.
+        args.append('--use-mock-keychain')
+    return args
 
 
 def main(directory, timeout=360):
@@ -79,7 +89,7 @@ def main(directory, timeout=360):
             browser = base / "browser"
             started = time.monotonic()
             with (directory / "boot.log").open("w", encoding="utf-8") as log, isolated_desktop_options() as desktop_options:
-                args=[str(layout["exe"]), "--user-data-dir=" + str(browser), "--no-first-run"]
+                args=boot_command(layout['exe'], browser)
                 if desktop_options:
                     process=desktop_process(args,**desktop_options,env=environment,stdout=log,cwd=base)
                 else:
@@ -88,6 +98,8 @@ def main(directory, timeout=360):
                     while time.monotonic() - started < timeout:
                         patch.require(process.poll() is None, "Isolated boot probe exited: " + str(process.returncode))
                         checks = inspect_children(process_table(), process.pid, browser, patch.cli_path(app))
+                        if sys.platform == 'darwin':
+                            patch.require(checks['mock_keychain'], 'Isolated Mac probe must use its mock keychain')
                         evidence.update(checks)
                         if checks["isolated_profile"] and checks["renderer"] and checks["backend"]:
                             # Require the complete initialized process tree to stay up.

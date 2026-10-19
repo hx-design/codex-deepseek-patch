@@ -76,3 +76,11 @@ Windows 任务的工作目录使用监测状态目录，runtime 替换前也主�
 按需兼容进程空闲 120 秒后退出。原生 CLI 将 `auth.refresh_interval_ms=0` 解释为永久缓存，旧配置因此在同一聊天的后续消息中跳过启动 helper。适配连接改为 1 ms，发起新请求时重新检查健康状态并按需启动；完整支持协议的直连接口仍保留原有凭据缓存策略。无需常驻监测循环。
 
 原生工具声明中的 `number` 字段可能由执行器按整数反序列化。适配器按声明的 `number` / `integer` 字段解析完整调用，仅将范围内且数值为整数的十进制数写成 JSON 整数；使用标准库 Decimal 保留数值精度，不转换字符串或未知字段。支持嵌套声明与命名空间，流式调用在完整参数到达后统一处理；执行、校验和审批仍由 Codex 完成。原生工具测试追加一次无副作用的 echo 调用，检验实际执行结果。
+
+## macOS 隔离启动的钥匙串
+
+隔离测试创建临时 HOME、Codex 配置和浏览器目录。macOS GUI 进程额外传入 `--use-mock-keychain`，让 Chromium 的测试凭据后端处理临时加密存储；实际进程参数也必须包含该标记才允许通过。正式应用启动和安装配置不添加此参数，原有签名、登录钥匙串与用户凭据保持原样。Windows 继续使用隐藏桌面检查，不传入 Mac 测试参数。
+
+机制参考：[Chromium KeychainKeyProvider](https://github.com/chromium/chromium/blob/main/components/os_crypt/async/browser/keychain_key_provider.mm)。
+
+认证助手启动兼容进程使用空标准输入输出，不要求在构建目录创建日志。Windows 普通用户和提升权限的诊断进程创建文件的所有者可能不同；诊断应在目标交互式用户身份下运行，避免改变安装文件的有效访问权限。
