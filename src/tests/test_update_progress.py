@@ -64,6 +64,13 @@ class ProgressTest(unittest.TestCase):
         self.assertFalse(self.progress.requested());self.assertEqual(self.progress.read()['phase'],'available')
         self.spawn_mock.assert_not_called()
 
+    def test_model_only_sync_never_reuses_a_prior_update_window(self):
+        self.settings();directory,manifest=self.build()
+        manifest['update']['quiet_model_sync']=True
+        self.assertIsNone(u.from_manifest(manifest))
+        self.assertIsNone(u.worker_progress('build',{'update':{'quiet_model_sync':True}},directory/'job.json'))
+        self.spawn_mock.assert_not_called()
+
     def test_id_and_action_allowlist(self):
         for identity,action in [('old','start'),(self.identity,'exec')]:
             with self.assertRaises(ValueError):u.action(self.root,identity,action)

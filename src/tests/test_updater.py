@@ -13,6 +13,23 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_model_sync_is_quiet_only_when_app_and_code_are_unchanged(self):
+        app={'version':'v','build':'b','fingerprint':'app','hashes':{'resources/app.asar':'asar'}}
+        installed={'architecture':'official-client-v1','status':'installed','app_version':'v','app_build':'b',
+                   'original_asar':'asar','update':{'runtime_digest':'runtime','app_fingerprint':'app'}}
+        self.assertTrue(u.UpdateBackend.model_only_change(app,'runtime',installed))
+        self.assertFalse(u.UpdateBackend.model_only_change(app,'new-runtime',installed))
+        self.assertFalse(u.UpdateBackend.model_only_change({**app,'fingerprint':'new-app'},'runtime',installed))
+        self.assertFalse(u.UpdateBackend.model_only_change({**app,'version':'new'},'runtime',installed))
+        self.assertFalse(u.UpdateBackend.model_only_change(app,'runtime',{**installed,'architecture':'legacy'}))
+
+    def test_quiet_sync_cannot_present_a_panel_or_close_the_desktop(self):
+        obj=object.__new__(u.UpdateBackend);obj.quiet_model_sync=True;obj.progress=Mock()
+        with mock('update_progress.validated_close') as close:
+            for phase in ('available','waiting_for_exit','installing','completed'):obj.progress_phase(phase)
+            obj.request_close({'directory':'must-not-read'})
+        obj.progress.publish.assert_not_called();close.assert_not_called()
+
     @unittest.skipUnless(os.name == 'nt', 'Real Windows background worker')
     def test_update_worker_has_no_console_and_keeps_result_file_transport(self):
         with tempfile.TemporaryDirectory() as temp:
