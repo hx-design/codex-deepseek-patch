@@ -226,7 +226,8 @@ class NativeModelSyncTests(unittest.TestCase):
             settings={'edition':'proxy','app':'unused','codex_home':str(home)}
             available={'grok-4.7':{'context_window':500000},'grok-4.5':{'context_window':500000},'grok-4.9':{'context_window':1000000},'deepseek-flash':{'context_window':1048576}}
             def sync():
-                return m.synchronize(settings,state,baseline,fetch_native=lambda *_:native,fetch_provider=lambda *_:available)
+                return m.synchronize(settings,state,baseline,fetch_native=lambda *_:native,fetch_provider=lambda *_:available,
+                    fetch_document=lambda url:'Context window: 1M' if 'grok-4.9' in url else 'Context window: 500000')
             first=sync();self.assertEqual(set(first['routes']),{'grok-4.7'})
             self.assertEqual(first['routes']['grok-4.7']['context_window'],32768)
             self.assertEqual(first['routes']['grok-4.7']['compact_limit'],28000)
