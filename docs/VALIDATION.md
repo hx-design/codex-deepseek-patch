@@ -24,6 +24,13 @@ The macOS stopped-app check excludes only an orphan Electron browser_crashpad_ha
 
 2026-10-19. DS 0.4.0 and extension 0.5.0-proxy.1 use the original desktop app plus a small external adapter. Results below distinguish real model calls from synthetic protocol fixtures. The older records remain below as historical evidence.
 
+## 0.5.7 / 0.4.7: exit-triggered application and quota regression
+
+- A prepared update now arms one temporary process-exit observer (macOS kqueue / Windows process handles). Real process-exit tests wake immediately; singleton, fast-reopen and disabled-monitor cases pass. Exact orphan crash/keyboard helpers no longer prevent a Mac update after the main app exits.
+- 514 local unit tests pass (12 platform-specific skips); the ordinary-user Windows windowless updater probe passes 120 tests with no console window.
+- On the actual bundled Mac and Windows native CLI, both edition fixtures receive a synthetic GPT `usageLimitExceeded` failure, then complete independent-model turns in the same chat without another GPT request. Extension fixtures cover DS, Grok, Gemini and a local Chat Completions route. GPT works again after the fixture quota resets. These are isolated protocol tests, not an exhausted real-account desktop UI session.
+- An additional HTTP-429 regression confirms the remaining legacy boundary: uncached proprietary GPT compaction needs the official summary service and fails before contacting the external provider when that service has no quota. Ordinary visible history and cached summaries still work. This shared boundary applies to both platforms and editions.
+
 ## Real models and original authentication
 
 - macOS and Windows each completed the same-chat **GPT → DeepSeek → Grok 4.7 → Gemini 3.8 Flash → GPT** sequence. Every turn recalled all earlier synthetic tags; DS/Grok/Gemini executed the native file tool; the final GPT recalled the complete sequence and file marker without a tool.

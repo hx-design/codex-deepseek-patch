@@ -313,6 +313,8 @@ class Monitor:
                 if self.backend.is_running():
                     self.state["phase"] = "waiting_for_exit"
                     self.save()
+                    watch_exit=getattr(self.backend,"watch_exit",None)
+                    if watch_exit:watch_exit(pending["build"])
                     return self.state
                 fresh = self.backend.snapshot()
                 if self.fingerprint(fresh) != fingerprint:
@@ -337,6 +339,15 @@ class Monitor:
                 self.progress("completed")
                 self.notify("installed", fingerprint, "The Codex update was checked and the DeepSeek patch was installed. Open Codex normally.")
             except Exception as error:
+                import patch as core
+                if isinstance(error,core.AppRunningError) and self.state.get('pending'):
+                    self.state.update(phase='waiting_for_exit')
+                    self.state.pop('reason',None)
+                    self.save()
+                    self.event('reopened_before_install',fingerprint=fingerprint)
+                    watch_exit=getattr(self.backend,'watch_exit',None)
+                    if watch_exit:watch_exit(self.state['pending']['build'])
+                    return self.state
                 reason = safe_error(error)
                 if fingerprint == "snapshot-unavailable":
                     # An updater may temporarily remove the app. Retry reads next tick.
@@ -690,6 +701,7 @@ def main(argv=None):
     p.add_argument("--retry", action="store_true", help="Explicitly retry a failed or incompatible fingerprint")
     p.add_argument("--quiet", action="store_true", help="For native scheduling: write events without polling output")
     p.add_argument('--sync-now',action='store_true',help='Refresh the pinned code channel and model specifications now')
+    p.add_argument('--install-ready',action='store_true',help=argparse.SUPPRESS)
     p=subs.add_parser('model-options',help='Keep a model hidden or preserve a smaller context across synchronization')
     p.add_argument('--model',required=True)
     p.add_argument('--context-window',type=int)
@@ -735,6 +747,10 @@ def main(argv=None):
             if settings is None:
                 raise ValueError("Monitor settings are missing; run enable first")
             settings['state_dir']=str(args.state_dir.resolve())
+            if getattr(args,'install_ready',False):
+                # An exit-triggered installation uses already validated local
+                # artifacts; network discovery must not consume the quit gap.
+                settings.update(auto_update=False,model_sync=False,force_sync=False)
             if getattr(args,'sync_now',False):settings['force_sync']=True
             saved_state = load_json(args.state_dir / "state.json", {})
             baseline = saved_state.get("installed", {}).get("baseline")

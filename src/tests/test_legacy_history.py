@@ -246,7 +246,7 @@ class SummaryFixture(http.server.BaseHTTPRequestHandler):
         body = json.loads(raw)
         self.server.records.append((self.path, dict(self.headers), raw, body))
         if self.path.startswith('/official/') and self.server.fail_summary:
-            self.send_response(403)
+            self.send_response(getattr(self.server, 'summary_error_status', 403))
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -326,6 +326,26 @@ class AdapterConversionTests(unittest.TestCase):
         self.assertEqual(json.loads(raw)['error']['code'], 'legacy_summary_http_403')
         self.assertEqual(len(self.upstream.records), 1)
         self.assertFalse(list(Path(self.profile['legacy_history_dir']).glob('*.json')))
+
+    def test_exhausted_gpt_quota_only_blocks_uncached_opaque_history(self):
+        self.upstream.fail_summary = True
+        self.upstream.summary_error_status = 429
+        status, raw = self.request()
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(raw)['error']['code'], 'legacy_summary_http_429')
+        self.assertEqual([v[0] for v in self.upstream.records], ['/official/responses'])
+        self.upstream.records.clear()
+        self.assertEqual(self.request(input=[{'role':'user','content':'continue visible task'}])[0], 200)
+        self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses'])
+        self.assertEqual(self.upstream.records[0][1]['Authorization'], 'Bearer independent-target-key')
+
+    def test_cached_handoff_remains_usable_when_gpt_quota_is_exhausted(self):
+        self.assertEqual(self.request()[0], 200)
+        self.upstream.records.clear()
+        self.upstream.fail_summary = True
+        self.upstream.summary_error_status = 429
+        self.assertEqual(self.request()[0], 200)
+        self.assertEqual([v[0] for v in self.upstream.records], ['/target/responses'])
 
     def test_gpt_history_is_untouched_and_unconfigured_route_stays_501(self):
         self.assertEqual(self.request(model='gpt-original')[0], 200)

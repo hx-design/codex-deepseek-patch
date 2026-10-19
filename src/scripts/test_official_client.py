@@ -66,6 +66,8 @@ class Fixture(ToolStub):
                 patch.require(opcode == 1, 'Native Responses request must be JSON text')
                 body = json.loads(raw)
                 self.record(body, raw, 'websocket')
+                if self.reject_exhausted_gpt(body, ws=ws):
+                    continue
                 response, events = self.simple_events(body, warmup=body.get('generate') is False)
                 for index, event in enumerate(events):
                     ws.send(json.dumps({**event, 'sequence_number': index}))
@@ -84,6 +86,23 @@ class Fixture(ToolStub):
             'auth_is_route_fixture': self.headers.get('Authorization') == 'Bearer independent-route-fixture',
             'auth_is_anonymous': self.headers.get('Authorization') is None,
             'official_account_header': self.headers.get('ChatGPT-Account-ID') is not None})
+
+    def reject_exhausted_gpt(self, body, ws=None):
+        if body.get('model') != GPT or not getattr(self.server, 'official_exhausted', False):
+            return False
+        error = {'type':'usage_limit_reached', 'code':'usage_limit_reached',
+                 'message':'Synthetic ChatGPT usage limit reached', 'plan_type':'plus',
+                 'resets_at':int(time.time()) + 3600}
+        if ws is not None:
+            ws.send(json.dumps({'type':'error', 'status':429, 'error':error}))
+        else:
+            payload = json.dumps({'error':error}).encode()
+            self.send_response(429)
+            self.send_header('Content-Type','application/json')
+            self.send_header('Content-Length',str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        return True
 
     def simple_events(self, body, warmup=False, item=None):
         index = len(self.server.wire)
@@ -171,6 +190,8 @@ class Fixture(ToolStub):
         patch.require(not self.headers.get('Content-Encoding'), 'Native compression must be disabled in config')
         body = json.loads(raw)
         self.record(body, raw, 'http')
+        if self.reject_exhausted_gpt(body):
+            return
         compact = not body.get('tools')
         original_reader = self.rfile
         try:
@@ -439,6 +460,35 @@ def run(app, reportdir, edition):
                                   'Chat Completions custom apply_patch did not execute')
                     turn(GPT, 'return to GPT after Chat Completions tools')
                     report['checks']['native_chat_custom_tools_return_gpt'] = 'passed'
+                # A real native usage-limit error must not poison the same
+                # thread when its next turn selects an independent provider.
+                upstream.official_exhausted = True
+                result = rpc.request('turn/start', {'threadId':tid, 'model':GPT, 'effort':'high',
+                    'input':[{'type':'text','text':'Exercise the synthetic exhausted GPT quota.'}]})
+                deadline = time.monotonic() + 60
+                quota_turn = None
+                while time.monotonic() < deadline:
+                    event = rpc.pending.pop(0) if rpc.pending else rpc.receive_event(max(.1, deadline-time.monotonic()))
+                    if (event.get('method') == 'turn/completed'
+                            and event.get('params',{}).get('threadId') == tid
+                            and event['params']['turn']['id'] == result['turn']['id']):
+                        quota_turn = event['params']['turn']
+                        break
+                patch.require(quota_turn is not None and quota_turn['status'] == 'failed',
+                              'Synthetic exhausted GPT quota did not fail the native turn')
+                quota_error = (quota_turn.get('error') or {}).get('codexErrorInfo')
+                patch.require(quota_error == 'usageLimitExceeded',
+                              'Native client did not classify the quota error: ' + str(quota_error))
+                before = len(upstream.wire)
+                for model, _ in models:
+                    if model != GPT:
+                        turn(model, 'independent provider after exhausted GPT quota')
+                patch.require(not any(v['model'] == GPT for v in upstream.wire[before:]),
+                              'Independent turn contacted GPT after quota exhaustion')
+                report['checks']['same_thread_external_after_gpt_quota_exhausted'] = 'passed'
+                report['quota_error'] = quota_error
+                upstream.official_exhausted = False
+                turn(GPT, 'return after synthetic GPT quota reset')
                 thread = rpc.request('thread/read', {'threadId': tid, 'includeTurns': True})['thread']
                 patch.require(thread['id'] == tid and len(thread['turns']) >= len(turns), 'Native thread history was lost')
                 official = [v for v in upstream.wire if v['model'] == GPT]

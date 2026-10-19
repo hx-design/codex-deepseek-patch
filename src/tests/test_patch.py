@@ -205,18 +205,19 @@ class TransactionTests(unittest.TestCase):
 
 
 class MacQuitProcessTests(unittest.TestCase):
-    def test_only_orphan_electron_crash_reporter_is_ignored(self):
+    def test_only_known_orphan_helpers_are_ignored(self):
         from unittest import mock
         from pathlib import Path
         import patch as subject
         root=Path('/Applications/Codex.app')
         reporter=str(root)+'/Contents/Frameworks/Codex Framework.framework/Versions/1/Helpers/browser_crashpad_handler'
-        with mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value='1 '+reporter+'\n'):
+        keyboard=str(root)+'/Contents/Resources/native/bare-modifier-monitor'
+        with mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value='123 1 '+reporter+'\n124 1 '+keyboard+'\n'):
             subject.require_stopped(root)
-        for command in ('2 '+reporter, '1 '+str(root)+'/Contents/MacOS/Codex',
+        for command in ('2 '+reporter, '2 '+keyboard, '1 '+str(root)+'/Contents/MacOS/Codex',
                         '1 '+str(root)+'/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'):
-            with self.subTest(command=command), mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value=command+'\n'):
-                with self.assertRaises(subject.PatchError):
+            with self.subTest(command=command), mock.patch.object(subject.sys,'platform','darwin'), mock.patch.object(subject.subprocess,'check_output',return_value='123 '+command+'\n'):
+                with self.assertRaises(subject.AppRunningError):
                     subject.require_stopped(root)
 
 if __name__ == "__main__":

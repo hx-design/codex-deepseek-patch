@@ -43,6 +43,7 @@ SERVICE_RUNTIME_FILES += ("official_client.py", "official_client_config.py", "of
                           "official_client_migration.py", "official_client_update.py", "inference_adapter.py", "inference_transport.py",
                           "legacy_history.py", "reasoning_origin.py", "chat_completions_compat.py", "scripts/test_official_client.py")
 SERVICE_RUNTIME_FILES += ("official_client_shortcut.py", "update_progress.py", "update_progress_macos.js", "update_progress.ps1")
+SERVICE_RUNTIME_FILES += ("exit_watch.py",)
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (
@@ -57,6 +58,10 @@ EDITS = (
 
 class PatchError(RuntimeError):
     pass
+
+
+class AppRunningError(PatchError):
+    """The user reopened the app; preserve the prepared update for later."""
 
 
 def require(condition, message):
@@ -389,18 +394,26 @@ def exchange(a, b):
         raise OSError(code, os.strerror(code))
 
 
-def require_stopped(app, *, read_only_source=False):
+def active_app_processes(app, *, read_only_source=False):
     if sys.platform == "win32":
-        from windows_support import require_stopped as stopped
-        return stopped(app, read_only_source=read_only_source)
-    processes = subprocess.check_output(["/bin/ps", "-axo", "ppid=,comm="], text=True).splitlines()
+        from windows_support import _app_root, _powershell
+        root = str(_app_root(app)).rstrip("\\/").casefold() + "\\"
+        raw = _powershell("[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                         "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath) | ConvertTo-Json -Compress")
+        rows = json.loads(raw) if raw else []
+        if isinstance(rows, dict): rows = [rows]
+        shared = root + "resources\\codex-windows-sandbox-service.exe"
+        return [{'pid':row.get('ProcessId',0), 'ppid':row.get('ParentProcessId',0), 'exe':str(row.get('ExecutablePath') or '')}
+                for row in rows if str(row.get('ExecutablePath') or '').casefold().startswith(root)
+                and not (read_only_source and str(row.get('ExecutablePath') or '').casefold() == shared)]
+    processes = subprocess.check_output(["/bin/ps", "-axo", "pid=,ppid=,comm="], text=True).splitlines()
     roots = {str(app), str(app.resolve())}
     active = []
     for row in processes:
-        fields = row.strip().split(None, 1)
-        if len(fields) != 2:
+        fields = row.strip().split(None, 2)
+        if len(fields) != 3:
             continue
-        parent, executable = fields
+        pid, parent, executable = fields
         if not any(executable.startswith(root + "/Contents/") for root in roots):
             continue
         # Electron's orphan crash reporter can outlive a normal application quit.
@@ -408,10 +421,16 @@ def require_stopped(app, *, read_only_source=False):
         orphan_reporter = parent == "1" and any(
             executable.startswith(root + "/Contents/Frameworks/") for root in roots
         ) and executable.endswith("/Helpers/browser_crashpad_handler")
-        if not orphan_reporter:
-            active.append(executable)
-    require(not active,
-            "Quit the target app normally, then run this command from Terminal. No process was stopped.")
+        orphan_keyboard_monitor = parent == "1" and any(
+            executable == root + "/Contents/Resources/native/bare-modifier-monitor" for root in roots)
+        if not (orphan_reporter or orphan_keyboard_monitor):
+            active.append({'pid':int(pid), 'ppid':int(parent), 'exe':executable})
+    return active
+
+
+def require_stopped(app, *, read_only_source=False):
+    if active_app_processes(app, read_only_source=read_only_source):
+        raise AppRunningError("Quit the target app normally, then run this command from Terminal. No process was stopped.")
 
 
 def read_config(path):

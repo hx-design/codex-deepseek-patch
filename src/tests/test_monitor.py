@@ -91,6 +91,16 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.backend.installs, ["v1"])
         self.assertEqual([kind for kind, _ in self.notices], ["installed"])
 
+    def test_reopen_during_install_keeps_prepared_update_without_false_failure(self):
+        from patch import AppRunningError
+        self.backend.fail_install=AppRunningError('Reopened')
+        result=self.prepare()
+        self.assertEqual(result['phase'],'waiting_for_exit')
+        self.assertIn('pending',result)
+        self.assertEqual(self.notices,[])
+        self.backend.fail_install=None
+        self.assertEqual(self.poll()['phase'],'installed')
+
     def test_new_fingerprint_restarts_stability_window(self):
         self.poll()
         self.backend.current = "v2"
