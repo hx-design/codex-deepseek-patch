@@ -137,6 +137,31 @@ def _digest(thread):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def metadata_matches(before, after, *, resolved_defaults=None):
+    """Keep explicit choices exact; an unset choice may resolve on native resume.
+
+    Native thread/resume materializes model/effort defaults even without a turn.
+    Its API cannot clear those fields back to null. Do not mistake that normal
+    resolution for a workspace/name/recency change, or rewrite the saved source.
+    """
+    expected, actual = _metadata(before), _metadata(after)
+    for key in ('model', 'reasoningEffort'):
+        if expected.get(key) is not None:
+            continue
+        value = actual.get(key)
+        if value is not None:
+            if (not isinstance(value, str) or not value or
+                (key == 'reasoningEffort' and value not in ('none','minimal','low','medium','high','xhigh','max','ultra'))):
+                return False
+            if resolved_defaults is not None and value != resolved_defaults.get(key):
+                return False
+        if key in expected:
+            actual[key] = expected[key]
+        else:
+            actual.pop(key, None)
+    return _digest(expected) == _digest(actual)
+
+
 def inventory(rpc, providers):
     """Do not let a provider mutation change the pagination of the running list."""
     found = []
@@ -205,7 +230,8 @@ def _set_provider(rpc, row, target, archived_ids):
         thread = result["thread"]
         if thread["id"] != row["id"] or result.get("modelProvider", thread.get("modelProvider")) != target:
             raise ValueError("Native resume did not retain the chat ID and target provider")
-        if _digest(thread) != _digest(metadata):
+        defaults = {key:result.get(key, thread.get(key)) for key in ('model', 'reasoningEffort')}
+        if not metadata_matches(metadata, thread, resolved_defaults=defaults):
             raise ValueError("Unrelated native chat metadata changed during provider migration")
         rpc.request("thread/unsubscribe", {"threadId":row["id"]})
     finally:
