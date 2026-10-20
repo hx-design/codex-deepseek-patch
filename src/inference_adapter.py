@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 import urllib.request
 
 from inference_transport import (WebSocketError, accept_websocket, connect_websocket,
@@ -243,7 +243,7 @@ def network_proxy(url, profile):
     return proxies.get(scheme) or proxies.get('all')
 
 
-def _open(url, raw, headers, operation, profile, *, official=False):
+def _open(url, raw, headers, operation, profile, *, official=False, method='POST', reject_redirect=True):
     parsed = urlsplit(url)
     connection = create_http_connection(url, timeout=15 if official else 120, proxy_url=network_proxy(url, profile))
     operation.attach(connection)
@@ -258,13 +258,15 @@ def _open(url, raw, headers, operation, profile, *, official=False):
         # watcher still cancels this socket, including a silent upstream.
         connection.sock.settimeout(None)
     target = parsed.path or '/'
-    connection.request('POST', target, body=raw, headers=dict(headers))
+    if parsed.query:
+        target += '?' + parsed.query
+    connection.request(method, target, body=raw, headers=dict(headers))
     operation.socket = connection.sock
     if operation.cancelled.is_set():
         operation.cancel()
         raise OSError('Request cancelled')
     response = connection.getresponse()
-    if 300 <= response.status < 400:
+    if reject_redirect and response.status in (301, 302, 303, 307, 308):
         raise RelayError(502, 'upstream_redirect', 'Upstream redirects are disabled')
     return response
 
@@ -513,10 +515,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Connection', 'close')
-        self.end_headers()
         self.close_connection = True
-        self.wfile.write(raw)
-        self.wfile.flush()
+        try:
+            self.end_headers()
+            self.wfile.write(raw)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return  # The caller already cancelled; no response remains to send.
         if status >= 400 and self.command == 'POST':
             self.drain_rejected_body()
 
@@ -600,7 +605,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.server.active -= 1
                     self.server.last_activity = time.monotonic()
             else:
-                raise RelayError(404, 'unsupported_endpoint', 'Unsupported local endpoint')
+                self.forward_official(endpoint)
         except RelayError as exc:
             self.reply(exc.status, _error(exc.code, exc.message))
         except WebSocketError:
@@ -635,9 +640,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             endpoint = self.boundary()
             standalone_compaction = endpoint == '/backend-api/codex/responses/compact'
-            auxiliary = endpoint == '/backend-api/codex/alpha/search'
-            if endpoint != '/backend-api/codex/responses' and not auxiliary and not standalone_compaction:
-                raise RelayError(404, 'unsupported_endpoint', 'Unsupported local endpoint')
+            if endpoint != '/backend-api/codex/responses' and not standalone_compaction:
+                self.forward_official(endpoint)
+                return
             if self.headers.get('Content-Encoding', 'identity').lower() != 'identity':
                 raise RelayError(415, 'unsupported_encoding', 'Use an uncompressed JSON request')
             lengths = self.headers.get_all('Content-Length', [])
@@ -654,27 +659,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise RelayError(400, 'truncated_body', 'Incomplete request body')
             body = json.loads(raw)
-            if auxiliary:
-                # Native web.run is an authenticated official service, separate
-                # from model inference. Its payload/model must not be translated
-                # or sent to an external provider. Keep the exact bytes and route
-                # only this known endpoint to the configured official origin.
-                self.server.active += 1
-                started = True
-                self.watch_disconnect(operation, stop)
-                url = self.gpt_url().rsplit('/responses', 1)[0] + '/alpha/search'
-                forwarded = True
-                response = _open(url, raw, sanitize_headers(self.headers), operation, self.server.profile, official=True)
-                self.send_response(response.status)
-                for name, value in sanitize_headers(response.getheaders(), request=False):
-                    self.send_header(name, value)
-                self.send_header('Connection', 'close')
-                self.end_headers()
-                sent = self.close_connection = True
-                while chunk := response.read1(16384):
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-                return
             _check_body(body)
             _check_model(self.server.profile, body['model'])
             self.server.active += 1
@@ -713,7 +697,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body, _, changed = _resolve_origin(self.server, body)
                 if changed:
                     raw = _json(body)
-                url = self.gpt_url() + ('/compact' if standalone_compaction else '')
+                url = self.gpt_url('responses/compact' if standalone_compaction else 'responses')
                 headers = sanitize_headers(self.headers)
             forwarded = True
             response = _open(url, raw, headers, operation, self.server.profile, official=not route)
@@ -786,9 +770,89 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
         threading.Thread(target=disconnected, daemon=True).start()
 
-    def gpt_url(self):
+    def do_official(self):
+        try:
+            self.forward_official(self.boundary())
+        except RelayError as exc:
+            self.reply(exc.status, _error(exc.code, exc.message))
+        except (OSError, ValueError):
+            self.reply(502, _error('upstream_unavailable', 'The official service is unavailable'))
+
+    do_HEAD = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_official
+
+    def forward_official(self, endpoint):
+        """Opaque native HTTP service passthrough, fixed to the official origin.
+
+        Only Responses inference is interpreted by the model adapter. A new
+        native tool endpoint does not require a patch release or a new allowlist.
+        """
+        prefix = '/backend-api/codex/'
+        decoded = unquote(endpoint)
+        if (not endpoint.startswith(prefix) or '\\' in decoded or '#' in self.path
+                or any(part in ('.', '..', '') for part in decoded[len(prefix):].split('/'))
+                or unquote(decoded) != decoded):
+            raise RelayError(404, 'unsupported_endpoint', 'Unsupported local endpoint')
+        if self.headers.get('Upgrade'):
+            raise RelayError(501, 'unsupported_upgrade', 'This native protocol requires a compatibility update')
+        lengths = self.headers.get_all('Content-Length', [])
+        if self.headers.get('Transfer-Encoding') or len(lengths) > 1:
+            raise RelayError(400, 'invalid_length', 'A single Content-Length is required')
+        try:
+            length = int(lengths[0]) if lengths else 0
+        except ValueError:
+            raise RelayError(400, 'invalid_length', 'Invalid Content-Length') from None
+        if not 0 <= length < 2**63:
+            raise RelayError(413, 'request_too_large', 'Request exceeds the size limit')
+        handler = self
+        class Body:
+            remaining = length
+            def read(self, size):
+                if not self.remaining:
+                    return b''
+                chunk = handler.rfile.read(min(size, self.remaining))
+                if self.remaining and not chunk:
+                    raise OSError('Incomplete native request body')
+                self.remaining -= len(chunk)
+                handler.body_bytes_read = getattr(handler, 'body_bytes_read', 0) + len(chunk)
+                if not self.remaining:
+                    handler.watch_disconnect(operation, stop)
+                return chunk
+        raw = Body() if length else None
+        headers = sanitize_headers(self.headers)
+        if length:
+            headers.append(('Content-Length', str(length)))
+        operation, stop = Operation(), threading.Event()
+        self.server.active += 1
+        sent = False
+        try:
+            if not length:
+                self.watch_disconnect(operation, stop)
+            response = _open(self.gpt_url(endpoint[len(prefix):]), raw, headers,
+                             operation, self.server.profile, official=True, method=self.command,
+                             reject_redirect=False)
+            self.send_response(response.status)
+            for name, value in sanitize_headers(response.getheaders(), request=False):
+                self.send_header(name, value)
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            sent = self.close_connection = True
+            while chunk := response.read1(16384):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except OSError:
+            if not sent:
+                raise RelayError(502, 'upstream_unavailable', 'The official service is unavailable') from None
+        finally:
+            stop.set()
+            operation.cancel()
+            self.server.active -= 1
+            self.server.last_activity = time.monotonic()
+
+    def gpt_url(self, suffix='responses'):
         key = 'chatgpt_base_url' if self.headers.get('ChatGPT-Account-ID') else 'api_base_url'
-        return _endpoint(self.server.profile['gpt'][key])
+        result = _endpoint(self.server.profile['gpt'][key], suffix)
+        query = urlsplit(self.path).query
+        return result + ('?' + query if query else '')
 
 
 def _check_body(body):
@@ -819,6 +883,22 @@ class WebSocketSession:
         self.mode = None
         self.history = None
         self.pending_input = None
+        self.client.on_control = self.client_control
+
+    def client_control(self, opcode, payload):
+        upstream = self.upstream
+        if upstream and self.mode != 'route':
+            upstream.send_control(opcode, payload)
+            return True
+        return False
+
+    def upstream_control(self, upstream, opcode, payload):
+        # Keep transport heartbeats end to end. The native client's separate
+        # response-event timeout remains its own policy.
+        if self.upstream is upstream and self.mode != 'route':
+            self.client.send_control(opcode, payload)
+            return True
+        return False
 
     def put(self, event):
         while not self.closed.is_set():
@@ -838,8 +918,10 @@ class WebSocketSession:
         except Exception:
             self.put(('client', None))
 
-    def fail(self, code, message):
-        self.client.send(_json(_error(code, message)))
+    def fail(self, code, message, status=502):
+        # Native Responses recognizes generic errors only with an HTTP status.
+        # Omitting it turns an immediate failure into a full idle-timeout wait.
+        self.client.send(_json({**_error(code, message), 'status': status}))
 
     def run(self):
         if self.upstream:
@@ -873,9 +955,9 @@ class WebSocketSession:
                                     self.history = {'model': self.pending_input['model'], 'id': response.get('id'),
                                                     'input': self.pending_input.get('input', []), 'output': response.get('output', [])}
                 elif event[0] == 'failure':
-                    _, request_id, code, message = event
+                    _, request_id, code, message, *status = event
                     if request_id == self.request_id or request_id == 'gpt' and self.active and self.mode == 'gpt':
-                        self.fail(code, message)
+                        self.fail(code, message, status[0] if status else 502)
                         self.active = False
                 elif event[0] == 'finished' and event[1] == self.request_id and self.active:
                     self.fail('truncated_stream', 'Upstream stream ended before a terminal response')
@@ -954,7 +1036,7 @@ class WebSocketSession:
                 self.history = None
                 threading.Thread(target=self.gpt_send, args=(payload,), daemon=True).start()
         except RelayError as exc:
-            self.fail(exc.code, exc.message)
+            self.fail(exc.code, exc.message, exc.status)
         except (ValueError, TypeError, KeyError):
             self.fail('invalid_request', 'Invalid response.create event')
 
@@ -987,7 +1069,7 @@ class WebSocketSession:
                     return
             self.put(('finished', request_id))
         except RelayError as exc:
-            self.put(('failure', request_id, exc.code, exc.message))
+            self.put(('failure', request_id, exc.code, exc.message, exc.status))
         except Exception:
             if not operation.cancelled.is_set():
                 self.put(('failure', request_id, 'upstream_unavailable', 'The model service is unavailable'))
@@ -1008,11 +1090,17 @@ class WebSocketSession:
                     self.upstream = upstream
                     # Handshake sticky headers are not mirrored after local 101.
                     threading.Thread(target=self.gpt_reader, args=(upstream,), daemon=True).start()
-                self.upstream.send(payload)
+                upstream = self.upstream
+            upstream.send(payload)
         except Exception:
             self.put(('failure', 'gpt', 'upstream_unavailable', 'The official model connection is unavailable'))
 
     def gpt_reader(self, upstream):
+        upstream.on_control = lambda opcode, payload: self.upstream_control(upstream, opcode, payload)
+        def closed(code, reason):
+            if self.upstream is upstream and self.mode == 'gpt':
+                self.client.close(code, reason)
+        upstream.on_close = closed
         try:
             while not self.closed.is_set():
                 message = upstream.recv()

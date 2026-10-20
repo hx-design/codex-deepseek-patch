@@ -290,6 +290,7 @@ class Monitor:
                     settings['force_sync'] = True
                 if isinstance(settings, dict) and request.get('code_now'):
                     settings['force_code'] = True
+                    settings['skip_model_sync'] = not request['sync_now']
             self.state["last_checked_at"] = timestamp()
             fingerprint = "snapshot-unavailable"
             try:

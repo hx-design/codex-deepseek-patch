@@ -15,10 +15,12 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import zlib
 from unittest.mock import patch
 
 from inference_transport import (WebSocket, WebSocketError, accept_websocket,
-                                 connect_websocket, create_http_connection, sanitize_headers)
+                                 connect_websocket, create_http_connection, sanitize_headers,
+                                 _accept_deflate, _deflate_configuration, _deflate_parameters)
 
 
 def frame(payload=b'', opcode=1, *, final=True, masked=True, rsv=0):
@@ -65,6 +67,117 @@ class FramesTests(unittest.TestCase):
         ws, sock = self.reader(wire)
         self.assertEqual(ws.recv(), (1, '你'.encode()))
         self.assertEqual(bytes(sock.output), frame(b'ping', opcode=10, masked=False))
+        ws.close()
+
+    def test_deflate_handles_rfc_vector_fragmentation_context_and_uncompressed_messages(self):
+        # RFC 7692 section 7.2.3.1, independent of this transport's compressor.
+        params = _deflate_configuration({}, is_client=False)
+        wire = (frame(bytes.fromhex('f248'), final=False, rsv=64)
+                + frame(b'ping', opcode=9)
+                + frame(bytes.fromhex('cdc9c90700'), opcode=0))
+        ws, sock = self.reader(wire, deflate=params)
+        self.assertEqual(ws.recv(), (1, b'Hello'))
+        self.assertEqual(bytes(sock.output), frame(b'ping', opcode=10, masked=False))
+        ws.close()
+        for reset in (True, False):
+            for bits in (9, 15):
+                with self.subTest(reset=reset, bits=bits):
+                    wire, compressor = b'', None
+                    values = [b'', b'\x00\xff' * 500, b'\x00\xff' * 500, b'plain', b'end']
+                    for i, value in enumerate(values):
+                        if i == 3:
+                            wire += frame(value, opcode=2)
+                            continue
+                        if compressor is None or reset:
+                            compressor = zlib.compressobj(wbits=-bits)
+                        payload = compressor.compress(value) + compressor.flush(zlib.Z_SYNC_FLUSH)
+                        wire += frame(payload[:-4], opcode=2, rsv=64)
+                    config = {'incoming_bits': bits, 'outgoing_bits': bits,
+                              'incoming_reset': reset, 'outgoing_reset': reset}
+                    ws, _ = self.reader(wire, deflate=config)
+                    self.assertEqual([ws.recv() for _ in values], [(2, v) for v in values])
+                    ws.close()
+
+    def test_deflate_bounds_expanded_data_and_rejects_invalid_frames(self):
+        params = _deflate_configuration({}, is_client=False)
+        compressor = zlib.compressobj(wbits=-15)
+        bomb = (compressor.compress(b'x' * 100_000) + compressor.flush(zlib.Z_SYNC_FLUSH))[:-4]
+        for wire in (frame(bomb, rsv=64),
+                     frame(bomb[:3], rsv=64, final=False) + frame(bomb[3:], opcode=0),
+                     frame(b'bad', rsv=64, opcode=9),
+                     frame(b'\xff\xff', rsv=64),
+                     frame(b'x', rsv=64, opcode=0)):
+            with self.subTest(wire=wire[:10]):
+                ws, sock = self.reader(wire, deflate=params, max_message=256)
+                with self.assertRaises(WebSocketError):
+                    ws.recv()
+                self.assertTrue(sock.closed)
+
+    def test_deflate_send_preserves_payload_and_serializes_context(self):
+        for reset in (False, True):
+            params = _deflate_configuration(
+                {'server_no_context_takeover': True, 'client_no_context_takeover': True} if reset else {},
+                is_client=False)
+            ws, sock = self.reader(b'', deflate=params)
+            values = [b'', b'Hello' * 1000, b'Hello' * 1000, os.urandom(1000)]
+            for value in values:
+                ws.send(value, opcode=2)
+            wire = bytes(sock.output)
+            self.assertTrue(wire[0] & 64)
+            self.assertLess(len(wire), sum(map(len, values)) // 2)
+            peer, _ = self.reader(wire, deflate=params, is_client=True)
+            self.assertEqual([peer.recv() for _ in values], [(2, v) for v in values])
+            ws.close()
+            peer.close()
+
+    def test_large_upload_fragments_allow_heartbeat_before_message_finishes(self):
+        ws, sock = self.reader(b'')
+        written = sock.sendall
+        observed = []
+        def sendall(payload):
+            written(payload)
+            observed.append(payload[0])
+        sock.sendall = sendall
+        original = ws._send_frame
+        def send_frame(payload, opcode, **kwargs):
+            original(payload, opcode, **kwargs)
+            if len(observed) == 1:
+                # Same path as the reader's heartbeat callback during upload.
+                thread = threading.Thread(target=lambda: ws.send_control(10, b'keepalive'))
+                thread.start()
+                thread.join(1)
+                self.assertFalse(thread.is_alive(), 'Large upload blocked heartbeat')
+        ws._send_frame = send_frame
+        value = os.urandom(180_000)
+        ws.send(value, opcode=2)
+        self.assertEqual(observed, [2, 138, 0, 128])
+        peer, _ = self.reader(bytes(sock.output), is_client=True)
+        controls = []
+        peer.on_control = lambda kind, data: controls.append((kind, data))
+        self.assertEqual(peer.recv(), (2, value))
+        self.assertEqual(controls, [(10, b'keepalive')])
+        ws.close()
+        peer.close()
+
+    def test_relay_forwards_control_frames_once_without_consuming_or_inventing_them(self):
+        wire = (frame(b'a', final=False) + frame(b'ping', opcode=9)
+                + frame(b'pong', opcode=10) + frame(b'b', opcode=0))
+        ws, sock = self.reader(wire)
+        seen = []
+        def forward(opcode, payload):
+            seen.append((opcode, payload))
+            return True
+        ws.on_control = forward
+        self.assertEqual(ws.recv(), (1, b'ab'))
+        self.assertEqual(seen, [(9, b'ping'), (10, b'pong')])
+        self.assertEqual(bytes(sock.output), b'')
+        for opcode, payload in seen:
+            ws.send_control(opcode, payload)
+        self.assertEqual(bytes(sock.output), frame(b'ping', opcode=9, masked=False)
+                         + frame(b'pong', opcode=10, masked=False))
+        for opcode, payload in ((1, b''), (9, b'x' * 126)):
+            with self.assertRaises(ValueError):
+                ws.send_control(opcode, payload)
         ws.close()
 
     def test_binary_is_byte_exact_in_both_directions_and_large_lengths(self):
@@ -210,9 +323,11 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
             key = self.headers['Sec-WebSocket-Key']
             self.send_header('Sec-WebSocket-Accept', base64.b64encode(hashlib.sha1(
                 (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode())
-            self.send_header('Sec-WebSocket-Extensions', 'permessage-deflate')
+            self.send_header('Sec-WebSocket-Extensions', 'unknown-compression')
             self.end_headers()
             return
+        if self.path == '/no-extension':
+            del self.headers['Sec-WebSocket-Extensions']
         try:
             ws = accept_websocket(self)
         except WebSocketError:
@@ -308,8 +423,41 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(sent['Authorization'], 'fake-unit-test-token')
         self.assertTrue(sent['Host'].startswith('127.0.0.1:'))
         self.assertNotIn('Proxy-Authorization', sent)
-        self.assertNotIn('Sec-WebSocket-Extensions', sent)
+        self.assertEqual(sent['Sec-WebSocket-Extensions'], 'permessage-deflate; client_max_window_bits')
+        self.assertIsNotNone(ws.deflate)
         self.assertIn(('Upgrade', 'websocket'), headers)
+
+    def test_deflate_negotiation_large_history_and_server_decline(self):
+        payload = b'{"history":"' + b'long history ' * 200_000 + b'"}'
+        ws, _ = connect_websocket(self.url + '/large', timeout=5)
+        self.assertEqual(ws.recv(), (1, b'ready'))
+        self.assertIsNotNone(ws.deflate)
+        ws.send(payload)
+        self.assertEqual(ws.recv(), (1, payload))
+        ws.close()
+        ws, _ = connect_websocket(self.url + '/no-extension', timeout=2)
+        self.assertIsNone(ws.deflate)
+        self.assertEqual(ws.recv(), (1, b'ready'))
+        ws.send('uncompressed')
+        self.assertEqual(ws.recv(), (1, b'uncompressed'))
+        ws.close()
+
+    def test_deflate_offer_and_response_validation(self):
+        for value in ('unknown', 'permessage-deflate; nope',
+                      'permessage-deflate; client_max_window_bits=8',
+                      'permessage-deflate; server_no_context_takeover=1',
+                      'permessage-deflate; server_max_window_bits="12',
+                      'permessage-deflate; client_max_window_bits=12; client_max_window_bits=13',
+                      'permessage-deflate, permessage-deflate'):
+            with self.subTest(value=value), self.assertRaises(WebSocketError):
+                _deflate_parameters(value)
+        self.assertEqual(_accept_deflate('permessage-deflate; unknown'), (None, None))
+        header, params = _accept_deflate(
+            'unrecognized, permessage-deflate; server_max_window_bits=10; client_max_window_bits="12"')
+        self.assertIn('server_max_window_bits=10', header)
+        self.assertEqual(params, {'incoming_bits': 12, 'outgoing_bits': 10,
+                                 'incoming_reset': True, 'outgoing_reset': True})
+        self.assertNotIn('client_max_window_bits', _accept_deflate('permessage-deflate')[0])
 
     def test_websocket_owns_upgraded_reader_without_http_response_double_close(self):
         unraisable = []

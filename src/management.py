@@ -316,7 +316,7 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         require(payload.get('command') in ('start','launch'),'未知更新操作。')
         return update_action(directory,value['id'],payload['command'],payload.get('phase'))
     if action in ('check_updates','retry_update','sync_models'):
-        monitor.request_update(directory,sync_now=True,code_now=action!='sync_models',retry=action=='retry_update')
+        monitor.request_update(directory,sync_now=action!='check_updates',code_now=action!='sync_models',retry=action=='retry_update')
         monitor.wake_monitor(directory)
         return {'message':'模型同步已排队。' if action=='sync_models' else '检查已排队；可继续使用 Codex。'}
     if action in ('cleanup_preview','cleanup'):
@@ -926,7 +926,7 @@ def hub_progress(directory):
         return {}
     if not isinstance(value.get('id'),str) or not re.fullmatch(r'[a-f0-9]{32}',value['id']):return {}
     return {k:value[k] for k in ('format','id','edition','version','phase','title','detail',
-            'completed','total','can_start','can_launch') if k in value}
+            'completed','total','can_start','can_launch','phase_started_at') if k in value}
 
 
 def hub_field(key, label, value='', kind='text', *, choices=None, hint=None):

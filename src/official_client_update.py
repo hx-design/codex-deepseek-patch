@@ -111,10 +111,14 @@ class NativeMonitorBackend:
             from windows_support import is_store_app
             self.store = is_store_app(self.app)
 
-    def snapshot(self):
+    def refresh_source(self):
+        """Locate a Store update before discovery; signature/hash checks follow."""
         if self.store:
             from windows_support import discover_app
             self.app = discover_app()
+
+    def snapshot(self):
+        self.refresh_source()
         verify_official(self.app)
         from backend import snapshot_app
         return snapshot_app(self.app)

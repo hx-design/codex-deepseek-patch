@@ -29,6 +29,21 @@ class UpdateTests(unittest.TestCase):
                 self.assertEqual([call.args[1] for call in worker.call_args_list],['identity']+(['sync-models'] if force_model else []))
                 self.assertFalse(obj.settings['auto_update']);self.assertFalse(obj.settings['model_sync'])
 
+    def test_explicit_code_check_defers_slow_model_discovery_for_this_check_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);obj=object.__new__(u.UpdateBackend)
+            obj.directory=root;obj.edition='ds';obj.prepared=False;obj.base=Mock(baseline=None)
+            obj.cache={};obj.cache_path=root/'updates.json';obj.package=p.ROOT
+            obj.progress=None;obj.warnings=[];obj.model_snapshot=None
+            obj.settings={'auto_update':False,'model_sync':True,'force_code':True,'skip_model_sync':True}
+            with mock.object(u,'public_get',side_effect=OSError('offline fixture')), \
+                 mock.object(u,'worker',return_value={'edition':'ds','runtime_digest':'fixture','architecture':'official-client-v1'}) as worker, \
+                 mock('official_client_update.read_manifest',return_value={}):
+                obj.prepare()
+            self.assertEqual([call.args[1] for call in worker.call_args_list],['identity'])
+            self.assertTrue(obj.settings['model_sync'])
+            self.assertNotIn('skip_model_sync',obj.settings)
+
     def test_reopen_status_crosses_real_child_process_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -335,6 +350,24 @@ class ArchiveAndReleaseTests(unittest.TestCase):
 
 
 class PairedCandidateTests(unittest.TestCase):
+    def test_release_rejects_missing_or_skipped_native_services_and_regressions(self):
+        from scripts import release_manifest as release
+        for host,channel in release.VARIANTS:
+            required=release.REQUIRED_NATIVE | ({'local_flattened_tools','native_chat_completions_lazy_tools',
+                                                'native_chat_custom_tools_return_gpt'} if channel=='proxy' else set())
+            coverage={'format':1,'kind':'native-client-with-synthetic-services','platform':host,
+                      'native':{name:'passed' for name in required},
+                      'regressions':{name:'passed' for name in release.REQUIRED_REGRESSIONS | release.PLATFORM_REGRESSIONS[host]}}
+            release.validate_coverage(coverage,channel,host)
+            with self.assertRaises(ValueError):
+                release.validate_coverage(coverage,channel,'windows' if host=='macos' else 'macos')
+            for section in ('native','regressions'):
+                for name in list(coverage[section]):
+                    for value in ('skipped','failed',None):
+                        changed=copy.deepcopy(coverage)
+                        changed[section][name]=value
+                        with self.assertRaises(ValueError):release.validate_coverage(changed,channel,host)
+
     def test_both_editions_share_one_core_without_changing_checkout_or_feed(self):
         import subprocess
         from scripts import release_manifest as release

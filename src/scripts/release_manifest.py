@@ -17,6 +17,50 @@ SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 CHANNELS = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}
 VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHANNELS}
+REQUIRED_NATIVE = frozenset((
+    'native_catalog_reasoning', 'existing_chat_native_identity_migration',
+    'same_thread_model_switching', 'native_auto_manual_compaction_windows',
+    'native_lazy_160_mcp_tools', 'native_custom_tool_execution',
+    'native_prediction_provider_and_fork', 'gpt_ws_registered_http_auth_isolation',
+    'old_encrypted_history_without_gpt_quota', 'native_tools_after_old_history_recovery',
+    'native_image_generation', 'native_image_edit', 'native_image_auth_and_saved_files',
+    'native_image_websocket_roundtrip',
+    'native_websocket_compression',
+    'native_adapter_errors_finish_without_idle_wait',
+    'native_close_retries_without_idle_wait',
+))
+REQUIRED_REGRESSIONS = frozenset((
+    'test_native_image_generate_and_edit_keep_official_auth_and_bytes',
+    'test_new_native_http_services_are_opaque_and_stay_on_official_origin',
+    'test_native_heartbeats_reach_client_during_silent_reasoning',
+    'test_relay_forwards_control_frames_once_without_consuming_or_inventing_them',
+    'test_deflate_negotiation_large_history_and_server_decline',
+    'test_deflate_handles_rfc_vector_fragmentation_context_and_uncompressed_messages',
+    'test_deflate_bounds_expanded_data_and_rejects_invalid_frames',
+    'test_large_upload_fragments_allow_heartbeat_before_message_finishes',
+    'test_official_close_and_external_error_status_reach_native_client_promptly',
+    'test_native_streamed_body_still_cancels_when_client_disconnects',
+    'test_recheck_keeps_same_release_build_for_close_and_launch',
+    'test_launch_failure_releases_claim_and_allows_retry',
+    'test_native_widgets_complete_private_snapshot_and_close_headlessly',
+    'test_native_update_card_badge_and_completion_share_the_settings_host',
+    'test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui',
+))
+PLATFORM_REGRESSIONS = {
+    'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler'},
+    'windows': {'test_windows_production_host_survives_hide_reopen_and_unreadable_wake'},
+}
+
+
+def validate_coverage(coverage, edition, host):
+    required = REQUIRED_NATIVE | ({'local_flattened_tools', 'native_chat_completions_lazy_tools',
+                                  'native_chat_custom_tools_return_gpt'} if edition == 'proxy' else set())
+    if (host not in PLATFORM_REGRESSIONS or coverage.get('platform') != host
+            or coverage.get('format') != 1 or coverage.get('kind') != 'native-client-with-synthetic-services'
+            or any(coverage.get('native', {}).get(name) != 'passed' for name in required)
+            or any(coverage.get('regressions', {}).get(name) != 'passed'
+                   for name in REQUIRED_REGRESSIONS | PLATFORM_REGRESSIONS[host])):
+        raise ValueError('Required release coverage is missing, skipped, or failed')
 
 
 def git(*args, **kwargs):
@@ -216,9 +260,9 @@ def verify_candidate(path, channel, app, output):
         options = {'creationflags': 0x08000000} if os.name == 'nt' else {}
         logs = {}
         for name, arguments in (
-            ('unit', ['-m', 'unittest', 'discover', '-s', 'tests', '-q']),
+            ('unit', ['-m', 'unittest', 'discover', '-s', 'tests', '-v']),
             ('native', ['scripts/test_official_client.py', '--app', str(Path(app).resolve()),
-                        '--edition', channel, '--reportdir', str(work / 'native-report')]),
+                        '--edition', channel, '--services', '--reportdir', str(work / 'native-report')]),
         ):
             completed = subprocess.run([sys.executable, *arguments], cwd=work, env=env,
                 capture_output=True, timeout=600, **options)
@@ -227,6 +271,17 @@ def verify_candidate(path, channel, app, output):
             if completed.returncode:
                 raise ValueError(name + ' validation failed; see the private validation log')
             logs[name] = hashlib.sha256(data).hexdigest()
+        native = json.loads((work / 'native-report' / ('official-client-' + channel + '-result.json')).read_bytes())
+        unit_log = (output / (host + '-' + channel + '-unit.log')).read_text(encoding='utf-8', errors='replace')
+        passed = set(re.findall(r'^(test_\w+) \([^\n]+\) \.\.\. ok$', unit_log, re.MULTILINE))
+        coverage = {'format': 1, 'kind': 'native-client-with-synthetic-services', 'platform': host,
+                    'native': native.get('checks', {}),
+                    'regressions': {name: 'passed' for name in
+                                    (REQUIRED_REGRESSIONS | PLATFORM_REGRESSIONS[host]) & passed}}
+        validate_coverage(coverage, channel, host)
+        data = _json(coverage)
+        (output / (host + '-' + channel + '-coverage.json')).write_bytes(data)
+        logs['coverage'] = hashlib.sha256(data).hexdigest()
         receipt = {'format': 1, 'candidate_id': value['id'], 'platform': host, 'edition': channel,
             'commit': item['release']['commit'], 'core_sha256': item['release']['core_sha256'],
             'status': 'passed', 'checks': {'unit': 'passed', 'native': 'passed'}, 'logs': logs}
@@ -254,10 +309,12 @@ def require_receipts(candidate, directory):
             raise ValueError('Validation belongs to another candidate or is incomplete: ' + str(path.name))
         if host == 'windows' and receipt.get('execution') != {'console': 0, 'admin': False}:
             raise ValueError('Windows validation did not use the ordinary hidden execution context')
-        for name in ('unit', 'native'):
-            log = Path(directory) / (host + '-' + channel + '-' + name + '.log')
+        for name in ('unit', 'native', 'coverage'):
+            log = Path(directory) / (host + '-' + channel + '-' + name + ('.json' if name == 'coverage' else '.log'))
             if not log.is_file() or hashlib.sha256(log.read_bytes()).hexdigest() != receipt.get('logs', {}).get(name):
                 raise ValueError('Validation evidence is missing or changed')
+            if name == 'coverage':
+                validate_coverage(json.loads(log.read_bytes()), channel, host)
         receipts.append(receipt)
     return receipts
 

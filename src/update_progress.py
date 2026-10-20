@@ -103,7 +103,8 @@ class Progress:
                 'key': key, 'root': str(self.root)})
             value = {'format': 1, 'id': identity, 'edition': edition, 'version': version,
                 'phase': 'available', 'title': TEXT['available'][0], 'detail': TEXT['available'][1],
-                'completed': None, 'total': None, 'can_start': True, 'can_launch': False}
+                'completed': None, 'total': None, 'can_start': True, 'can_launch': False,
+                'phase_started_at': time.time()}
             atomic_json(self.directory / 'progress.json', value)
             return identity
 
@@ -124,6 +125,10 @@ class Progress:
             if not value:
                 return
             title, detail = TEXT[phase]
+            if value.get('phase') != phase or not value.get('phase_started_at'):
+                value['phase_started_at'] = time.time()
+            if self.requested() and phase in ('checking', 'downloading', 'building', 'verifying'):
+                detail += ' 检查通过后会自动请求退出 Codex，无需再次点击。'
             value.update(phase=phase, title=title, detail=detail, completed=completed, total=total,
                 can_start=phase in START_PHASES and not self.requested(), can_launch=phase == 'completed' and load_json(self.directory/'progress.launch.json',{}).get('id')!=value['id'])
             atomic_json(self.directory / 'progress.json', value)
@@ -246,25 +251,43 @@ def from_manifest(manifest):
         return None
     progress = Progress(directory)
     value = progress.read()
-    if value.get('id') != identity or value.get('edition') != manifest.get('edition'):
+    if value.get('edition') != manifest.get('edition'):
+        return None
+    if value.get('id') != identity and not _same_release(progress, manifest):
         return None
     return progress
 
 
+def _same_release(progress, manifest):
+    update = manifest.get('update', {})
+    value = progress.read()
+    meta = load_json(progress.directory / 'progress.context.json', {})
+    return (bool(update.get('runtime_digest'))
+            and meta.get('key', '').startswith(update['runtime_digest'] + ':')
+            and update.get('release', {}).get('version') == value.get('version'))
+
+
 def _build(progress):
     meta = load_json(progress.directory / 'progress.context.json', {})
-    candidate = meta.get('build')
-    if not candidate:
-        state = load_json(progress.directory / 'state.json', {})
-        candidate = state.get('pending', {}).get('build', {}).get('directory')
-    if not candidate:
-        return None
-    directory = Path(candidate).resolve()
-    manifest = load_json(directory / 'manifest.json', {})
-    update = manifest.get('update', {})
-    if update.get('progress_id') != progress.read().get('id') or manifest.get('edition') != progress.read().get('edition'):
-        return None
-    return directory, manifest
+    value = progress.read()
+    state = load_json(progress.directory / 'state.json', {})
+    candidates = [meta.get('build'), state.get('pending', {}).get('build', {}).get('directory')]
+    if value.get('phase') == 'completed':
+        candidates.append(state.get('installed', {}).get('build', {}).get('directory'))
+    for candidate in candidates:
+        if not candidate:
+            continue
+        directory = Path(candidate).resolve()
+        manifest = load_json(directory / 'manifest.json', {})
+        update = manifest.get('update', {})
+        if manifest.get('edition') != value.get('edition'):
+            continue
+        # An explicit recheck can create a new UI request ID for an already
+        # prepared/installed release. Bind to that exact runtime and version,
+        # rather than losing the build when the pending state is retired.
+        if update.get('progress_id') == value.get('id') or _same_release(progress, manifest):
+            return directory, manifest
+    return None
 
 
 @optional_view
@@ -370,7 +393,7 @@ def action(directory, identity, command, phase=None):
             if value['phase'] not in START_PHASES or not value.get('can_start'):
                 raise ValueError('This update cannot be started now')
             atomic_json(progress.directory / 'progress.request.json', {'format': 1, 'id': identity, 'action': 'start'})
-            value['can_start'] = False
+            value.update(can_start=False, detail='已收到更新请求。检查通过后会自动退出 Codex 并安装补丁。')
             atomic_json(progress.directory / 'progress.json', value)
         elif command=='launch':
             claim=load_json(progress.directory/'progress.launch.json',{})
@@ -389,10 +412,21 @@ def action(directory, identity, command, phase=None):
         from monitor import service_command
         _spawn(service_command(progress.directory, _python(settings)), progress.directory)
     else:
-        record = _build(progress)
-        if not record:
-            raise ValueError('The installed update record is unavailable')
-        launch_official(*record)
+        try:
+            record = _build(progress)
+            if not record:
+                raise ValueError('The installed update record is unavailable')
+            launch_official(*record)
+        except Exception:
+            # A failed launch must not permanently consume the user's button.
+            with control_lock(progress.directory):
+                value = progress.read()
+                claim = load_json(progress.directory / 'progress.launch.json', {})
+                if claim.get('id') == identity and value.get('id') == identity:
+                    (progress.directory / 'progress.launch.json').unlink(missing_ok=True)
+                    value.update(can_launch=True, detail='启动未完成，请再次点击“启动 Codex”。补丁已安装。')
+                    atomic_json(progress.directory / 'progress.json', value)
+            raise
     return {'action': command}
 
 

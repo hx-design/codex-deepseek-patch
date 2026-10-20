@@ -446,6 +446,13 @@ class WhaleReliabilityTests(unittest.TestCase):
             try:
                 wait_for(lambda:read('renderer.json').get('visible'))
                 renderer=read('renderer.json')['pid']
+                # Readers/antivirus may temporarily deny replacement on Windows.
+                # A status write must not terminate the WPF event loop.
+                before=read('renderer.json')['time']
+                with (ui_dir/'renderer.json').open('rb'):
+                    time.sleep(2.5)
+                wait_for(lambda:read('renderer.json').get('time',0)>before)
+                self.assertEqual(read('renderer.json')['pid'],renderer)
                 # A partially written IPC record must not kill a resident GUI.
                 (ui_dir/'raise.json').write_text('{',encoding='utf-8')
                 time.sleep(.6)
