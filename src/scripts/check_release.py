@@ -6,6 +6,7 @@ import subprocess
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 ALLOWED = {
+    'brand.svg',
     'management.py', 'settings_macos.js', 'settings_windows.ps1', 'tests/test_management.py',
     'local_history.py', 'tests/test_local_history.py',
     'exit_watch.py', 'tests/test_exit_watch.py',
@@ -32,7 +33,7 @@ ALLOWED = {
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]
 if SOURCE != ROOT:
-    ALLOWED = {("src/" + name if name.startswith(("scripts/", "tests/")) or "/" not in name and (Path(name).suffix in (".py", ".js", ".ps1") or name == "edition.json") else name) for name in ALLOWED} | {"patch.py", "monitor.py"}
+    ALLOWED = {("src/" + name if name.startswith(("scripts/", "tests/")) or "/" not in name and (Path(name).suffix in (".py", ".js", ".ps1", ".svg") or name == "edition.json") else name) for name in ALLOWED} | {"patch.py", "monitor.py"}
 if (set(files) | {"update.json"}) != ALLOWED:
     raise SystemExit("Release file allowlist mismatch: " + repr(set(files) ^ ALLOWED))
 patterns = [re.compile("/" + "Users" + r"/[^\s/]+/"), re.compile(r"gh[pousr]_[A-Za-z0-9]{25,}"),

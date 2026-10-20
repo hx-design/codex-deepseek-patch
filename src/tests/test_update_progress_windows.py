@@ -26,7 +26,7 @@ class WindowsProgressContractTests(unittest.TestCase):
 
     def test_windows_powershell_can_read_chinese_and_native_dependencies_only(self):
         self.assertTrue(SCRIPT.read_bytes().startswith(b'\xef\xbb\xbf'))
-        self.assertIn("$form.Text = 'Codex 更新'",self.source)
+        self.assertIn("$form.Text = 'Codex 模型补丁更新'",self.source)
         self.assertEqual(re.findall(r'Add-Type -AssemblyName ([\w.]+)',self.source),
                          ['System.Windows.Forms','System.Drawing'])
         self.assertIn("ApartmentState -ne 'STA'",self.source)
@@ -139,7 +139,7 @@ class WindowsProgressNativeTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,diagnostic(result.stdout) + diagnostic(result.stderr))
         snapshot = json.loads(result.stdout.decode('utf-8').strip())
         self.assertFalse(snapshot['form_visible'])
-        self.assertEqual(snapshot['form_title'],'Codex 更新')
+        self.assertEqual(snapshot['form_title'],'Codex 模型补丁更新')
         self.assertEqual(snapshot['title'],'原生更新界面')
         self.assertEqual(self.state_path.read_bytes(),self.before)
         return snapshot

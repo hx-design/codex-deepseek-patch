@@ -14,21 +14,21 @@ import time
 import uuid
 
 from monitor import atomic_json, load_json, state_lock
-from windows_support import background_options
+from windows_support import background_options, native_ui_options
 
 ROOT = Path(__file__).resolve().parent
 TEXT = {
-    'available': ('发现新版本', '可以继续使用 Codex；点“开始更新”后，将在检查完成后关闭 Codex 并安装。'),
-    'checking': ('正在检查更新', '新版本已下载，正在检查来源和兼容性。可以继续使用 Codex。'),
-    'downloading': ('正在下载更新', '正在下载经过校验的更新文件。可以继续使用 Codex。'),
-    'building': ('正在准备更新', '正在准备模型目录和本地适配服务。可以继续使用 Codex。'),
-    'verifying': ('正在验证更新', '正在进行本地兼容性测试；检查通过后再安装。'),
-    'waiting_for_exit': ('更新已准备好', '可以继续使用 Codex；点“开始更新”将正常关闭 Codex，随后安装。'),
+    'available': ('发现补丁新版本', '此次更新模型补丁。可以继续使用 Codex；点“开始更新”后，在检查完成后关闭 Codex 并安装补丁。'),
+    'checking': ('正在检查补丁', '补丁已下载，正在检查来源和兼容性。可以继续使用 Codex。'),
+    'downloading': ('正在下载补丁', '正在下载模型补丁。可以继续使用 Codex。'),
+    'building': ('正在准备补丁', '正在准备模型目录和本地适配服务。可以继续使用 Codex。'),
+    'verifying': ('正在验证补丁', '正在进行本地兼容性测试；检查通过后再安装补丁。'),
+    'waiting_for_exit': ('补丁已准备好', '可以继续使用 Codex；点“开始更新”将正常关闭 Codex，随后安装补丁。'),
     'closing': ('正在关闭 Codex', '已请求正常关闭 Codex。请保存工作，安装期间暂勿启动 Codex。'),
-    'installing': ('正在安装更新', '正在安装本地适配服务和配置，暂勿启动 Codex。关窗不会中断更新。'),
-    'activating': ('正在完成更新', '正在启用新的后台更新组件，暂勿启动 Codex。'),
-    'completed': ('更新完成', '现在可以启动 Codex。点“启动 Codex”打开原版应用。'),
-    'failed': ('更新暂未完成', '更新遇到问题，已保留本地记录。可继续使用当前版本，稍后重试。'),
+    'installing': ('正在安装补丁', '正在安装模型补丁，暂勿启动 Codex。关窗不会中断更新。'),
+    'activating': ('正在启用补丁', '正在启用补丁后台组件，暂勿启动 Codex。'),
+    'completed': ('补丁更新完成', '模型补丁已就绪。点“启动 Codex”打开原版应用。'),
+    'failed': ('补丁更新暂未完成', '补丁更新遇到问题，已保留本地记录。可继续使用当前版本，稍后重试。'),
 }
 START_PHASES = {'available', 'checking', 'downloading', 'building', 'verifying', 'waiting_for_exit'}
 
@@ -55,10 +55,21 @@ def control_lock(directory):
     raise ValueError('Update progress is busy')
 
 
-def _spawn(command, directory):
+def macos_ui_command(script, *arguments):
+    """Match the Python host's architecture despite LaunchServices preferences.
+
+    Finder can pass an Intel preference through a script-based .app launcher.
+    Rosetta's JXA/libffi callback allocation can then hang before showing UI.
+    """
+    machine = __import__('platform').machine()
+    prefix = ['/usr/bin/arch', '-' + machine] if machine in ('arm64', 'x86_64') else []
+    return prefix + ['/usr/bin/osascript', '-l', 'JavaScript', str(script), *map(str, arguments)]
+
+
+def _spawn(command, directory, *, view=False):
     return subprocess.Popen(command, cwd=directory, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **(background_options() if os.name == 'nt' else {'start_new_session': True}))
+        **((native_ui_options() if view else background_options()) if os.name == 'nt' else {'start_new_session': True}))
 
 
 def _python(settings):
@@ -147,8 +158,7 @@ class Progress:
                 return
             python, controller = _python(settings), str(self.root / 'update_progress.py')
             if sys.platform == 'darwin':
-                command = ['/usr/bin/osascript', '-l', 'JavaScript', str(self.root / 'update_progress_macos.js'),
-                           str(self.directory), python, controller]
+                command = macos_ui_command(self.root / 'update_progress_macos.js', self.directory, python, controller)
             elif sys.platform == 'win32':
                 from windows_support import native_ui_command
                 command = native_ui_command(self.root/'update_progress.ps1',{'StateDirectory':str(self.directory),
@@ -156,7 +166,7 @@ class Progress:
             else:
                 return
             try:
-                child = _spawn(command, self.directory)
+                child = _spawn(command, self.directory, view=True)
             except OSError:
                 return  # A missing view never blocks a safe update.
             ui['pid'] = child.pid

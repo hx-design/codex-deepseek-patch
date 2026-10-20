@@ -46,7 +46,7 @@ SERVICE_RUNTIME_FILES += ("official_client.py", "official_client_config.py", "of
                           "legacy_history.py", "reasoning_origin.py", "chat_completions_compat.py", "scripts/test_official_client.py")
 SERVICE_RUNTIME_FILES += ("official_client_shortcut.py", "update_progress.py", "update_progress_macos.js", "update_progress.ps1")
 SERVICE_RUNTIME_FILES += ("exit_watch.py", "local_history.py")
-SERVICE_RUNTIME_FILES += ("management.py", "settings_macos.js", "settings_windows.ps1")
+SERVICE_RUNTIME_FILES += ("management.py", "settings_macos.js", "settings_windows.ps1", "brand.svg")
 
 # Short, exact interoperability anchors; no vendor bundle is distributed.
 EDITS = (

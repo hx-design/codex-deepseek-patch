@@ -13,6 +13,8 @@ function run(argv) {
     const file = directory + '/progress.json';
     let state = null, closing = false, currentAction = null;
     const app = $.NSApplication.sharedApplication;
+    const brand=$.NSImage.alloc.initWithContentsOfFile($(directory+'/settings-ui/brand.png'));
+    if(brand)app.applicationIconImage=brand;
     app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
     function readState() {
         const raw = $.NSString.stringWithContentsOfFileEncodingError($(file), $.NSUTF8StringEncoding, null);
@@ -63,7 +65,7 @@ function run(argv) {
         $.NSMakeRect(0, 0, 460, 236),
         $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable | $.NSWindowStyleMaskNonactivatingPanel,
         $.NSBackingStoreBuffered, false);
-    panel.title = 'Codex 模型适配器更新';
+    panel.title = 'Codex 模型补丁更新';
     panel.releasedWhenClosed = false;
     panel.hidesOnDeactivate = false;
     panel.floatingPanel = false;
