@@ -487,8 +487,9 @@ class WhaleReliabilityTests(unittest.TestCase):
         case.save(case.build/'manifest.json',{**case.manifest,'edition':channel})
         folder=case.root/'settings-ui';folder.mkdir();(folder/'jobs').mkdir()
         ui.brand_assets(folder);ui.bubble_assets(folder)
-        value=ui.snapshot(case.root)
-        value.update(hub=ui.hub_shell(case.root),view=ui.hub_view(case.root,'models'),entry={})
+        with patch.object(ui.p,'EDITION',channel):
+            value=ui.snapshot(case.root)
+            value.update(hub=ui.hub_shell(case.root),view=ui.hub_view(case.root,'models'),entry={})
         case.save(folder/'view.json',value)
         # The fixture adds only input and assertions. Production Button events,
         # navigation, worker jobs, capture and help handlers all remain intact.
