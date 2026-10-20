@@ -295,7 +295,7 @@ class SettingsTests(unittest.TestCase):
         motion=value['motion']
         self.assertGreaterEqual(motion['opened'],2)
         self.assertGreaterEqual(motion['closed'],2)
-        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released'):
+        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts'):
             self.assertTrue(motion[name],(name,motion))
         self.assertEqual(motion['edges'],[True]*4)
         self.assertEqual(motion['directions'],[90,-90,180,0])
@@ -355,3 +355,141 @@ class SettingsTests(unittest.TestCase):
 
 
 if __name__ == '__main__':unittest.main()
+
+
+class WhaleReliabilityTests(unittest.TestCase):
+    def test_footer_wraps_long_actions_and_reserves_back_without_overlap(self):
+        for count in range(1,7):
+            for back in (False,True):
+                buttons=[{'title':'保存设置' if i%2 else '检查补丁更新'} for i in range(count)]
+                layout=ui.footer_layout(buttons,back)
+                rectangles=[]
+                for i in range(count+int(back)):
+                    x=14+(i%layout['columns'])*(layout['width']+layout['gap'])
+                    y=layout['top']+(i//layout['columns'])*36
+                    rect=(x,y,x+layout['width'],y+layout['height'])
+                    self.assertGreaterEqual(x,14);self.assertLessEqual(rect[2],306)
+                    self.assertGreater(y,200);self.assertLessEqual(rect[3],410)
+                    for a,b,c,d in rectangles:
+                        self.assertTrue(rect[2]<=a or x>=c or rect[3]<=b or y>=d)
+                    rectangles.append(rect)
+
+    def test_carbon_pump_dispatches_and_releases_events(self):
+        import ctypes
+        from unittest.mock import Mock
+        key=ui.Hotkey(Path('/unused'));key.carbon=Mock()
+        def queued(_count,_types,_timeout,_remove,event):
+            ctypes.cast(event,ctypes.POINTER(ctypes.c_void_p))[0]=ctypes.c_void_p(123)
+            return 0
+        key.carbon.ReceiveNextEvent.side_effect=queued
+        key.carbon.GetEventDispatcherTarget.return_value=456
+        with patch.object(ui.sys,'platform','darwin'):key.pump()
+        event,target=key.carbon.SendEventToEventTarget.call_args.args
+        self.assertEqual((event.value,target),(123,456))
+        self.assertEqual(key.carbon.ReleaseEvent.call_args.args[0].value,123)
+        key.carbon.ReceiveNextEvent.side_effect=lambda *_:-9875
+        key.carbon.SendEventToEventTarget.reset_mock()
+        with patch.object(ui.sys,'platform','darwin'):key.pump()
+        key.carbon.SendEventToEventTarget.assert_not_called()
+
+    def test_crashed_renderer_recovers_without_losing_host_or_hotkey(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as root:
+            state=Path(root);(state/'settings-ui').mkdir()
+            first,second=Mock(),Mock()
+            first.pid=123;first.returncode=-11;first.poll.side_effect=[None,-11]
+            second.pid=456;second.returncode=0;second.poll.side_effect=[None,0]
+            with patch.object(ui,'Hotkey') as key,patch.object(ui.subprocess,'Popen',side_effect=[first,second]) as start, \
+                 patch.object(ui,'hub_options',return_value={'hotkey':True}),patch.object(ui.time,'sleep'):
+                result=ui.run_host(['fixture'],state)
+            self.assertEqual(result.returncode,0);self.assertEqual(start.call_count,2)
+            self.assertEqual([call.kwargs['env']['CODEX_SETTINGS_RECOVERY'] for call in start.call_args_list],['0','1'])
+            self.assertGreaterEqual(key.return_value.pump.call_count,2)
+            key.return_value.close.assert_called_once()
+            self.assertFalse((state/'settings-ui/host.json').exists())
+            status=json.loads((state/'settings-ui/renderer-status.json').read_text())
+            self.assertEqual((status['exit'],status['failures']),(-11,1))
+
+    def test_app_launch_returns_without_waiting_for_resident_host(self):
+        with tempfile.TemporaryDirectory() as root,patch.object(ui.subprocess,'Popen') as start:
+            self.assertEqual(ui.main(['launch','--state-dir',root]),0)
+            args=start.call_args.args[0]
+            self.assertIn('show',args);self.assertIn(str(Path(root).resolve()),args)
+            self.assertEqual(start.call_args.kwargs['stdin'],ui.subprocess.DEVNULL)
+
+    @unittest.skipUnless(sys.platform=='win32','Real windowless launcher lifecycle')
+    def test_windows_production_host_survives_hide_reopen_and_unreadable_wake(self):
+        import time,subprocess,shutil
+        from windows_support import isolated_desktop_options,desktop_process
+        case=SettingsTests();case.setUp()
+        self.addCleanup(case.doCleanups)
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        case.save(case.root/'settings.json',{**case.settings,'edition':channel})
+        case.save(case.build/'manifest.json',{**case.manifest,'edition':channel})
+        ui_dir=case.root/'settings-ui'
+        def read(name):
+            try:return json.loads((ui_dir/name).read_text(encoding='utf-8'))
+            except (FileNotFoundError,ValueError,PermissionError):return {}
+        def wait_for(predicate):
+            end=time.monotonic()+15
+            while time.monotonic()<end:
+                if predicate():return
+                time.sleep(.1)
+            detail=(case.root/'launcher.log').read_bytes().decode('utf-8',errors='replace')[-2000:]
+            error=ui_dir/'renderer-error.log'
+            if error.exists():detail+=' '+error.read_bytes().decode('utf-8',errors='replace')[-2000:]
+            self.fail('Renderer lifecycle timed out: '+repr(read('renderer.json'))+' '+detail)
+        command=[str(Path(sys.executable).with_name('pythonw.exe')),str(ui.ROOT/'management.py'),
+                 'show','--state-dir',str(case.root)]
+        with isolated_desktop_options() as options,(case.root/'launcher.log').open('wb') as log:
+            child=desktop_process(command,options['desktop'],cwd=case.root,stdout=log,env=dict(os.environ))
+            try:
+                wait_for(lambda:read('renderer.json').get('visible'))
+                renderer=read('renderer.json')['pid']
+                # A partially written IPC record must not kill a resident GUI.
+                (ui_dir/'raise.json').write_text('{',encoding='utf-8')
+                time.sleep(.6)
+                ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'hide','toggle':True})
+                wait_for(lambda:read('renderer.json').get('visible') is False)
+                subprocess.run(['taskkill','/PID',str(renderer),'/F'],capture_output=True,creationflags=0x08000000,check=True)
+                wait_for(lambda:read('renderer.json').get('pid') not in (None,renderer) and read('renderer.json').get('visible') is False)
+                renderer=read('renderer.json')['pid']
+                ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'reopen','page':'preferences'})
+                wait_for(lambda:read('renderer.json').get('visible') and read('renderer.json').get('route')=='preferences')
+                self.assertEqual(read('renderer.json')['pid'],renderer)
+                self.assertEqual(read('access.json')['format'],1)
+                ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'finish','quit':True})
+                self.assertEqual(child.wait(timeout=10),0)
+                self.assertFalse((ui_dir/'host.json').exists())
+            finally:
+                if child.poll() is None:
+                    ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'cleanup','quit':True})
+                    try:child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pid=read('host.json').get('renderer_pid')
+                        if pid:subprocess.run(['taskkill','/PID',str(pid),'/F'],capture_output=True,creationflags=0x08000000)
+                        child.kill();child.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform=='darwin','Native Carbon event queue')
+    def test_native_carbon_queue_reaches_registered_shortcut_handler(self):
+        import ctypes,time
+        with tempfile.TemporaryDirectory() as root:
+            key=ui.Hotkey(Path(root),key_code=105)  # F13; production Ctrl-Alt-D stays available.
+            key.configure(True)
+            try:
+                self.assertTrue(key.registered,key.error)
+                c=key.carbon
+                c.CreateEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_double,ctypes.c_uint32,ctypes.POINTER(ctypes.c_void_p)]
+                c.GetMainEventQueue.restype=ctypes.c_void_p
+                c.PostEventToQueue.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int16]
+                event=ctypes.c_void_p()
+                self.assertEqual(c.CreateEvent(None,0x6b657962,6,0,0,ctypes.byref(event)),0)
+                try:self.assertEqual(c.PostEventToQueue(c.GetMainEventQueue(),event,1),0)
+                finally:c.ReleaseEvent(event)
+                end=time.monotonic()+3
+                path=Path(root)/'settings-ui/raise.json'
+                while not path.exists() and time.monotonic()<end:key.pump()
+                self.assertTrue(json.loads(path.read_text())['toggle'])
+                key.configure(False)
+                self.assertFalse(json.loads((path.parent/'hotkey.json').read_text())['registered'])
+            finally:key.close()

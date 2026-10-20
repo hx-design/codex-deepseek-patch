@@ -4,7 +4,7 @@
 
 **Your models, in the original Codex.** Add existing cloud endpoints and local models to the native picker. Keep your login, history and tools, switch within one chat, and manage connections and patch updates in one settings window.
 
-Extension **0.7.0-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.7.1-proxy.1**, update branch `codex/existing-proxy-models`.
 
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
@@ -70,7 +70,7 @@ A small draggable whale opens six compact water-drop categories: Models, Connect
 
 Drag the whale to a screen edge to leave a small droplet. Hover to peek out, move away to tuck it back, or drag away to keep it floating. An open settings card stays visible while editing. Cards unfold from the selected drop with soft curved edges and staggered text; closing reverses the transition. Reduced motion switches directly between states.
 
-Updates combines patch checks/retries, independent model synchronization, progress and launch actions. Cache cleanup, interrupted-install recovery and patch removal live under Updates → Maintenance. Preferences holds appearance, motion and the shortcut. Hide/show the on-demand UI with **Ctrl+Alt+D** (⌃⌥D on macOS); quitting the UI releases the shortcut. AppKit and WPF need no web server or additional UI runtime. Initial installation still uses the CLI.
+Updates combines patch checks/retries, independent model synchronization, progress and launch actions. Cache cleanup, interrupted-install recovery and patch removal live under Updates → Maintenance. Right-click the whale to open Preferences, including appearance, motion, sound and the shortcut. Hide/show the on-demand UI with **Ctrl+Alt+D** (⌃⌥D on macOS); opening the App or Start menu entry again brings it back. Quitting the UI releases the shortcut. AppKit and WPF need no web server or additional UI runtime. Initial installation still uses the CLI.
 
 ## Integrated update progress
 

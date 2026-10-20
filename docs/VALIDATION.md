@@ -1,3 +1,11 @@
+## 鲸鱼设置窗口驻留与唤醒回归
+
+- Mac 快捷键测试向真实 Carbon 队列投递事件，验证分发进入已注册的处理器并写出唤醒请求。
+- Windows 在隔离桌面以普通用户运行正式窗口入口，检查持续显示、隐藏、重新呼出、打开偏好、损坏唤醒记录容错和正常退出。该检查不依赖渲染器的 self-test 分支。
+- Windows 设置目录显式继承当前用户 SID，避免同一用户以管理员权限创建 IPC 文件后，普通用户窗口失去读取权限。
+- 浮窗崩溃恢复限制重试次数；错误尾部仅保存在本机，诊断导出不包含原始错误文本。App 入口启动后及时返回，重复点击会唤醒现有实例。
+- 两端页脚共用行列尺寸，覆盖长按钮、返回按钮和多行操作；Mac 绘制控件保留至页面释放，页面正文载入后也执行文字入场动画。
+
 # Whale hub and integrated updates
 
 Native motion checks exercise opening and closing cards, hover reveal, delayed retraction, keeping an editing form open, detaching by drag, all four display edges and pointer directions, release/re-entry hysteresis, arrival hints, reduced motion and stopping idle animation timers. Regression coverage includes numeric edge-distance sorting on Windows and removing the Mac spray layer after completion or cancellation. Small generated PCM sounds are format/level/duration checked and loaded by native players; self-tests stay silent. Both hosts use tangent-continuous cubic edges and rounded corners throughout the transition; final corners match the card styling. Visual review includes actual AppKit and WPF output, not only event-loop completion.
