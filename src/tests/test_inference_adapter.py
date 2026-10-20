@@ -37,6 +37,12 @@ class Upstream(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if '/native-tool-hang' in self.path:
+            self.server.hanging.set()
+            self.connection.settimeout(3)
+            observe_disconnect(self.connection, self.server.cancelled)
+            self.close_connection = True
+            return
         if '/native-tool' in self.path:
             self.server.seen.append((self.path, dict(self.headers), raw, None))
             payload = b'\x00opaque-native-response\xff'
@@ -177,6 +183,19 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(value['status'], 429)
         self.assertEqual(value['error']['code'], 'upstream_http_429')
         ws.close()
+
+    def test_native_streamed_body_still_cancels_when_client_disconnects(self):
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=2)
+        original = relay._open
+        def slow_connect(*args, **kwargs):
+            time.sleep(.25)  # Upload is queued while the upstream handshake runs.
+            return original(*args, **kwargs)
+        with patch.object(relay, '_open', side_effect=slow_connect):
+            connection.request('POST', self.path.removesuffix('responses') + 'native-tool-hang',
+                               body=b'\x00opaque-body\xff' * 10000)
+            self.assertTrue(self.upstream.hanging.wait(2))
+            connection.close()
+            self.assertTrue(self.upstream.cancelled.wait(2), 'Native request did not cancel after body upload')
 
     def tearDown(self):
         self.server.shutdown()

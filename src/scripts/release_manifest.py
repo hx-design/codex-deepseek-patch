@@ -39,6 +39,7 @@ REQUIRED_REGRESSIONS = frozenset((
     'test_deflate_bounds_expanded_data_and_rejects_invalid_frames',
     'test_large_upload_fragments_allow_heartbeat_before_message_finishes',
     'test_official_close_and_external_error_status_reach_native_client_promptly',
+    'test_native_streamed_body_still_cancels_when_client_disconnects',
     'test_recheck_keeps_same_release_build_for_close_and_launch',
     'test_launch_failure_releases_claim_and_allows_retry',
     'test_native_widgets_complete_private_snapshot_and_close_headlessly',

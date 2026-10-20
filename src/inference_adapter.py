@@ -804,11 +804,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         class Body:
             remaining = length
             def read(self, size):
+                if not self.remaining:
+                    return b''
                 chunk = handler.rfile.read(min(size, self.remaining))
                 if self.remaining and not chunk:
                     raise OSError('Incomplete native request body')
                 self.remaining -= len(chunk)
                 handler.body_bytes_read = getattr(handler, 'body_bytes_read', 0) + len(chunk)
+                if not self.remaining:
+                    handler.watch_disconnect(operation, stop)
                 return chunk
         raw = Body() if length else None
         headers = sanitize_headers(self.headers)
@@ -818,7 +822,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.active += 1
         sent = False
         try:
-            self.watch_disconnect(operation, stop)
+            if not length:
+                self.watch_disconnect(operation, stop)
             response = _open(self.gpt_url(endpoint[len(prefix):]), raw, headers,
                              operation, self.server.profile, official=True, method=self.command,
                              reject_redirect=False)
