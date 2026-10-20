@@ -48,7 +48,7 @@ class ProgressTest(unittest.TestCase):
     def test_only_sanitized_fixed_ui_fields(self):
         self.progress.publish('failed')
         value=self.progress.read()
-        self.assertEqual(set(value),{'format','id','edition','version','phase','title','detail','completed','total','can_start','can_launch'})
+        self.assertEqual(set(value),{'format','id','edition','version','phase','title','detail','completed','total','can_start','can_launch','phase_started_at'})
         self.assertNotIn(str(self.root),json.dumps(value))
         self.assertFalse(value['can_start']);self.assertFalse(value['can_launch'])
 
@@ -138,6 +138,33 @@ class ProgressTest(unittest.TestCase):
             with self.assertRaises(ValueError):u.action(self.root,self.identity,'launch')
         launch.assert_called_once();self.assertFalse(self.progress.read()['can_launch'])
         self.assertEqual(monitor.load_json(self.root/'progress.launch.json')['id'],self.identity)
+
+    def test_launch_failure_releases_claim_and_allows_retry(self):
+        self.build(status='installed');self.progress.publish('completed')
+        with mock.patch.object(u,'launch_official',side_effect=ValueError('launch failed')):
+            with self.assertRaises(ValueError):
+                u.action(self.root,self.identity,'launch')
+        self.assertTrue(self.progress.read()['can_launch'])
+        self.assertFalse((self.root/'progress.launch.json').exists())
+        with mock.patch.object(u,'launch_official') as launch:
+            u.action(self.root,self.identity,'launch')
+        launch.assert_called_once()
+
+    def test_recheck_keeps_same_release_build_for_close_and_launch(self):
+        for installed in (False, True):
+            directory,manifest=self.build(status='installed' if installed else 'prepared')
+            manifest['update'].update(runtime_digest='runtime-fixture',
+                                      release={'version':'0.5.0-proxy.1'})
+            monitor.atomic_json(directory/'manifest.json',manifest)
+            state_key='installed' if installed else 'pending'
+            monitor.atomic_json(self.root/'state.json',{state_key:{'build':{'directory':str(directory)}}})
+            new_id=self.progress.begin('proxy','0.5.0-proxy.1','runtime-fixture:official-hash-'+str(installed),restart=True)
+            self.assertNotEqual(new_id,manifest['update']['progress_id'])
+            self.progress.publish('completed' if installed else 'waiting_for_exit')
+            self.assertEqual(u._build(self.progress),(directory,manifest))
+            manifest['update']['release']['version']='different-version'
+            monitor.atomic_json(directory/'manifest.json',manifest)
+            self.assertIsNone(u._build(self.progress))
 
     def test_dismissed_available_can_present_completed_once(self):
         self.settings()

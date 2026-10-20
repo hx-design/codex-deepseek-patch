@@ -58,7 +58,11 @@ python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR
 python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition proxy --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
 ```
 
-Run the two verification commands on macOS and Windows. On Windows use ordinary-user `pythonw`, with redirected output and no console. Gather all four receipts and their logs in one private directory. Each receipt binds the candidate, portable commit, shared-core digest and test log hashes. Push the candidate source branch for CI first; after it succeeds, publish both independent feeds and tags with one atomic operation:
+Run the two verification commands on macOS and Windows. On Windows use ordinary-user `pythonw`, with redirected output and no console. The native image contract also needs OpenSSL on the validation host (Git for Windows includes it); this is not an installation/runtime dependency. Gather all four receipts, logs, and `coverage.json` files in one private directory. Each receipt binds the candidate, portable commit, shared-core digest and evidence hashes. Promotion rejects missing, skipped, or failed mandatory checks listed in [VALIDATION.md](docs/VALIDATION.md), including the real bundled CLI's image generation/edit calls against isolated services and the transport/update regressions. Record actual upstream calls separately from synthetic service coverage.
+
+For each reported regression, retain a reproducer covering its failing path before considering the fix complete. Update the mandatory coverage list when adding an entry point; a successful generic Responses request is not an image-tool, account, update-button, or native-window check.
+
+Push the candidate source branch for CI first; after it succeeds, publish both independent feeds and tags with one atomic operation:
 
 ```sh
 python3 src/scripts/release_manifest.py --promote PRIVATE_CANDIDATE_DIR/candidate.json --receipts PRIVATE_RECEIPTS_DIR --execute

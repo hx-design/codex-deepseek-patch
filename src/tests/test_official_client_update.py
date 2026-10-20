@@ -295,7 +295,7 @@ class DiscoveryOrderingTests(unittest.TestCase):
         obj=object.__new__(updater.UpdateBackend)
         obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
-        obj.base=Mock(app=Path('/Store/removed-old'),baseline=None)
+        obj.base=Mock(spec=['app','baseline','snapshot'],app=Path('/Store/removed-old'),baseline=None)
         def discover():
             obj.base.app=Path('/Store/current')
             return {'fingerprint':'current-app'}
@@ -307,6 +307,22 @@ class DiscoveryOrderingTests(unittest.TestCase):
         result=obj.snapshot()
         self.assertEqual(observed,[str(Path('/Store/current'))])
         self.assertEqual(result['app_fingerprint'],'current-app')
+
+    def test_native_discovery_does_not_repeat_full_signature_and_hash_check(self):
+        obj=object.__new__(updater.UpdateBackend)
+        obj.prepared=False;obj.settings={'app':'/Store/old'}
+        obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
+        obj.base=Mock(app=Path('/Store/old'),baseline=None)
+        def discover():obj.base.app=Path('/Store/current')
+        obj.base.refresh_source.side_effect=discover
+        obj.base.snapshot.return_value={'fingerprint':'current-app'}
+        observed=[]
+        def prepare():observed.append(obj.settings['app']);obj.prepared=True
+        obj.prepare=prepare
+        obj.snapshot()
+        self.assertEqual(observed,[str(Path('/Store/current'))])
+        obj.base.refresh_source.assert_called_once()
+        obj.base.snapshot.assert_called_once()
 
     def test_first_monitor_enable_can_use_native_installed_target(self):
         with tempfile.TemporaryDirectory() as temporary:
