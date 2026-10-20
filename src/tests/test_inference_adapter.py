@@ -1,4 +1,5 @@
 import copy
+import gzip
 import http.client
 import http.server
 import json
@@ -35,9 +36,28 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        raw = self.rfile.read(int(self.headers['Content-Length']))
+        raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if '/native-tool' in self.path:
+            self.server.seen.append((self.path, dict(self.headers), raw, None))
+            payload = b'\x00opaque-native-response\xff'
+            self.send_response(200 if self.command in ('GET', 'HEAD') else 422)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            if self.command != 'HEAD':
+                self.wfile.write(payload)
+            return
         body = json.loads(raw)
         self.server.seen.append((self.path, dict(self.headers), raw, body))
+        if '/images/' in self.path:
+            payload = encoded({'created': 1, 'data': [{'b64_json': 'synthetic-image-bytes',
+                                                      'generation_id': 'fixture-generation'}]})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if body.get('metadata',{}).get('fixture_delay'):
             time.sleep(.12)
         if self.path.startswith('/redirect/'):
@@ -85,6 +105,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
 
     def do_GET(self):
+        if self.headers.get('Upgrade', '').lower() != 'websocket':
+            return self.do_POST()
         self.server.upgrades.append((self.path, dict(self.headers)))
         ws = accept_websocket(self, response_headers=[('X-Codex-Turn-State', 'fixture-sticky'),
                                                      ('X-Models-Etag', 'fixture-models-etag')])
@@ -100,7 +122,14 @@ class Upstream(http.server.BaseHTTPRequestHandler):
                     ws.send(encoded({'type': 'response.failed', 'response': {'id': 'gpt-cancelled'}}))
                 elif body.get('input') == 'hang':
                     self.server.hanging.set()
+                elif body.get('input') == 'oversized-history':
+                    ws.close(1009, 'message too big')
+                    return
                 else:
+                    if body.get('input') == 'native-heartbeats':
+                        for i in range(3):
+                            ws.send_control(9, b'native-ping-' + str(i).encode())
+                            time.sleep(.04)
                     if body.get('metadata',{}).get('fixture_delay'):
                         time.sleep(.12)
                     ws.send(encoded({'type': 'response.completed', 'response': {'id': 'gpt-fixture', 'output': []}}))
@@ -109,6 +138,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         finally:
             self.server.cancelled.set()
             ws.close()
+
+    do_HEAD = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_POST
 
 
 class AdapterTests(unittest.TestCase):
@@ -129,6 +160,23 @@ class AdapterTests(unittest.TestCase):
         self.thread.start()
         self.path = '/' + self.profile['token'] + '/backend-api/codex/responses'
         self.wsurl = f'ws://127.0.0.1:{self.server.server_port}' + self.path
+
+    def test_official_close_and_external_error_status_reach_native_client_promptly(self):
+        ws, _ = connect_websocket(self.wsurl, timeout=2)
+        closes = []
+        ws.on_close = lambda code, reason: closes.append((code, reason))
+        ws.send(encoded({'type':'response.create','model':'gpt-fixture','input':'oversized-history'}))
+        self.assertIsNone(ws.recv())
+        self.assertEqual(closes, [(1009, 'message too big')])
+        ws.close()
+        self.server.profile['routes']['deepseek-fixture']['base_url'] = self.base + '/fail'
+        ws, _ = connect_websocket(self.wsurl, timeout=2)
+        ws.send(encoded({'type':'response.create','model':'deepseek-fixture','input':[]}))
+        value = json.loads(ws.recv()[1])
+        self.assertEqual(value['type'], 'error')
+        self.assertEqual(value['status'], 429)
+        self.assertEqual(value['error']['code'], 'upstream_http_429')
+        ws.close()
 
     def tearDown(self):
         self.server.shutdown()
@@ -166,7 +214,7 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(seen['Authorization'], headers['Authorization'])
                     self.assertEqual(transmitted, encoded(body))
                     self.assertNotIn(b'independent-ds-fixture-key', raw)
-        for suffix in ('/alpha/search/../responses', '/alpha/search/other', '//evil.invalid'):
+        for suffix in ('/alpha/search/../responses', '/alpha/%2e%2e/responses', '//evil.invalid'):
             status, _, _ = self.request({'model':'deepseek-fixture'},
                 path=self.path.removesuffix('/responses') + suffix)
             self.assertEqual(status, 404)
@@ -180,6 +228,79 @@ class AdapterTests(unittest.TestCase):
             result.append(value)
             if value['type'] in relay.TERMINAL:
                 return result
+
+    def test_native_image_generate_and_edit_keep_official_auth_and_bytes(self):
+        # Native image tools use a different model and schema from Responses.
+        # They must never be routed to the selected DS/Grok/etc. provider.
+        for edition in ('ds', 'proxy'):
+            for account in (None, 'official-fixture-account'):
+                for action in ('generations', 'edits'):
+                    with self.subTest(edition=edition, account=account, action=action):
+                        self.server.profile['edition'] = edition
+                        body = {'model': 'gpt-image-2', 'prompt': 'Synthetic native image fixture',
+                                'n': 1, 'background': 'transparent'}
+                        if action == 'edits':
+                            body['images'] = [{'image_url': 'data:image/png;base64,c3ludGhldGlj'}]
+                        headers = {'Authorization': 'Bearer official-image-fixture',
+                                   'x-codex-imagegen-request-id': 'fixture-image-request',
+                                   'x-codex-image-turn-id': 'fixture-image-turn'}
+                        if account:
+                            headers['ChatGPT-Account-ID'] = account
+                        status, _, raw = self.request(body,
+                            path=self.path.removesuffix('/responses') + '/images/' + action,
+                            headers=headers)
+                        self.assertEqual(status, 200, raw)
+                        path, seen, transmitted, _ = self.upstream.seen[-1]
+                        self.assertEqual(path, ('/chatgpt' if account else '/api') + '/images/' + action)
+                        self.assertEqual(transmitted, encoded(body))
+                        for name, value in headers.items():
+                            self.assertEqual(seen[name], value)
+                        self.assertEqual(json.loads(raw)['data'][0]['generation_id'], 'fixture-generation')
+        before = len(self.upstream.seen)
+        for suffix in ('/images/generations/../responses', '/images/%252e%252e/responses',
+                       '/images/%2e%2e/responses', '/images//generations'):
+            self.assertEqual(self.request({'model': 'gpt-image-2'},
+                path=self.path.removesuffix('/responses') + suffix)[0], 404)
+        self.assertEqual(len(self.upstream.seen), before)
+
+    def test_new_native_http_services_are_opaque_and_stay_on_official_origin(self):
+        payload = gzip.compress(b'Native binary payload: not a Responses model request')
+        for edition in ('ds', 'proxy'):
+            self.server.profile['edition'] = edition
+            for method in ('GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'):
+                with self.subTest(edition=edition, method=method):
+                    conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+                    conn.request(method, self.path.removesuffix('/responses') + '/native-tool?name=a%2Bb&model=external',
+                        body=payload if method not in ('GET', 'HEAD') else None,
+                        headers={'Authorization': 'Bearer native-service-fixture',
+                                 'ChatGPT-Account-ID': 'fixture-account', 'Content-Encoding': 'gzip',
+                                 'Content-Type': 'application/octet-stream'})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, 200 if method in ('GET', 'HEAD') else 422)
+                    self.assertEqual(response.read(), b'' if method == 'HEAD' else b'\x00opaque-native-response\xff')
+                    conn.close()
+                    path, headers, transmitted, _ = self.upstream.seen[-1]
+                    self.assertEqual(path, '/chatgpt/native-tool?name=a%2Bb&model=external')
+                    self.assertEqual(headers['Authorization'], 'Bearer native-service-fixture')
+                    self.assertEqual(headers['Content-Encoding'], 'gzip')
+                    self.assertEqual(transmitted, b'' if method in ('GET', 'HEAD') else payload)
+
+    def test_native_heartbeats_reach_client_during_silent_reasoning(self):
+        for edition in ('ds', 'proxy'):
+            self.server.profile['edition'] = edition
+            for early in (False, True):
+                with self.subTest(edition=edition, early=early):
+                    headers = {'x-codex-turn-metadata': '{"model":"gpt-fixture"}'} if early else {}
+                    ws = self.connect(**headers)
+                    seen = []
+                    ws.on_control = lambda opcode, payload: seen.append((opcode, payload))
+                    try:
+                        ws.send(encoded({'type': 'response.create', 'model': 'gpt-fixture',
+                                         'input': 'native-heartbeats'}))
+                        self.assertEqual(self.receive_terminal(ws)[-1]['type'], 'response.completed')
+                        self.assertEqual(seen, [(9, b'native-ping-' + str(i).encode()) for i in range(3)])
+                    finally:
+                        ws.close()
 
     def test_native_silent_http_wait_and_standalone_compaction_keep_original_auth(self):
         factory=relay.create_http_connection

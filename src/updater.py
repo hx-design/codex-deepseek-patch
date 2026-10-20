@@ -494,7 +494,9 @@ class UpdateBackend:
         if read_manifest(self.base.baseline).get('architecture')=='official-client-v1':
             p.require(self.desired_architecture=='official-client-v1','Native client updates cannot restore a legacy app patch')
         self.desired_runtime=identity['runtime_digest']
-        if (self.settings.get('model_sync',True) or force) and (force or now-self.cache.get('models_checked',0)>=CHECK_SECONDS):
+        if (not self.settings.pop('skip_model_sync', False)
+                and (self.settings.get('model_sync',True) or force)
+                and (force or now-self.cache.get('models_checked',0)>=CHECK_SECONDS)):
             self.cache['models_checked']=now
             try:
                 job={'settings':self.settings,'directory':str(self.directory),'baseline':str(self.base.baseline)}
@@ -517,7 +519,11 @@ class UpdateBackend:
         # Discover the current Store package before metadata refresh; an old
         # version directory may already have been removed by the vendor updater.
         if not self.prepared:
-            self.base.snapshot()
+            refresh = getattr(self.base, 'refresh_source', None)
+            if refresh:
+                refresh()
+            else:
+                self.base.snapshot()
             self.settings['app']=str(self.base.app)
         self.prepare()
         app=self.base.snapshot()

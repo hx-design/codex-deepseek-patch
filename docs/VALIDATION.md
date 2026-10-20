@@ -1,3 +1,23 @@
+## 后续版本的强制发布检查
+
+发布器逐项校验四份记录：macOS × DS、macOS × 扩展版、Windows × DS、Windows × 扩展版。记录绑定同一候选源码和各自的更新通道；缺项、跳过、失败或记录被改动，均阻止发布。单元测试数量不作为功能完整性的判据。
+
+| 范围 | 每次发布必须覆盖 |
+| --- | --- |
+| 原生身份 | 原版客户端、原登录凭据传递、原有聊天迁移、指令预判所需的身份及分叉 |
+| 聊天与模型 | 同一聊天多模型切换、思考档位、默认最大上下文、用户主动缩减、自动与手动压缩 |
+| 工具 | 按需加载大量工具、整数参数、自定义工具、原生生图与改图、参考图传递、图片落盘 |
+| 传输 | 原生 HTTP 服务原样转发、WebSocket 压缩协商及长历史、解压上限、真实心跳帧转发、关闭码保留、错误及时结束、取消、认证隔离 |
+| 历史兼容 | 原 GPT 压缩历史切到外部模型、额度用尽、恢复后再次调用工具 |
+| 设置与更新 | 两端原生设置入口、隐藏与唤醒、检查后开始更新、已安装记录接续、启动失败后重试、两通道隔离 |
+| 扩展版额外项 | 本地兼容接口、Chat Completions、不同工具格式往返及返回 GPT |
+
+原生生图检查使用随应用附带的真实 CLI，让它实际调用 `imagegen` 的生成、编辑功能，经候选适配层到隔离服务，再检查原生工具完成事件和保存的图片文件。使用合成登录、临时 TLS 证书与测试图片，结果标记为 `native-client-with-synthetic-services`；联网生成结果另行记录。测试所需 OpenSSL 仅用于发布验证，普通安装和运行不增加此依赖。
+
+每次复现的新故障都要加入必测清单和失败分支。例如本次新增了原生图片接口、心跳帧、关闭后原生重试、服务报错后及时结束、检查更新后记录编号变化、启动失败恢复按钮的检查。发布器保存并核对 `coverage.json`，同时要求两端原生设置检查及各自平台的唤醒检查通过，而不仅检查测试进程是否退出成功。
+
+两台实际机器的安装状态另行核对；用户仍在运行任务时，只准备更新，待正常退出后安装。
+
 ## 鲸鱼设置窗口驻留与唤醒回归
 
 - Mac 快捷键测试向真实 Carbon 队列投递事件，验证分发进入已注册的处理器并写出唤醒请求。
@@ -38,7 +58,7 @@ The code-prompt/blue-whale mark is a small source SVG. Launcher icons are genera
 
 - Native CLI fixtures pass on macOS and ordinary-user Windows in both editions: legacy-provider metadata migration to builtin `openai`, prediction fork eligibility, original authentication, GPT–DS–Grok–Gemini–GPT switching, local Chat Completions, reasoning selection, 160 tools, native custom tools, per-model windows and automatic/manual compaction.
 - External compaction produces a self-contained readable handoff through the selected service. Native Codex still schedules compaction and installs its history. GPT encrypted history uses the existing selected-model recovery path when switching away; fixtures verify continuation after GPT quota exhaustion.
-- The exact official `alpha/search` endpoint preserves native search authentication and bytes. Other arbitrary endpoints stay rejected; no provider credentials or model routing are applied to native search.
+- Native HTTP services under `/backend-api/codex/` preserve authentication, method, query and opaque bytes on the fixed official origin. Unknown future service paths are covered alongside image generation/editing and search; external provider credentials and model routing never enter this path. WebSocket compression tests include independent RFC vectors, context takeover, large history, fragmentation, optional negotiation and bounded decompression.
 - Settings tests exercise private asynchronous requests, window close, actual native controls, input validation, stale-edit conflicts, rollback on failed writes, context reset, service toggles, saved reductions/hiding, secret-free diagnostic reports, and owned launcher lifecycle. Routine tests do not show production windows or change system execution policy.
 - Paired candidates require content-bound native/unit receipts for all four combinations plus source CI. Independent channel versions and sequences remain intact. Archive corruption never falls back to unverified downloads; cleanup retains active, recent and recovery-referenced builds.
 - Dot reconnecting on the development Mac was traced separately to conflicting system DNS routing. A user-applied domain-specific resolver restored the original native connection without modifying Codex or disabling Tailscale. This machine-specific resolver is not installed by the patch.

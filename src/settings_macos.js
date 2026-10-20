@@ -238,7 +238,8 @@ function run(argv){
   v.detail.stringValue=String(p.detail||'可检查补丁更新，或单独同步模型与规格。').slice(0,220);
   const known=Number.isInteger(p.completed)&&Number.isInteger(p.total)&&p.total>0,active=p.id&&['available','waiting_for_exit','completed','failed'].indexOf(p.phase)<0;
   v.bar.indeterminate=Boolean(active&&!known);if(active&&!known)v.bar.startAnimation(null);else{v.bar.stopAnimation(null);v.bar.doubleValue=known?Math.max(0,Math.min(100,p.completed*100/p.total)):p.phase==='completed'?100:0;}
-  v.units.stringValue=known?p.completed+' / '+p.total:active?'后台处理中':p.phase==='completed'?'已完成':'';
+  const seconds=Number.isFinite(p.phase_started_at)?Math.max(0,Math.floor(Date.now()/1000-p.phase_started_at)):0;
+  v.units.stringValue=known?p.completed+' / '+p.total:active?'当前步骤 · '+(seconds>=60?Math.floor(seconds/60)+' 分 '+seconds%60+' 秒':seconds+' 秒'):p.phase==='completed'?'已完成':'';
   const visible=Boolean(p.can_start||p.can_launch);v.primary.hidden=!visible;v.primary.enabled=visible&&!pending;
   buttonData[Number(v.primary.tag)].label=p.can_launch?'启动 Codex':'开始更新';v.primary.title=buttonData[Number(v.primary.tag)].label;v.primary.accessibilityLabel=v.primary.title;v.primary.needsDisplay=true;
  }

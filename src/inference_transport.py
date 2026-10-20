@@ -1,7 +1,8 @@
 """Small direct HTTP/WebSocket transport for the local inference relay.
 
-No proxy discovery, redirects, compression, credentials in errors, or third party
-runtime dependencies. A WebSocket has one reader; writes are safe across threads.
+No proxy discovery, redirects, credentials in errors, or third party runtime
+dependencies. WebSocket compression uses stdlib zlib and RFC 7692 negotiation.
+A WebSocket has one reader; writes are safe across threads.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import socket
 import ssl
 import struct
 import threading
+import zlib
 from urllib.parse import unquote, urlsplit
 
 
@@ -71,8 +73,62 @@ def _valid_close(code):
     return code in {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014} or 3000 <= code <= 4999
 
 
+def _deflate_parameters(value, *, offer=False):
+    parts = [part.strip() for part in value.split(';')]
+    if not parts or parts[0].lower() != 'permessage-deflate':
+        raise WebSocketError('Unsupported WebSocket extension')
+    parameters = {}
+    for part in parts[1:]:
+        key, equal, raw = part.partition('=')
+        key, raw = key.strip().lower(), raw.strip()
+        if raw.startswith('"') and raw.endswith('"'):
+            raw = raw[1:-1]
+        if key in parameters:
+            raise WebSocketError('Duplicate WebSocket extension parameter')
+        if key in ('server_no_context_takeover', 'client_no_context_takeover'):
+            if equal:
+                raise WebSocketError('Invalid WebSocket context takeover parameter')
+            parameters[key] = True
+        elif key in ('server_max_window_bits', 'client_max_window_bits'):
+            if not equal and offer and key == 'client_max_window_bits':
+                parameters[key] = 15
+            elif re.fullmatch(r'(?:9|1[0-5])', raw):
+                parameters[key] = int(raw)
+            else:
+                raise WebSocketError('Unsupported WebSocket compression window')
+        else:
+            raise WebSocketError('Unsupported WebSocket extension parameter')
+    return parameters
+
+
+def _deflate_configuration(parameters, *, is_client):
+    incoming, outgoing = ('server', 'client') if is_client else ('client', 'server')
+    return {'incoming_bits': parameters.get(incoming + '_max_window_bits', 15),
+            'outgoing_bits': parameters.get(outgoing + '_max_window_bits', 15),
+            'incoming_reset': bool(parameters.get(incoming + '_no_context_takeover')),
+            'outgoing_reset': bool(parameters.get(outgoing + '_no_context_takeover'))}
+
+
+def _accept_deflate(value):
+    for offer in value.split(','):
+        if offer.strip().split(';', 1)[0].lower() != 'permessage-deflate':
+            continue
+        try:
+            params = _deflate_parameters(offer, offer=True)
+        except WebSocketError:
+            continue  # Decline unsupported offers; never guess a codec.
+        chosen = {'server_no_context_takeover': True, 'client_no_context_takeover': True}
+        for key in ('server_max_window_bits', 'client_max_window_bits'):
+            if key in params:
+                chosen[key] = params[key]
+        header = 'permessage-deflate; server_no_context_takeover; client_no_context_takeover'
+        header += ''.join('; ' + key + '=' + str(value) for key, value in chosen.items() if type(value) is int)
+        return header, _deflate_configuration(chosen, is_client=False)
+    return None, None
+
+
 class WebSocket:
-    def __init__(self, sock, reader=None, *, is_client=False, max_message=64_000_000):
+    def __init__(self, sock, reader=None, *, is_client=False, max_message=64_000_000, deflate=None):
         if not isinstance(max_message, int) or max_message < 1:
             raise ValueError('max_message must be positive')
         self.sock = sock
@@ -80,8 +136,13 @@ class WebSocket:
         self.is_client = is_client
         self.max_message = max_message
         self._write_lock = threading.Lock()
+        self._message_lock = threading.Lock()
         self._closed = False
         self._close_sent = False
+        self.on_control = None
+        self.on_close = None
+        self.deflate = deflate
+        self._compressor = self._decompressor = None
 
     def _read(self, size, *, eof_ok=False):
         chunks = bytearray()
@@ -94,14 +155,16 @@ class WebSocket:
             chunks.extend(chunk)
         return bytes(chunks)
 
-    def _frame(self, remaining):
+    def _frame(self, remaining, compressed_message=False):
         header = self._read(2, eof_ok=True)
         if header is None:
             return None
         first, second = header
         final, opcode = bool(first & 128), first & 15
         masked, length = bool(second & 128), second & 127
-        if first & 112 or opcode not in {0, 1, 2, 8, 9, 10}:
+        compressed = bool(first & 64)
+        if (first & 48 or opcode not in {0, 1, 2, 8, 9, 10}
+                or compressed and (not self.deflate or opcode not in (1, 2))):
             raise WebSocketError('Unsupported WebSocket frame flags or opcode')
         if masked == self.is_client:
             raise WebSocketError('Invalid WebSocket masking direction')
@@ -116,22 +179,24 @@ class WebSocket:
         if opcode >= 8:
             if not final or length > 125:
                 raise WebSocketError('Invalid WebSocket control frame')
-        elif length > remaining:
+        elif length > (self.max_message + self.max_message // 1000 + 64
+                       if compressed or compressed_message else remaining):
             raise _MessageTooLarge('WebSocket message exceeds limit')
         key = self._read(4) if masked else None
         payload = self._read(length)
         if key:
             payload = bytes(value ^ key[i % 4] for i, value in enumerate(payload))
-        return final, opcode, payload
+        return final, opcode, payload, compressed
 
-    def _send_frame(self, payload, opcode):
+    def _send_frame(self, payload, opcode, *, compressed=False, final=True):
         with self._write_lock:
             if self._closed or self._close_sent and opcode != 8:
                 raise WebSocketError('WebSocket is closed')
             length = len(payload)
-            header = bytes([128 | opcode, (128 if self.is_client else 0) | min(length, 126)])
+            first = (128 if final else 0) | opcode | (64 if compressed else 0)
+            header = bytes([first, (128 if self.is_client else 0) | min(length, 126)])
             if length >= 65536:
-                header = bytes([128 | opcode, (128 if self.is_client else 0) | 127]) + struct.pack('!Q', length)
+                header = bytes([first, (128 if self.is_client else 0) | 127]) + struct.pack('!Q', length)
             elif length >= 126:
                 header += struct.pack('!H', length)
             if self.is_client:
@@ -143,7 +208,7 @@ class WebSocket:
                 self._close_sent = True
 
     def send(self, payload, opcode=1):
-        """Send a complete text (1) or binary (2) message, without transforming it."""
+        """Send byte-exact text (1) or binary (2), with negotiated wire compression."""
         if opcode not in (1, 2):
             raise ValueError('send requires text or binary opcode')
         if isinstance(payload, str):
@@ -154,6 +219,26 @@ class WebSocket:
             raise _MessageTooLarge('WebSocket message exceeds limit')
         if opcode == 1:
             payload.decode('utf-8')
+        # Serialize data messages while allowing observed control frames between
+        # fragments. A large image history must not block pong until upload ends.
+        with self._message_lock:
+            if self.deflate:
+                if self._compressor is None or self.deflate['outgoing_reset']:
+                    self._compressor = zlib.compressobj(wbits=-self.deflate['outgoing_bits'])
+                payload = self._compressor.compress(payload) + self._compressor.flush(zlib.Z_SYNC_FLUSH)
+                if not payload.endswith(b'\x00\x00\xff\xff'):
+                    raise WebSocketError('Invalid WebSocket deflate output')
+                payload = payload[:-4]
+            for start in range(0, max(1, len(payload)), 65536):
+                self._send_frame(payload[start:start + 65536], opcode if start == 0 else 0,
+                                 compressed=bool(self.deflate) and start == 0,
+                                 final=start + 65536 >= len(payload))
+
+    def send_control(self, opcode, payload=b''):
+        """Forward an observed heartbeat; never synthesize model progress."""
+        payload = bytes(payload)
+        if opcode not in (9, 10) or len(payload) > 125:
+            raise ValueError('Invalid WebSocket heartbeat')
         self._send_frame(payload, opcode)
 
     def recv(self):
@@ -166,19 +251,20 @@ class WebSocket:
             return None
         opcode = None
         chunks = bytearray()
+        compressed_message = False
         try:
             while True:
-                frame = self._frame(self.max_message - len(chunks))
+                frame = self._frame(self.max_message - len(chunks), compressed_message)
                 if frame is None:
                     if opcode is not None:
                         raise WebSocketError('Truncated fragmented WebSocket message')
                     self._shutdown()
                     return None
-                final, kind, payload = frame
-                if kind == 9:
-                    self._send_frame(payload, 10)
-                    continue
-                if kind == 10:
+                final, kind, payload, compressed = frame
+                if kind in (9, 10):
+                    forwarded = self.on_control and self.on_control(kind, payload)
+                    if kind == 9 and not forwarded:
+                        self._send_frame(payload, 10)
                     continue
                 if kind == 8:
                     if len(payload) == 1:
@@ -187,6 +273,9 @@ class WebSocket:
                         if not _valid_close(struct.unpack('!H', payload[:2])[0]):
                             raise WebSocketError('Invalid WebSocket close code')
                         payload[2:].decode('utf-8')
+                    if self.on_close:
+                        self.on_close(struct.unpack('!H', payload[:2])[0] if payload else 1000,
+                                      payload[2:].decode('utf-8') if payload else '')
                     if not self._close_sent:
                         self._send_frame(payload, 8)
                     self._shutdown()
@@ -198,16 +287,27 @@ class WebSocket:
                     raise WebSocketError('Interleaved WebSocket data messages')
                 else:
                     opcode = kind
+                    compressed_message = compressed
+                    if compressed_message and (self._decompressor is None or self.deflate['incoming_reset']):
+                        self._decompressor = zlib.decompressobj(-self.deflate['incoming_bits'])
+                if compressed_message:
+                    payload = self._decompressor.decompress(payload + (b'\x00\x00\xff\xff' if final else b''),
+                                                           self.max_message - len(chunks) + 1)
+                    if (len(payload) > self.max_message - len(chunks)
+                            or self._decompressor.unconsumed_tail or self._decompressor.unused_data):
+                        raise _MessageTooLarge('WebSocket decompressed message exceeds limit')
                 chunks.extend(payload)
                 if final:
                     result = bytes(chunks)
                     if opcode == 1:
                         result.decode('utf-8')
                     return opcode, result
-        except (WebSocketError, UnicodeError) as exc:
+        except (WebSocketError, UnicodeError, zlib.error) as exc:
             self.close(1009 if isinstance(exc, _MessageTooLarge) else 1007 if isinstance(exc, UnicodeError) else 1002)
             if isinstance(exc, UnicodeError):
                 raise WebSocketError('Invalid WebSocket UTF-8') from None
+            if isinstance(exc, zlib.error):
+                raise WebSocketError('Invalid WebSocket compressed payload') from None
             raise
         except OSError:
             self._shutdown()
@@ -267,12 +367,15 @@ def accept_websocket(handler, *, max_message=64_000_000, response_headers=None):
     handler.send_header('Upgrade', 'websocket')
     handler.send_header('Connection', 'Upgrade')
     handler.send_header('Sec-WebSocket-Accept', _accept(key))
+    extension, deflate = _accept_deflate(','.join(headers.get_all('Sec-WebSocket-Extensions', [])))
+    if extension:
+        handler.send_header('Sec-WebSocket-Extensions', extension)
     for name, value in sanitize_headers(response_headers, websocket=True, request=False):
         handler.send_header(name, value)
     handler.end_headers()
     handler.wfile.flush()
     handler.close_connection = True
-    return WebSocket(handler.connection, handler.rfile, max_message=max_message)
+    return WebSocket(handler.connection, handler.rfile, max_message=max_message, deflate=deflate)
 
 
 def create_http_connection(url, *, timeout=60, proxy_url=None, ssl_context=None):
@@ -330,7 +433,8 @@ def connect_websocket(url, headers=None, *, timeout=60, max_message=64_000_000, 
         for name, value in pairs:
             connection.putheader(name, value)
         for name, value in [('Upgrade', 'websocket'), ('Connection', 'Upgrade'),
-                            ('Sec-WebSocket-Key', key), ('Sec-WebSocket-Version', '13')]:
+                            ('Sec-WebSocket-Key', key), ('Sec-WebSocket-Version', '13'),
+                            ('Sec-WebSocket-Extensions', 'permessage-deflate; client_max_window_bits')]:
             connection.putheader(name, value)
         connection.endheaders()
         # Keep HTTPResponse's buffered reader: it may already contain WS bytes.
@@ -342,10 +446,13 @@ def connect_websocket(url, headers=None, *, timeout=60, max_message=64_000_000, 
         if (_tokens(response.getheader('Upgrade', '')) != {'websocket'}
                 or 'upgrade' not in _tokens(response.getheader('Connection', ''))
                 or response.getheader('Sec-WebSocket-Accept') != _accept(key)
-                or response.getheader('Sec-WebSocket-Extensions')
                 or response.getheader('Sec-WebSocket-Protocol')):
             raise WebSocketError('Invalid WebSocket upgrade response')
-        ws = WebSocket(connection.sock, response.fp, is_client=True, max_message=max_message)
+        extension = response.getheader('Sec-WebSocket-Extensions')
+        deflate = (_deflate_configuration(_deflate_parameters(extension), is_client=True)
+                   if extension else None)
+        ws = WebSocket(connection.sock, response.fp, is_client=True,
+                       max_message=max_message, deflate=deflate)
         # Ownership moves to WebSocket. HTTPResponse.close() otherwise flushes
         # this reader again during GC after WS shutdown (an error on Python 3.13).
         response.fp = None
