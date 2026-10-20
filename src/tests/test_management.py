@@ -295,7 +295,7 @@ class SettingsTests(unittest.TestCase):
         motion=value['motion']
         self.assertGreaterEqual(motion['opened'],2)
         self.assertGreaterEqual(motion['closed'],2)
-        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released'):
+        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts'):
             self.assertTrue(motion[name],(name,motion))
         self.assertEqual(motion['edges'],[True]*4)
         self.assertEqual(motion['directions'],[90,-90,180,0])
@@ -403,6 +403,7 @@ class WhaleReliabilityTests(unittest.TestCase):
                  patch.object(ui,'hub_options',return_value={'hotkey':True}),patch.object(ui.time,'sleep'):
                 result=ui.run_host(['fixture'],state)
             self.assertEqual(result.returncode,0);self.assertEqual(start.call_count,2)
+            self.assertEqual([call.kwargs['env']['CODEX_SETTINGS_RECOVERY'] for call in start.call_args_list],['0','1'])
             self.assertGreaterEqual(key.return_value.pump.call_count,2)
             key.return_value.close.assert_called_once()
             self.assertFalse((state/'settings-ui/host.json').exists())
@@ -450,6 +451,9 @@ class WhaleReliabilityTests(unittest.TestCase):
                 time.sleep(.6)
                 ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'hide','toggle':True})
                 wait_for(lambda:read('renderer.json').get('visible') is False)
+                subprocess.run(['taskkill','/PID',str(renderer),'/F'],capture_output=True,creationflags=0x08000000,check=True)
+                wait_for(lambda:read('renderer.json').get('pid') not in (None,renderer) and read('renderer.json').get('visible') is False)
+                renderer=read('renderer.json')['pid']
                 ui.monitor.atomic_json(ui_dir/'raise.json',{'time':'reopen','page':'preferences'})
                 wait_for(lambda:read('renderer.json').get('visible') and read('renderer.json').get('route')=='preferences')
                 self.assertEqual(read('renderer.json')['pid'],renderer)

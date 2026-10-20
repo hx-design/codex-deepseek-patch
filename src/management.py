@@ -1309,12 +1309,14 @@ def run_host(command, directory, **kwargs):
     host=Path(directory)/'settings-ui/host.json'
     monitor.atomic_json(host,{'pid':os.getpid(),'edition':p.EDITION,'view':HOST_VIEW})
     try:
-        failures=0;last_raise=None
+        failures=0;last_raise=None;recovering=False
         while True:
             # Retain a bounded private error tail instead of losing the actual
             # renderer error. Never include it in exported diagnostics.
             with tempfile.TemporaryFile() as output:
-                child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=output,**kwargs)
+                options={**kwargs,'env':{**os.environ,**kwargs.get('env',{}),
+                         'CODEX_SETTINGS_RECOVERY':'1' if recovering else '0'}}
+                child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=output,**options)
                 monitor.atomic_json(host,{'pid':os.getpid(),'renderer_pid':child.pid,'edition':p.EDITION,'view':HOST_VIEW})
                 started=time.monotonic();last=0
                 while child.poll() is None:
@@ -1327,6 +1329,7 @@ def run_host(command, directory, **kwargs):
             failures=1 if time.monotonic()-started>60 else failures+1
             monitor.atomic_json(host.parent/'renderer-status.json',{'exit':child.returncode,'failures':failures,'time':time.time()})
             if failures<3:
+                recovering=True
                 time.sleep(.5*failures)
                 continue
             # Keep the shortcut and App entry alive after repeated failures,
@@ -1334,7 +1337,7 @@ def run_host(command, directory, **kwargs):
             last_raise=monitor.load_json(host.parent/'raise.json',{}).get('time')
             while monitor.load_json(host.parent/'raise.json',{}).get('time')==last_raise:
                 hotkey.configure(hub_options(directory)['hotkey']);hotkey.pump()
-            failures=2
+            failures=2;recovering=False
     finally:
         hotkey.close()
         if monitor.load_json(host,{}).get('pid')==os.getpid():host.unlink(missing_ok=True)

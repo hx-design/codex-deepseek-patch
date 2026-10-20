@@ -9,6 +9,7 @@ function run(argv){
  function write(p,v){$(JSON.stringify(v)).writeToFileAtomicallyEncodingError($(p),true,$.NSUTF8StringEncoding,null);$.NSFileManager.defaultManager.setAttributesOfItemAtPathError($({NSFilePosixPermissions:384}),$(p),null);}
  function remove(p){$.NSFileManager.defaultManager.removeItemAtPathError($(p),null);}
  const profiling=testing&&ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('CODEX_WHALE_PROFILE'))==='1';let profile={frames:[],draws:0,render:[]};
+ const recoverHidden=ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('CODEX_SETTINGS_RECOVERY'))==='1'&&(read(ui+'/renderer.json')||{}).visible===false;
  const initial=read(ui+'/view.json'),shell=initial.hub,L=shell.layout;let current=initial.view,pending=null,closing=false,hidden=false,expanded=false,animation=null,lastRaise='',lastPoll=0,lastPreference=0,lastHeartbeat=0,drawFailure='',hover=-1,dragged=false,dragStart=null,mouseStart=null;
  const actions={},buttonData={},surfaces={},fields={};let animationTopClearance=Infinity;let updateWidgets=null,updateState={},updateAttention=false;let cancelButton=null;let fastTimer=null;let number=1,card=null,cardBody=null,scroll=null,notice=null,search=null,rowViews=[],cardButtons=[];
  let dockTimer=null,dockHintEdge=null,lastSound=0;const sounds={};
@@ -137,7 +138,7 @@ function run(argv){
 
  function openPreferences(){show(false,true);openCard('preferences',null,5);}
  function hide(){hideDockHint();stopDockTimer();hideOrbit();hub.orderOut(null);tip.orderOut(null);hidden=true;}
- function show(toggle,activate){if(toggle&&!hidden){hide();return;}hidden=false;ensureDockTimer();if(activate!==false&&dock){peekDock(true);dock.hoverArmed=false;}hub.orderFrontRegardless;if(activate!==false)app.activateIgnoringOtherApps(true);}
+ function show(toggle,activate){if(toggle&&!hidden){hide();return;}hidden=false;ensureDockTimer();if(activate!==false)wakeDock();hub.orderFrontRegardless;if(activate!==false)app.activateIgnoringOtherApps(true);}
  function showTip(button,title,description){if(card)return;
   const a=$.NSMutableDictionary.dictionary;a.setObjectForKey(font(11,false),$.NSFontAttributeName);
   const caption=title+' · '+description,width=Math.min(226,Math.ceil(Number($(caption).sizeWithAttributes(a).width))+22),height=30;
@@ -188,6 +189,7 @@ function run(argv){
   if(t>=1){dockAnimation=null;whale.hidden=!a.show;edgeBubble.hidden=a.show;whale.alphaValue=1;edgeBubble.alphaValue=1;if(a.show)frame(whale,L.closed_whale_x,0,L.bubble,L.bubble);refreshUpdate();stopIdleMotion();}
  }
  function peekDock(instant){if(dock&&(!dock.revealed||dockAnimation)){setDockReveal(true,instant);}}
+ function wakeDock(){if(dock){peekDock(true);dock.waitForHover=true;}}
  function detachDock(){if(!dock)return;peekDock(true);dock=null;stopDockTimer();dockAnimation=null;edgeBubble.hidden=true;whale.hidden=false;dockLeave=0;savePosition();stopIdleMotion();}
  function nearestEdge(){const f=hub.frame,b=boundsAt(Number(f.origin.x)+48,Number(f.origin.y)+32),x=Number(f.origin.x),y=Number(f.origin.y),dist=[['left',x-Number(b.origin.x)],['right',Number(b.origin.x)+Number(b.size.width)-x-L.closed_width],['bottom',y-Number(b.origin.y)],['top',Number(b.origin.y)+Number(b.size.height)-y-L.bubble]];dist.sort((a,b)=>a[1]-b[1]);return dist[0][1]<=L.dock.threshold?dist[0][0]:null;}
  function hideDockHint(){dockHintEdge=null;dockHint.orderOut(null);}
@@ -195,7 +197,7 @@ function run(argv){
  function finishDrag(){hideDockHint();hideOrbit();const edge=nearestEdge();if(edge)dockAt(edge,false,true);else{dock=null;stopDockTimer();savePosition();}}
  function ensureDockTimer(){if(dockTimer||!dock||hidden)return;dockTimer=$.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(L.dock.poll_ms/1000,receiver,'hoverTick:',null,true);$.NSRunLoop.mainRunLoop.addTimerForMode(dockTimer,$.NSRunLoopCommonModes);}
  function stopDockTimer(){if(dockTimer){dockTimer.invalidate;dockTimer=null;}}
- function dockHover(inside,now){if(!dock||hidden||mouseStart)return;if(!dock.hoverArmed){if(!inside)dock.hoverArmed=true;return;}if(card){dockLeave=0;return;}if(inside){dockLeave=0;if(!dock.revealed)peekDock(false);}else if(dock.revealed&&!dockAnimation){if(!dockLeave)dockLeave=now;else if(now-dockLeave>=L.dock.leave_ms)setDockReveal(false,false);}}
+ function dockHover(inside,now){if(!dock||hidden||mouseStart)return;if(dock.waitForHover){if(!inside)return;dock.waitForHover=false;}if(!dock.hoverArmed){if(!inside)dock.hoverArmed=true;return;}if(card){dockLeave=0;return;}if(inside){dockLeave=0;if(!dock.revealed)peekDock(false);}else if(dock.revealed&&!dockAnimation){if(!dockLeave)dockLeave=now;else if(now-dockLeave>=L.dock.leave_ms)setDockReveal(false,false);}}
  function pollDock(){if(!dock||testing)return;const m=$.NSEvent.mouseLocation,f=hub.frame;dockHover(Number(m.x)>=Number(f.origin.x)-4&&Number(m.x)<=Number(f.origin.x)+Number(f.size.width)+4&&Number(m.y)>=Number(f.origin.y)-4&&Number(m.y)<=Number(f.origin.y)+Number(f.size.height)+4||Number(m.x)>=dock.small.x-4&&Number(m.x)<=dock.small.x+L.dock.size+4&&Number(m.y)>=dock.small.y-4&&Number(m.y)<=dock.small.y+L.dock.size+4,Date.now());}
 
  function animateText(now){if(!textMotion||!card)return;const elapsed=now-textMotion;cardGroups.forEach((g,i)=>{const t=Math.max(0,Math.min(1,(elapsed-i*12)/180)),e=1-Math.pow(1-t,3);g.view.alphaValue=e;g.view.setFrameOrigin($.NSMakePoint(g.x,g.y+6*(1-e)));});if(elapsed>=180+cardGroups.length*12){textMotion=null;restoreCardControls();}}
@@ -267,6 +269,7 @@ function run(argv){
   else if(testPhase===5&&!card&&!cardMotion){dockHover(false,now);dockHover(false,now+1000);testPhase=6;}
   else if(testPhase===6&&!dockAnimation){motionChecks.leave_retracted=Boolean(dock&&!dock.revealed&&!edgeBubble.hidden&&Number(hub.frame.size.width)===L.dock.size);detachDock();
    const b=$.NSScreen.mainScreen.visibleFrame;hub.setFrameOrigin($.NSMakePoint(Number(b.origin.x)+Number(b.size.width)/2,Number(b.origin.y)+Number(b.size.height)/2));finishDrag();dockHover(false,now);dockHover(false,now+1000);motionChecks.detached=!dock;
+   dockAt('left',true);wakeDock();dockHover(false,now);dockHover(false,now+1000);motionChecks.explicit_wake_holds=Boolean(dock.revealed);dockHover(true,now+1001);dockHover(false,now+1002);dockHover(false,now+2000);motionChecks.explicit_wake_retracts=!dock.revealed;detachDock();
    motionChecks.audio_loaded=Object.keys(sounds).length;motionChecks.edges=[];motionChecks.directions=[];for(const edge of ['left','right','top','bottom']){dockAt(edge,true);motionChecks.directions.push(buttonData[Number(edgeBubble.tag)].drop.angle);const f=hub.frame,r=boundsAt(Number(f.origin.x)+16,Number(f.origin.y)+16);motionChecks.edges.push(Number(f.origin.x)>=Number(r.origin.x)&&Number(f.origin.y)>=Number(r.origin.y)&&Number(f.origin.x)+32<=Number(r.origin.x)+Number(r.size.width)&&Number(f.origin.y)+32<=Number(r.origin.y)+Number(r.size.height));detachDock();}
    dockAt('left',true,true);dockHover(true,now);motionChecks.release_stays_collapsed=!dock.revealed;dockHover(false,now+1);dockHover(true,now+2);motionChecks.reentry_reveals=dock.revealed;detachDock();
    const bounds=$.NSScreen.mainScreen.visibleFrame;hub.setFrameOrigin($.NSMakePoint(Number(bounds.origin.x)+5,Number(bounds.origin.y)+100));updateDockHint();motionChecks.arrival_hint=dockHintEdge==='left';hub.setFrameOrigin($.NSMakePoint(Number(bounds.origin.x)+Number(bounds.size.width)/2,Number(bounds.origin.y)+Number(bounds.size.height)/2));updateDockHint();motionChecks.hint_cleared=dockHintEdge===null;
@@ -275,5 +278,5 @@ function run(argv){
   }
  }
  const localKeys=$.NSEvent.addLocalMonitorForEventsMatchingMaskHandler($.NSEventMaskKeyDown,event=>{if(Number(event.keyCode)===53){if(card){closeCard();}else if(expanded)collapseOrbit();else hide();return null;}return event;});
- lastRaise=(read(ui+'/raise.json')||{}).time||'';app.finishLaunching;if(saved&&['left','right','top','bottom'].indexOf(saved.edge)>=0)dockAt(saved.edge,true);refreshUpdate();if(!testing){show(false,!(initial.entry&&initial.entry.notify));if(initial.entry&&initial.entry.page)openCard(initial.entry.page,null,2);}const timer=$.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(.25,receiver,'tick:',null,true);$.NSRunLoop.mainRunLoop.addTimerForMode(timer,$.NSRunLoopCommonModes);app.run;timer.invalidate;$.NSEvent.removeMonitor(localKeys);
+ lastRaise=(read(ui+'/raise.json')||{}).time||'';app.finishLaunching;if(saved&&['left','right','top','bottom'].indexOf(saved.edge)>=0)dockAt(saved.edge,true);refreshUpdate();if(!testing){if(recoverHidden)hide();else show(false,!(initial.entry&&initial.entry.notify));if(!recoverHidden&&initial.entry&&initial.entry.page)openCard(initial.entry.page,null,2);}const timer=$.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(.25,receiver,'tick:',null,true);$.NSRunLoop.mainRunLoop.addTimerForMode(timer,$.NSRunLoopCommonModes);app.run;timer.invalidate;$.NSEvent.removeMonitor(localKeys);
 }
