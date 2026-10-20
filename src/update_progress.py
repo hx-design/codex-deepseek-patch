@@ -151,6 +151,12 @@ class Progress:
             category = 'completed' if value['phase'] == 'completed' else 'available'
             if category in ui['presented'] and not force:
                 return
+            # During the first upgrade an already-open legacy progress viewer
+            # follows this same progress file. Let it finish without a second UI.
+            if not ui.get('view') and _alive(ui.get('pid')):
+                if category not in ui['presented']:ui['presented'].append(category)
+                atomic_json(self.directory/'progress.ui.json',ui)
+                return
             # One on-demand whale host owns progress, settings and notifications.
             # A background notice reveals only the badge, never a settings card.
             host=load_json(self.directory/'settings-ui/host.json',{})

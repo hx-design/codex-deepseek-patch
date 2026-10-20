@@ -246,6 +246,20 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(opened['page'],'updates');self.assertNotIn('notify',opened)
         self.spawn_mock.assert_not_called()
 
+    def test_first_upgrade_keeps_existing_legacy_progress_until_it_closes(self):
+        self.settings()
+        monitor.atomic_json(self.root/'progress.ui.json',{'id':self.identity,'pid':9876,'presented':['available']})
+        with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=True):
+            self.progress.publish('completed',present=True)
+            self.progress.present(force=True)
+            self.spawn_mock.assert_not_called()
+        self.assertEqual(monitor.load_json(self.root/'progress.ui.json')['presented'],['available','completed'])
+        with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=False):
+            self.progress.present(force=True)
+        self.spawn_mock.assert_called_once()
+        self.assertEqual(Path(self.spawn_mock.call_args.args[0][1]).name,'management.py')
+        self.assertEqual(monitor.load_json(self.root/'progress.ui.json')['view'],'whale')
+
     def test_legacy_editor_is_not_reused_as_whale_or_interrupted(self):
         self.settings()
         monitor.atomic_json(self.root/'settings-ui/host.json',{'edition':'proxy','pid':9876})
