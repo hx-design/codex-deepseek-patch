@@ -491,24 +491,28 @@ def run_request(directory, identifier):
     return response
 
 
-def show(directory, *, self_test=False):
+def show(directory, *, self_test=False, loop_test=False):
     from official_client_host import windowless_python
     directory=Path(directory).resolve();ui=monitor.private_directory(directory/'settings-ui')
     monitor.private_directory(ui/'jobs')
     with monitor.state_lock(ui) as locked:
         if not locked:
+            if self_test:raise SettingsError('window_busy','设置窗口正在运行，请先关闭窗口再检查。')
             monitor.atomic_json(ui/'raise.json',{'time':uuid.uuid4().hex})
             return subprocess.CompletedProcess([],0,b'',b'')
         monitor.atomic_json(ui/'view.json',snapshot(directory))
         runtime=windowless_python(sys.executable)
         if sys.platform=='darwin':
-            command=['/usr/bin/osascript','-l','JavaScript',str(ROOT/'settings_macos.js'),str(directory),str(runtime),str(ROOT/'management.py')]
+            from update_progress import macos_ui_command
+            command=macos_ui_command(ROOT/'settings_macos.js',directory,runtime,ROOT/'management.py')
         elif sys.platform=='win32':
             from windows_support import native_ui_command
             command=native_ui_command(ROOT/'settings_windows.ps1',{'StateDirectory':str(directory),
-                'PythonExecutable':str(runtime),'ControllerPath':str(ROOT/'management.py'),'SelfTest':self_test})
+                'PythonExecutable':str(runtime),'ControllerPath':str(ROOT/'management.py'),
+                'SelfTest':self_test,'LoopTest':loop_test})
         else:raise SettingsError('unsupported_platform','设置窗口支持 macOS 和 Windows。')
         if self_test and sys.platform=='darwin':command.append('--self-test')
+        if loop_test and sys.platform=='darwin':command.append('--loop-test')
         if self_test and sys.platform=='win32':
             from windows_support import isolated_desktop_options, desktop_process
             import shutil
@@ -524,7 +528,43 @@ def show(directory, *, self_test=False):
             raw=log_path.read_bytes()
             return subprocess.CompletedProcess(command,code,raw if code==0 else b'',raw if code else b'')
         return subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,timeout=30 if self_test else None,
-                              **(__import__('windows_support').background_options() if os.name=='nt' else {}))
+                              **(__import__('windows_support').native_ui_options() if os.name=='nt' else {}))
+
+
+def brand_assets(directory):
+    """Rasterize our small vector mark once, using only the standard library."""
+    import struct,zlib,math,xml.etree.ElementTree as ET
+    raw=(ROOT/'brand.svg').read_bytes();digest=p.sha(raw)
+    directory=Path(directory);stamp=directory/'brand.json'
+    paths={name:directory/('brand.'+name) for name in ('png','ico','icns')}
+    if monitor.load_json(stamp,{}).get('source')==digest and all(path.is_file() for path in paths.values()):
+        return digest,paths
+    size=512;pixels=bytearray(size*size*4)
+    for shape in ET.fromstring(raw).iter('{http://www.w3.org/2000/svg}polygon'):
+        color=bytes.fromhex(shape.attrib['fill'].lstrip('#'))+b'\xff'
+        points=[tuple(map(float,value.split(','))) for value in shape.attrib['points'].split()]
+        for y in range(max(0,math.floor(min(v[1] for v in points))),min(size,math.ceil(max(v[1] for v in points)))):
+            scan=y+.5;crossings=[]
+            for (x1,y1),(x2,y2) in zip(points,points[1:]+points[:1]):
+                if (y1<=scan<y2) or (y2<=scan<y1):crossings.append(x1+(scan-y1)*(x2-x1)/(y2-y1))
+            crossings.sort()
+            for left,right in zip(crossings[::2],crossings[1::2]):
+                first=max(0,math.ceil(left-.5));last=min(size,math.ceil(right-.5))
+                if last>first:pixels[(y*size+first)*4:(y*size+last)*4]=color*(last-first)
+    smaller=bytearray()
+    for y in range(256):
+        smaller.append(0)  # PNG filter byte.
+        for x in range(256):
+            samples=[pixels[((y*2+dy)*size+x*2+dx)*4:((y*2+dy)*size+x*2+dx)*4+4] for dy in (0,1) for dx in (0,1)]
+            opaque=[v for v in samples if v[3]]
+            smaller.extend(bytes([sum(v[k] for v in opaque)//len(opaque) for k in range(3)]+[len(opaque)*255//4]) if opaque else b'\0\0\0\0')
+    def chunk(name,data):return struct.pack('>I',len(data))+name+data+struct.pack('>I',zlib.crc32(name+data))
+    png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',256,256,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(smaller,9))+chunk(b'IEND',b'')
+    outputs={'png':png,'ico':struct.pack('<HHHBBBBHHII',0,1,1,0,0,0,0,1,32,len(png),22)+png,
+             'icns':b'icns'+struct.pack('>I',len(png)+16)+b'ic08'+struct.pack('>I',len(png)+8)+png}
+    for kind,data in outputs.items():private_write(paths[kind],data)
+    monitor.atomic_json(stamp,{'source':digest})
+    return digest,paths
 
 
 def ensure_launcher(directory):
@@ -539,13 +579,15 @@ def ensure_launcher(directory):
     python=str(windowless_python(settings.get('python_path') or sys.executable))
     command=[python,str(runtime/'management.py'),'show','--state-dir',str(directory)]
     label='Codex 模型设置（'+('DS 版' if p.EDITION=='ds' else '扩展版')+'）'
+    brand_digest=p.file_sha(ROOT/'brand.svg')
     if sys.platform=='darwin':
         destination=Path.home()/'Applications'/(label+'.app')
         bundle='com.limyum.codex-model-settings.'+p.EDITION
         files={'Contents/MacOS/settings':('#!/bin/sh\nexec '+shlex.join(command)+'\n').encode(),
             'Contents/Info.plist':plistlib.dumps({'CFBundleIdentifier':bundle,'CFBundleName':label,
                 'CFBundleDisplayName':label,'CFBundleExecutable':'settings','CFBundlePackageType':'APPL',
-                'LSUIElement':True,'NSHighResolutionCapable':True})}
+                'LSUIElement':True,'NSHighResolutionCapable':True,'CFBundleIconFile':'model-patch.icns',
+                'LSArchitecturePriority':['arm64','x86_64']})}
     elif sys.platform=='win32':
         destination=Path(os.environ['APPDATA'])/'Microsoft/Windows/Start Menu/Programs'/(label+'.lnk')
         files=None
@@ -556,7 +598,9 @@ def ensure_launcher(directory):
         for name,digest in owned.get('files',{}).items():
             path=destination/name if destination.is_dir() else destination
             require(path.is_file() and not path.is_symlink() and p.file_sha(path)==digest,'设置入口已被用户修改，已保留。')
-        if owned.get('command')==command:return str(destination)
+        if owned.get('command')==command and owned.get('brand')==brand_digest:return str(destination)
+    _,brand=brand_assets(ui)
+    if files is not None:files['Contents/Resources/model-patch.icns']=brand['icns'].read_bytes()
     destination.parent.mkdir(parents=True,exist_ok=True)
     if files is not None:
         for name,raw in files.items():
@@ -568,10 +612,10 @@ def ensure_launcher(directory):
         from official_client_shortcut import write_link, _atomic
         staged=ui/'settings-entry.lnk'
         write_link(staged,{'target':python,'arguments':subprocess.list2cmdline(command[1:]),
-            'working_directory':str(directory),'icon':str(Path(settings['app'])/'ChatGPT.exe')+',0'})
+            'working_directory':str(directory),'icon':str(brand['ico'])+',0'})
         _atomic(destination,staged.read_bytes());staged.unlink()
         hashes={'':p.file_sha(destination)}
-    monitor.atomic_json(ui/'launcher.json',{'format':1,'edition':p.EDITION,'path':str(destination),'command':command,'files':hashes})
+    monitor.atomic_json(ui/'launcher.json',{'format':1,'edition':p.EDITION,'path':str(destination),'command':command,'files':hashes,'brand':brand_digest})
     return str(destination)
 
 
@@ -622,12 +666,14 @@ def main(argv=None):
     parser.add_argument('--state-dir',type=Path)
     parser.add_argument('--request')
     parser.add_argument('--self-test',action='store_true')
+    parser.add_argument('--loop-test',action='store_true')
     args=parser.parse_args(argv);directory=find_directory(args.state_dir)
     try:
         if args.action=='execute':run_request(directory,args.request)
         elif args.action=='diagnose':print(json.dumps(diagnose(directory,endpoints=True),ensure_ascii=False,indent=2))
         else:
-            result=show(directory,self_test=args.self_test)
+            require(not args.loop_test or args.self_test,'窗口交互检查需要独立测试模式。')
+            result=show(directory,self_test=args.self_test,loop_test=args.loop_test)
             if args.self_test:print(result.stdout.decode('utf-8',errors='replace'))
             return result.returncode
         return 0

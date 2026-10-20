@@ -42,6 +42,9 @@ def distribution(commit):
             raise ValueError("Portable release path collision: "+target)
         seen.add(target)
         object_id=git("rev-parse",commit+":"+name,text=True).strip()
+        if name in ('README.md','README.en.md'):
+            raw=git('show',commit+':'+name).replace(b'src/brand.svg',b'brand.svg')
+            object_id=git('hash-object','-w','--stdin',input=raw).decode().strip()
         entries.append("100644 "+object_id+"\t"+target+"\n")
     with tempfile.TemporaryDirectory(prefix="codex-release-index-") as temp:
         env={**os.environ,"GIT_INDEX_FILE":str(Path(temp)/"index")}
