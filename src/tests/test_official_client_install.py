@@ -7,11 +7,16 @@ import base64
 from contextlib import ExitStack, contextmanager
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
+import time
 import tomllib
 import unittest
+import uuid
 from unittest.mock import Mock, patch as mock
 
 import official_client_install as installer
@@ -21,6 +26,57 @@ import patch as p
 
 class PowerLoss(BaseException):
     pass
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'Real isolated launchd service lifecycle')
+class MacServiceTests(unittest.TestCase):
+    def test_macos_update_and_rollback_wait_for_old_launchd_job(self):
+        for edition in ('ds', 'proxy'):
+            with self.subTest(edition=edition), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                script, marker = root/'inference_adapter.py', root/'ready.json'
+                script.write_text(
+                    'import signal,time,sys,json,os\nfrom pathlib import Path\n'
+                    'signal.signal(signal.SIGTERM,lambda *a:(time.sleep(.6),sys.exit(0)))\n'
+                    'Path(sys.argv[1]).write_text(json.dumps({"revision":sys.argv[2],"pid":os.getpid()}))\n'
+                    'while True:time.sleep(.1)\n', encoding='utf-8')
+                service = installer.AdapterService(edition, root)
+                service.label = 'com.limyum.codex-model-adapter.check.' + edition + '.' + uuid.uuid4().hex
+                service.plist = root/'owned.plist'
+                def definition(settings, label):
+                    return {'Label': label, 'ProgramArguments': [
+                        sys.executable, str(script), str(marker), settings['revision']],
+                        'RunAtLoad': True, 'WorkingDirectory': str(root), 'ProcessType': 'Standard'}
+                def ready(settings):
+                    end = time.monotonic() + 8
+                    while time.monotonic() < end:
+                        try:
+                            if json.loads(marker.read_text())['revision'] == settings['revision']:
+                                return
+                        except (ValueError, OSError):
+                            pass
+                        time.sleep(.05)
+                    self.fail('Isolated launchd fixture did not start its selected revision')
+                try:
+                    with mock.object(installer, 'adapter_launchd_plist', side_effect=definition), \
+                         mock.object(service, '_wait_ready', side_effect=ready):
+                        service.activate({'revision': 'old'})
+                        previous = service.snapshot()
+                        old_pid = json.loads(marker.read_text())['pid']
+                        service.activate({'revision': 'new'})
+                        self.assertNotEqual(json.loads(marker.read_text())['pid'], old_pid)
+                        marker.unlink()
+                        service.restore(previous)
+                        ready({'revision': 'old'})
+                        self.assertEqual(service.snapshot()['definition'], previous['definition'])
+                        service.remove()
+                        self.assertFalse(service.snapshot()['loaded'])
+                finally:
+                    # Cleanup is confined to the randomized fixture label.
+                    subprocess.run(['/bin/launchctl', 'bootout',
+                        f'gui/{os.getuid()}/{service.label}'], capture_output=True, timeout=10,
+                        **p.background_options())
+                    service._wait_running(False)
 
 
 class Fixture:

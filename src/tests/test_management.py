@@ -477,6 +477,107 @@ class WhaleReliabilityTests(unittest.TestCase):
                         if pid:subprocess.run(['taskkill','/PID',str(pid),'/F'],capture_output=True,creationflags=0x08000000)
                         child.kill();child.wait(timeout=5)
 
+    @unittest.skipUnless(sys.platform=='win32','Actual WPF routed input on an isolated desktop')
+    def test_windows_routed_buttons_drag_and_tooltips_reach_real_handlers(self):
+        import shutil
+        from windows_support import isolated_desktop_options,desktop_process,native_ui_command
+        case=SettingsTests();case.setUp();self.addCleanup(case.doCleanups)
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        case.save(case.root/'settings.json',{**case.settings,'edition':channel})
+        case.save(case.build/'manifest.json',{**case.manifest,'edition':channel})
+        folder=case.root/'settings-ui';folder.mkdir();(folder/'jobs').mkdir()
+        ui.brand_assets(folder);ui.bubble_assets(folder)
+        value=ui.snapshot(case.root)
+        value.update(hub=ui.hub_shell(case.root),view=ui.hub_view(case.root,'models'),entry={})
+        case.save(folder/'view.json',value)
+        # The fixture adds only input and assertions. Production Button events,
+        # navigation, worker jobs, capture and help handlers all remain intact.
+        probe=r'''
+function Check($Condition,$Message){if(!$Condition){throw $Message}}
+function Press($Button){$Button.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent))}
+function Mouse-Event($Control,$Event,$Button=$false){
+ if($Button){$e=[Windows.Input.MouseButtonEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice,0,[Windows.Input.MouseButton]::Left)}
+ else{$e=[Windows.Input.MouseEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice,0)}
+ $e.RoutedEvent=$Event;$Control.RaiseEvent($e)
+}
+function Pointer-Position{return $script:ProbePointer}
+foreach($sound in $script:Sounds.Values){$sound.Dispose()};$script:Sounds=@{}
+$script:ProbePhase=0;$script:ProbeNode=0;$script:ProbeResult=@{}
+$probe=[Windows.Threading.DispatcherTimer]::new();$probe.Interval=[TimeSpan]::FromMilliseconds(450)
+$probe.Add_Tick({try{
+ if($script:Pending -or $script:CardMotion){return}
+ switch($script:ProbePhase){
+ 0 {
+  $area=Work-Area $script:Hub.Left $script:Hub.Top;$script:Hub.Left=$area.Left+200;$script:Hub.Top=$area.Top+220
+  $before=[Windows.Point]::new($script:Hub.Left,$script:Hub.Top);$script:ProbePointer=[Drawing.Point]::new(100,100)
+  Mouse-Event $script:Whale ([Windows.UIElement]::PreviewMouseLeftButtonDownEvent) $true
+  $script:ProbePointer=[Drawing.Point]::new(140,124);Mouse-Event $script:Whale ([Windows.Input.Mouse]::PreviewMouseMoveEvent)
+  Check ($script:Hub.Left -gt $before.X -and $script:Hub.Top -gt $before.Y) 'Pointer movement did not drag the hub'
+  Mouse-Event $script:Hub ([Windows.UIElement]::PreviewMouseLeftButtonUpEvent) $true
+  Check (!$script:DragStart -and ![Windows.Input.Mouse]::Captured) 'Drag capture was not released'
+  Mouse-Event $script:Whale ([Windows.UIElement]::PreviewMouseLeftButtonDownEvent) $true
+  Mouse-Event $script:Hub ([Windows.UIElement]::PreviewMouseLeftButtonUpEvent) $true
+  Press $script:Whale;Check $script:Expanded 'Whale click did not expand';$script:ProbeResult.drag=$true;$script:ProbePhase=1
+ }
+ 1 {
+  $node=$script:Nodes[$script:ProbeNode];$node.UpdateLayout()
+  $point=$node.TranslatePoint([Windows.Point]::new(($node.ActualWidth/2),($node.ActualHeight/2)),$script:Canvas)
+  $hit=$script:Canvas.InputHitTest($point)
+  while($hit -and $hit -ne $node){$hit=[Windows.Media.VisualTreeHelper]::GetParent($hit)}
+  Check ($hit -eq $node) 'Visible node has no hit target'
+  Mouse-Event $node ([Windows.Input.Mouse]::MouseEnterEvent)
+  Check ($node.ToolTip.IsOpen -and $node.ToolTip.Content.Text.Length -gt 0) 'Hover description did not open'
+  Mouse-Event $node ([Windows.Input.Mouse]::MouseLeaveEvent);Check (!$node.ToolTip.IsOpen) 'Hover description did not close'
+  Press $node;Check ([bool]$script:Card) 'Category click did not open a card';$script:ProbePhase=2
+ }
+ 2 {
+  Check ($script:View.route -eq $script:Shell.categories[$script:ProbeNode].id) ('Category routed to the wrong page: '+$script:View.route+' '+$script:Notice.Text)
+  $script:ProbeNode++;if($script:ProbeNode -lt $script:Nodes.Count){$script:ProbePhase=1}else{$script:ProbePhase=3}
+ }
+ 3 {
+  $save=@($script:CardGrid.Children[4].Children|Where-Object {$_.Tag.data.intent -eq 'save_ui_options'})[0]
+  $script:Fields.sound.control.IsChecked=$false;Press $save;Check ([bool]$script:Pending) 'Footer action did not submit';$script:ProbePhase=4
+ }
+ 4 {
+  Check ($script:View.options.sound -eq $false) 'Footer save did not persist'
+  Press $script:Nodes[0];$script:ProbePhase=5
+ }
+ 5 {
+  $row=@($script:Rows|Where-Object {$_.row.type -eq 'item' -and $_.row.route})[0]
+  Press $row.view.Children[0];Check ([bool]$script:Pending) 'Model row did not navigate';$script:ProbePhase=6
+ }
+ 6 {
+  Check ($script:View.route -eq 'models/edit') 'Model row opened the wrong page'
+  $back=@($script:CardGrid.Children[4].Children|Where-Object {$_.Content -eq '返回'})[0]
+  Press $back;Check ([bool]$script:Pending) 'Back button did not navigate';$script:ProbePhase=7
+ }
+ 7 {
+  Check ($script:View.route -eq 'models') 'Back button returned to wrong page'
+  $script:ProbeResult.categories=$script:ProbeNode;$script:ProbeResult.tooltips=$true;$script:ProbeResult.save=$true;$script:ProbeResult.row_back=$true
+  Write-Json (Join-Path $StateDirectory 'input-result.json') $script:ProbeResult;$probe.Stop();Quit-Hub
+ }
+ }
+}catch{Write-Json (Join-Path $StateDirectory 'input-result.json') @{error=($_.ToString()+$_.ScriptStackTrace)};$probe.Stop();Quit-Hub}})
+$probe.Start()
+'''
+        source=(ui.ROOT/'settings_windows.ps1').read_text(encoding='utf-8-sig')
+        self.assertEqual(source.count('$script:Phase=0'),1)
+        script=case.root/'input-probe.ps1'
+        script.write_text(source.replace('$script:Phase=0',probe+'\n$script:Phase=0'),encoding='utf-8-sig')
+        command=native_ui_command(script,{'StateDirectory':str(case.root),
+            'PythonExecutable':str(Path(sys.executable).with_name('pythonw.exe')),
+            'ControllerPath':str(ui.ROOT/'management.py')})
+        command[0]=shutil.which(command[0])
+        with isolated_desktop_options() as options,(case.root/'input.log').open('wb') as log:
+            child=desktop_process(command,options['desktop'],cwd=case.root,stdout=log,env=dict(os.environ))
+            try:self.assertEqual(child.wait(timeout=45),0)
+            finally:
+                if child.poll() is None:child.kill();child.wait(timeout=5)
+        result=case.root/'input-result.json'
+        self.assertTrue(result.exists(),(case.root/'input.log').read_bytes().decode('utf-8',errors='replace'))
+        self.assertEqual(json.loads(result.read_text(encoding='utf-8')),
+                         {'drag':True,'categories':6,'tooltips':True,'save':True,'row_back':True})
+
     @unittest.skipUnless(sys.platform=='darwin','Native Carbon event queue')
     def test_native_carbon_queue_reaches_registered_shortcut_handler(self):
         import ctypes,time

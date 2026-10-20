@@ -42,13 +42,16 @@ REQUIRED_REGRESSIONS = frozenset((
     'test_native_streamed_body_still_cancels_when_client_disconnects',
     'test_recheck_keeps_same_release_build_for_close_and_launch',
     'test_launch_failure_releases_claim_and_allows_retry',
+    'test_identity_poll_preserves_terminal_and_active_update_progress',
     'test_native_widgets_complete_private_snapshot_and_close_headlessly',
     'test_native_update_card_badge_and_completion_share_the_settings_host',
     'test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui',
 ))
 PLATFORM_REGRESSIONS = {
-    'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler'},
-    'windows': {'test_windows_production_host_survives_hide_reopen_and_unreadable_wake'},
+    'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler',
+              'test_macos_update_and_rollback_wait_for_old_launchd_job'},
+    'windows': {'test_windows_production_host_survives_hide_reopen_and_unreadable_wake',
+                'test_windows_routed_buttons_drag_and_tooltips_reach_real_handlers'},
 }
 
 
