@@ -151,25 +151,38 @@ class Progress:
             category = 'completed' if value['phase'] == 'completed' else 'available'
             if category in ui['presented'] and not force:
                 return
-            # A live panel already follows the state into completion.
-            if ui.get('pid') and _alive(ui['pid']):
+            # During the first upgrade an already-open legacy progress viewer
+            # follows this same progress file. Let it finish without a second UI.
+            if not ui.get('view') and ui.get('pid') and _alive(ui['pid']):
                 if category not in ui['presented']:ui['presented'].append(category)
-                atomic_json(self.directory / 'progress.ui.json', ui)
+                atomic_json(self.directory/'progress.ui.json',ui)
                 return
-            python, controller = _python(settings), str(self.root / 'update_progress.py')
-            if sys.platform == 'darwin':
-                command = macos_ui_command(self.root / 'update_progress_macos.js', self.directory, python, controller)
-            elif sys.platform == 'win32':
-                from windows_support import native_ui_command
-                command = native_ui_command(self.root/'update_progress.ps1',{'StateDirectory':str(self.directory),
-                    'PythonExecutable':python,'ControllerPath':controller})
-            else:
+            # One on-demand whale host owns progress, settings and notifications.
+            # A background notice reveals only the badge, never a settings card.
+            host=load_json(self.directory/'settings-ui/host.json',{})
+            from management import HOST_VIEW,queue_ui_entry
+            host_is_whale=host.get('edition')==value['edition'] and host.get('view')==HOST_VIEW
+            pid=host.get('pid') if host_is_whale else None
+            if not pid and ui.get('view')=='whale':pid=ui.get('pid')
+            if pid and _alive(pid):
+                if not host_is_whale:
+                    queue_ui_entry(self.directory,page='updates' if force else None,notify=not force)
+                elif force:
+                    atomic_json(self.directory/'settings-ui/raise.json',{'time':uuid.uuid4().hex,'page':'updates'})
+                elif category not in ui['presented']:
+                    atomic_json(self.directory/'settings-ui/raise.json',{'time':uuid.uuid4().hex,'notify':True})
+                if category not in ui['presented']:ui['presented'].append(category)
+                ui.update(pid=pid,view='whale')
+                atomic_json(self.directory/'progress.ui.json',ui)
                 return
+            if sys.platform not in ('darwin','win32'):return
+            command=[_python(settings),str(self.root/'management.py'),'show','--state-dir',str(self.directory)]
+            command+=['--page','updates'] if force else ['--notify-update']
             try:
                 child = _spawn(command, self.directory, view=True)
             except OSError:
                 return  # A missing view never blocks a safe update.
-            ui['pid'] = child.pid
+            ui.update(pid=child.pid,view='whale')
             if category not in ui['presented']:ui['presented'].append(category)
             atomic_json(self.directory / 'progress.ui.json', ui)
 

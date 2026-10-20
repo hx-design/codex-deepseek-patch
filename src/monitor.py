@@ -227,6 +227,13 @@ class Monitor:
         self.save()
         self.event("notification", kind=kind, fingerprint=fingerprint, message=message)
         try:
+            if self.notifier is native_notify:
+                from update_progress import Progress
+                progress=Progress(self.directory)
+                settings=load_json(self.directory/'settings.json',{})
+                if progress.read().get('edition')==settings.get('edition') and settings.get('edition') in ('ds','proxy'):
+                    progress.present()
+                    return
             self.notifier(kind, message)
         except Exception as error:
             self.state["notification_error"] = safe_error(error)
