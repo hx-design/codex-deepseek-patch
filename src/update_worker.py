@@ -154,7 +154,13 @@ def main(argv=None):
         job=json.loads(path.read_text(encoding='utf-8'))
         from update_progress import worker_progress
         progress=worker_progress(action,job,path)
-        if progress and action=='identity':progress.publish('checking',present=True)
+        if progress and action=='identity':
+            # Periodic identity probes must not erase a failed/completed
+            # update or replace the state of an update already in progress.
+            if progress.read().get('phase') in ('available','checking'):
+                progress.publish('checking',present=True)
+            else:
+                progress=None
         value=execute(action,job,progress)
         p.save_json(path.with_suffix('.result.json'),value)
         return 0

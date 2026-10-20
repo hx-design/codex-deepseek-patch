@@ -73,6 +73,25 @@ class ProgressTest(unittest.TestCase):
         self.assertIsNone(u.worker_progress('build',{'update':{'quiet_model_sync':True}},directory/'job.json'))
         self.spawn_mock.assert_not_called()
 
+    def test_identity_poll_preserves_terminal_and_active_update_progress(self):
+        job = self.root/'worker-identity.json'
+        monitor.atomic_json(job, {})
+        for phase in ('available','checking','failed','completed','waiting_for_exit',
+                      'installing','verifying'):
+            with self.subTest(phase=phase):
+                self.progress.publish(phase)
+                with mock.patch.object(u,'worker_progress',return_value=self.progress), \
+                     mock.patch.object(update_worker,'execute',return_value={'identity':'same'}):
+                    self.assertEqual(update_worker.main(['identity',str(job)]),0)
+                expected = 'checking' if phase == 'available' else phase
+                self.assertEqual(self.progress.read()['phase'],expected)
+                if phase not in ('available','checking'):
+                    with mock.patch.object(u,'worker_progress',return_value=self.progress), \
+                         mock.patch.object(update_worker,'execute',side_effect=OSError('fixture')), \
+                         mock.patch.object(update_worker.sys,'stderr'):
+                        self.assertEqual(update_worker.main(['identity',str(job)]),1)
+                    self.assertEqual(self.progress.read()['phase'],phase)
+
     def test_id_and_action_allowlist(self):
         for identity,action in [('old','start'),(self.identity,'exec')]:
             with self.assertRaises(ValueError):u.action(self.root,identity,action)

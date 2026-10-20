@@ -9,7 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-2022]
         python-version: ['3.11', '3.13']
         edition: [ds, proxy]
     steps:
@@ -57,7 +57,9 @@ jobs:
       - run: python scripts/check_release.py
         working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
   macos-signing:
-    runs-on: macos-latest
+    # Apple Silicon is covered by mandatory on-device release receipts.
+    # Keep an additional Intel check without the arm64 hosted-runner queue.
+    runs-on: macos-15-intel
     strategy:
       matrix:
         edition: [ds, proxy]

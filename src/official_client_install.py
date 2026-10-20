@@ -67,13 +67,17 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
             if self.snapshot()['loaded'] is expected:
                 return
             time.sleep(.1)
-        raise RuntimeError('The adapter task did not reach its expected running state')
+        raise RuntimeError('The adapter service did not reach its expected running state')
 
     def stop(self, snapshot):
         if not snapshot['loaded']:
             return
         if sys.platform == 'darwin':
             p.run(['/bin/launchctl', 'bootout', f'gui/{os.getuid()}/{self.label}'], capture_output=True, timeout=30)
+            # bootout returns before launchd finishes terminating the old job.
+            # Reusing its label immediately can fail bootstrap with EIO (5).
+            # Wait for removal on updates, rollback and uninstall alike.
+            self._wait_running(False)
         else:
             try:
                 self._windows('/End', '/TN', self.label)

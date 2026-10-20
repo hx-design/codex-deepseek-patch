@@ -7,7 +7,7 @@
 
 把 DeepSeek Flash 加入 Codex 的模型菜单。保留 GPT、原登录与原生工具，同一个聊天里自由切换；密钥、上下文和自动更新都可在设置窗口管理。
 
-DS 版 **0.6.2** · 更新分支 `main`
+DS 版 **0.6.3** · 更新分支 `main`
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 

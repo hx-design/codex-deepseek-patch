@@ -58,8 +58,14 @@ function Resources {
 }
 function New-Window($Width,$Height){$w=[Windows.Window]::new();$w.Width=$Width;$w.Height=$Height;$w.WindowStyle='None';$w.AllowsTransparency=$true;$w.Background=[Windows.Media.Brushes]::Transparent;$w.ResizeMode='NoResize';$w.Topmost=$true;$w.ShowInTaskbar=$false;$w.Resources=Resources;$w.FontFamily=[Windows.Media.FontFamily]::new('Microsoft YaHei UI');$w.UseLayoutRounding=$true;return $w}
 function Text($Value,$Size=12,$Bold=$false){$v=[Windows.Controls.TextBlock]::new();$v.Text=[string]$Value;$v.FontSize=$Size;$v.TextWrapping='Wrap';if($Bold){$v.FontWeight='SemiBold'};return $v}
-function Tip($Title,$Description){$t=Text ($Title+' · '+$Description) 11;$t.TextWrapping='NoWrap';$t.TextTrimming='CharacterEllipsis';return $t}
-function Button($Label,[scriptblock]$Action,$Style='secondary'){$b=[Windows.Controls.Button]::new();$b.Content=$Label;$b.Tag=$Action;$b.Margin='3,0,3,0';$b.Add_Click({param($sender,$event);try{& $sender.Tag}catch{if($script:Notice){$script:Notice.Text='操作未完成，请检查填写内容。'}}});if($Style -eq 'primary'){$b.Background=Brush $script:Palette.accent;$b.Foreground=[Windows.Media.Brushes]::White};if($Style -eq 'danger'){$b.Foreground=Brush $script:Palette.danger};return $b}
+function Tip($Title,$Description){$t=Text ($Title+' · '+$Description) 11;$t.TextWrapping='NoWrap';$t.TextTrimming='CharacterEllipsis';$tip=[Windows.Controls.ToolTip]::new();$tip.Resources=$script:Hub.Resources;$tip.Content=$t;$tip.Placement='Top';return $tip}
+function Attach-Help($Control){
+ $Control.Add_MouseEnter({param($sender,$event);if(!$script:DragStart -and $sender.ToolTip){$sender.ToolTip.Resources=$script:Hub.Resources;$sender.ToolTip.PlacementTarget=$sender;$sender.ToolTip.IsOpen=$true}})
+ $Control.Add_MouseLeave({param($sender,$event);if($sender.ToolTip){$sender.ToolTip.IsOpen=$false}})
+ $Control.Add_PreviewMouseDown({param($sender,$event);if($sender.ToolTip){$sender.ToolTip.IsOpen=$false}})
+}
+function Close-Help{foreach($control in @($script:Whale,$script:Badge)+@($script:Nodes)){if($control -and $control.ToolTip){$control.ToolTip.IsOpen=$false}}}
+function Button($Label,[scriptblock]$Action,$Style='secondary',$Data=$null){$b=[Windows.Controls.Button]::new();$b.Content=$Label;$b.Tag=@{action=$Action;data=$Data};$b.Margin='3,0,3,0';$b.Add_Click({param($sender,$event);try{& ($sender.Tag.action) $sender.Tag.data}catch{[Console]::Error.WriteLine('button_action_failed: '+$_.Exception.GetType().Name);if($script:Notice){$script:Notice.Text='操作未完成，请检查填写内容。'}}});if($Style -eq 'primary'){$b.Background=Brush $script:Palette.accent;$b.Foreground=[Windows.Media.Brushes]::White};if($Style -eq 'danger'){$b.Foreground=Brush $script:Palette.danger};return $b}
 function Icon-View($PathData){
  $path=[Windows.Shapes.Path]::new();$path.Data=[Windows.Media.Geometry]::Parse($PathData);$path.Stroke=Brush $script:Palette.text;$path.StrokeThickness=2.2;$path.StrokeStartLineCap='Round';$path.StrokeEndLineCap='Round';$path.StrokeLineJoin='Round'
  $canvas=[Windows.Controls.Canvas]::new();$canvas.Width=24;$canvas.Height=24;[void]$canvas.Children.Add($path)
@@ -75,22 +81,40 @@ $x=if($saved){[double]$saved.x}else{$work.Right-102};$y=if($saved){[double]$save
 function Place($Control,$X,$Y){[Windows.Controls.Canvas]::SetLeft($Control,$X);[Windows.Controls.Canvas]::SetTop($Control,$Y)}
 $script:Whale=Button '' {if(!$script:Dragged){Toggle-Orbit}};$script:Whale.Style=$script:Hub.Resources['Whale'];$script:Whale.Width=$script:L.bubble;$script:Whale.Height=$script:L.bubble;$script:Whale.Margin='0';$script:Whale.ToolTip=Tip '鲸鱼菜单' '拖动贴边 · 右键设置';$image=[Windows.Controls.Image]::new();$image.Width=$script:L.bubble;$image.Height=$script:L.bubble;$image.Source=[Windows.Media.Imaging.BitmapImage]::new([uri](Join-Path $script:UI 'brand.png'));$script:Whale.Content=$image;Place $script:Whale $script:L.closed_whale_x 0;[void]$script:Canvas.Children.Add($script:Whale)
 [Windows.Automation.AutomationProperties]::SetName($script:Whale,'鲸鱼菜单')
-function Attach-Drag($Button){
- $Button.Add_PreviewMouseLeftButtonDown({$script:Dragged=$false;$script:DragStart=[Windows.Forms.Cursor]::Position})
- $Button.Add_PreviewMouseMove({param($sender,$event);if($event.LeftButton -eq 'Pressed' -and $script:DragStart){$p=[Windows.Forms.Cursor]::Position;if([Math]::Abs($p.X-$script:DragStart.X)+[Math]::Abs($p.Y-$script:DragStart.Y) -gt 6){$script:Dragged=$true;Detach-Dock;Hide-Orbit;$script:Hub.DragMove();$script:DragStart=$null;Finish-Drag}}})
- $Button.Add_PreviewMouseLeftButtonUp({$script:DragStart=$null});$Button.Add_MouseRightButtonUp({Show-Hub;Open-Card 'preferences' $null 5})
+# Keep drag input in WPF's dispatcher instead of entering DragMove's nested
+# Win32 message loop from a PowerShell callback. Coordinates are physical until
+# converted once by the owning window's DPI transform.
+function Pointer-Position{return [Windows.Forms.Cursor]::Position}
+function Begin-Drag($Point){$script:Dragged=$false;$script:DragStart=$Point;$script:WindowStart=$null;Close-Help}
+function Move-Drag($Point){
+ if(!$script:DragStart){return};$dx=$Point.X-$script:DragStart.X;$dy=$Point.Y-$script:DragStart.Y
+ if(!$script:Dragged){if([Math]::Abs($dx)+[Math]::Abs($dy) -le 6){return};Detach-Dock;Hide-Orbit;$script:Dragged=$true;$script:WindowStart=[Windows.Point]::new($script:Hub.Left,$script:Hub.Top);[void][Windows.Input.Mouse]::Capture($script:Hub,[Windows.Input.CaptureMode]::SubTree)}
+ $delta=[Windows.Vector]::new($dx,$dy);$source=[Windows.PresentationSource]::FromVisual($script:Hub);if($source){$delta=$source.CompositionTarget.TransformFromDevice.Transform($delta)}
+ $script:Hub.Left=$script:WindowStart.X+$delta.X;$script:Hub.Top=$script:WindowStart.Y+$delta.Y
 }
-Attach-Drag $script:Whale
+function End-Drag{
+ $moved=$script:Dragged;$script:DragStart=$null;$script:WindowStart=$null
+ if($moved){[Windows.Input.Mouse]::Capture($null)|Out-Null;Finish-Drag}
+}
+function Attach-Drag($Button){
+ $Button.Add_PreviewMouseLeftButtonDown({Begin-Drag (Pointer-Position)})
+ $Button.Add_MouseRightButtonUp({Show-Hub;Open-Card 'preferences' $null 5})
+}
+$script:Hub.Add_PreviewMouseMove({if($script:DragStart){Move-Drag (Pointer-Position)}})
+$script:Hub.Add_PreviewMouseLeftButtonUp({param($sender,$event);if($script:DragStart){$moved=$script:Dragged;End-Drag;if($moved){$event.Handled=$true}}})
+$script:Hub.Add_LostMouseCapture({if($script:Dragged -and $script:DragStart -and [Windows.Input.Mouse]::Captured -ne $script:Hub){End-Drag}})
+Attach-Drag $script:Whale;Attach-Help $script:Whale
 $script:Hub.Add_LocationChanged({if($script:Dragged -and $script:DragStart -and !$script:HintBusy){$script:HintBusy=$true;try{Update-DockHint}finally{$script:HintBusy=$false}}})
 $script:EdgeBubble=Button '' {if(!$script:Dragged){Peek-Dock $true;Toggle-Orbit}};$script:EdgeBubble.Style=$script:Hub.Resources['Drop1'];$script:EdgeBubble.Width=$script:L.dock.size;$script:EdgeBubble.Height=$script:L.dock.size;$script:EdgeBubble.Margin='0';$edgeIcon=Icon-View 'M8 10L12 14L16 10';$script:EdgeBubble.Content=$edgeIcon.view;$script:EdgeBubble.Visibility='Collapsed';[Windows.Automation.AutomationProperties]::SetName($script:EdgeBubble,'贴边鲸鱼');[void]$script:Canvas.Children.Add($script:EdgeBubble);Attach-Drag $script:EdgeBubble
 $script:DockHint=New-Window $script:L.dock.size $script:L.dock.size;$script:DockHint.ShowActivated=$false;$script:DockHint.IsHitTestVisible=$false;$script:DockHint.Focusable=$false;$script:DockHint.Opacity=.85
 $script:HintDrop=Button '' {};$script:HintDrop.Margin='0';$hintIcon=Icon-View 'M8 10L12 14L16 10';$script:HintDrop.Content=$hintIcon.view;$script:HintDrop.Background=Brush $script:Palette.hover;$script:HintDrop.BorderBrush=Brush $script:Palette.accent;$script:DockHint.Content=$script:HintDrop
 $script:Badge=Button '↑' {Open-Card 'updates' $null -1};$script:Badge.Style=$script:Hub.Resources['Drop6'];$script:Badge.Width=28;$script:Badge.Height=28;$script:Badge.Margin='0';$badgeIcon=Icon-View 'M12 18V6 M7 11L12 6L17 11';$script:BadgeIcon=$badgeIcon.path;$badgeIcon.view.RenderTransform=[Windows.Media.TranslateTransform]::new($script:L.badge.icon_x,$script:L.badge.icon_y);$script:Badge.Content=$badgeIcon.view;$script:Badge.Visibility='Collapsed';$script:Badge.ToolTip=Tip '补丁更新' '点击查看';[Windows.Automation.AutomationProperties]::SetName($script:Badge,'补丁更新提醒');Place $script:Badge 2 20;[void]$script:Canvas.Children.Add($script:Badge)
+Attach-Help $script:Badge
 $script:Nodes=@();$script:NodeIcons=@();$script:Sprays=@()
 for($i=0;$i -lt $script:Shell.categories.Count;$i++){
  $category=$script:Shell.categories[$i];$index=$i;$route=$category.id
- $b=Button '' ({Open-Card $route $null $index}.GetNewClosure());$b.Style=$script:Hub.Resources['Drop'+$i];$b.Width=$script:L.drops[$i].size;$b.Height=$script:L.drops[$i].size;$b.Margin='0';$b.Visibility='Collapsed';$b.ToolTip=Tip $category.name $category.description
- [Windows.Automation.AutomationProperties]::SetName($b,$category.name)
+ $b=Button '' {param($data);Open-Card $data.route $null $data.index} 'secondary' @{route=$route;index=$index};$b.Style=$script:Hub.Resources['Drop'+$i];$b.Width=$script:L.drops[$i].size;$b.Height=$script:L.drops[$i].size;$b.Margin='0';$b.Visibility='Collapsed';$b.ToolTip=Tip $category.name $category.description
+ Attach-Help $b;[Windows.Automation.AutomationProperties]::SetName($b,$category.name)
  $icon=Icon-View $category.icon;$b.Content=$icon.view;$script:NodeIcons+=,$icon.path
  $b.RenderTransformOrigin='0.5,0.5';$b.RenderTransform=[Windows.Media.ScaleTransform]::new(1,1)
  $b.Add_MouseEnter({param($sender,$event);$a=[Windows.Media.Animation.DoubleAnimation]::new(1.06,[Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if(Reduced){0}else{$script:Shell.motion.hover_ms}))));$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$a);$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$a)})
@@ -132,13 +156,14 @@ function Collapse-Orbit($Silent=$false) {
  foreach($b in $script:Nodes){foreach($entry in @(@([Windows.Controls.Canvas]::LeftProperty,$script:L.spout_x-$b.Width/2),@([Windows.Controls.Canvas]::TopProperty,$script:L.spout_y-$b.Height/2))){$a=[Windows.Media.Animation.DoubleAnimation]::new([double]$entry[1],[Windows.Duration]::new([TimeSpan]::FromMilliseconds($script:Shell.motion.close_ms)));$ease=[Windows.Media.Animation.CubicEase]::new();$ease.EasingMode='EaseIn';$a.EasingFunction=$ease;$b.BeginAnimation($entry[0],$a)}}
  $script:FoldTimer=[Windows.Threading.DispatcherTimer]::new();$script:FoldTimer.Interval=[TimeSpan]::FromMilliseconds(($script:Shell.motion.close_ms+5));$script:FoldTimer.Add_Tick({$script:FoldTimer.Stop();Hide-Orbit});$script:FoldTimer.Start()
 }
-function Hide-Orbit{Remove-Water;if($script:FoldTimer){$script:FoldTimer.Stop()};Dispose-Card;foreach($p in $script:Sprays){$script:Canvas.Children.Remove($p)};$script:Sprays=@();if(!$script:Expanded){return};$script:Expanded=$false;foreach($b in $script:Nodes){$b.Visibility='Collapsed';$b.BeginAnimation([Windows.Controls.Canvas]::LeftProperty,$null);$b.BeginAnimation([Windows.Controls.Canvas]::TopProperty,$null)};$script:Hub.Left+=$script:L.whale_x-$script:L.closed_whale_x;$script:Hub.Top+=$script:L.whale_y;$script:Hub.Width=$script:L.closed_width;$script:Hub.Height=$script:L.bubble;Place $script:Whale $script:L.closed_whale_x 0;Save-Position;Refresh-Update}
+function Hide-Orbit{Close-Help;Remove-Water;if($script:FoldTimer){$script:FoldTimer.Stop()};Dispose-Card;foreach($p in $script:Sprays){$script:Canvas.Children.Remove($p)};$script:Sprays=@();if(!$script:Expanded){return};$script:Expanded=$false;foreach($b in $script:Nodes){$b.Visibility='Collapsed';$b.BeginAnimation([Windows.Controls.Canvas]::LeftProperty,$null);$b.BeginAnimation([Windows.Controls.Canvas]::TopProperty,$null)};$script:Hub.Left+=$script:L.whale_x-$script:L.closed_whale_x;$script:Hub.Top+=$script:L.whale_y;$script:Hub.Width=$script:L.closed_width;$script:Hub.Height=$script:L.bubble;Place $script:Whale $script:L.closed_whale_x 0;Save-Position;Refresh-Update}
 
 function Hide-Hub{Hide-DockHint;Stop-DockTimer;Hide-Orbit;$script:Hub.Hide();$script:Hidden=$true}
 function Show-Hub($Toggle=$false,$Activate=$true){if($Toggle -and !$script:Hidden){Hide-Hub;return};$script:Hidden=$false;Ensure-DockTimer;if($Activate){Wake-Dock};$script:Hub.ShowActivated=$Activate;$script:Hub.Show();if($Activate){[void]$script:Hub.Activate()}}
 function Capture-Test($Window,$Name){$Window.UpdateLayout();$bitmap=[Windows.Media.Imaging.RenderTargetBitmap]::new([int]$Window.Width*2,[int]$Window.Height*2,192,192,[Windows.Media.PixelFormats]::Pbgra32);$bitmap.Render($Window);$encoder=[Windows.Media.Imaging.PngBitmapEncoder]::new();$encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap));$stream=[IO.File]::Create((Join-Path $script:UI ($Name+'.png')));try{$encoder.Save($stream)}finally{$stream.Dispose()}}
 function Quit-Hub{Hide-DockHint;Stop-DockTimer;$script:DockHint.Close();foreach($sound in $script:Sounds.Values){$sound.Stop();$sound.Dispose()};Remove-Water;$script:Closing=$true;if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.id+'.cancel')) @{id=$script:Pending.id} -Optional};if($script:Card){$script:Card.Close()};$script:Hub.Close();$script:Application.Shutdown()}
 function Open-Card($Route,$Key,$Index=0){
+ Close-Help
  if($script:Dock){Peek-Dock $true};$control=if($Index -eq -1){$script:Badge}elseif($script:Expanded){$script:Nodes[$Index]}else{$script:Whale};$point=$control.PointToScreen([Windows.Point]::new(($control.Width/2),($control.Height/2)));$source=[Windows.PresentationSource]::FromVisual($script:Hub);if($source){$point=$source.CompositionTarget.TransformFromDevice.Transform($point)};if(!$script:Expanded){Toggle-Orbit $true};$fresh=!$script:Card
  if($fresh){$script:Card=New-Window $script:L.card_width $script:L.card_height;$script:Card.Title='Codex 模型补丁设置';$script:Card.Owner=$script:Hub;Clamp-Window $script:Card ($point.X-24) ($point.Y-24) $script:L.card_width $script:L.card_height
   $script:CardSource=@{x=$point.X-$script:Card.Left;y=$point.Y-$script:Card.Top;size=[Math]::Max(16,([Math]::Min($control.Width,$control.Height)-8))};$script:CardProgress=0
@@ -216,12 +241,12 @@ function Render($Value){$script:View=$Value;if($script:UpdateWidgets){$script:Up
      if($row.kind -eq 'choice'){$c=[Windows.Controls.ComboBox]::new();foreach($choice in @($row.choices)){$entry=[Windows.Controls.ComboBoxItem]::new();$entry.Content=[string]$choice[1];$entry.Tag=[string]$choice[0];[void]$c.Items.Add($entry);if([string]$choice[0] -eq [string]$row.value){$c.SelectedItem=$entry}};if($c.SelectedIndex -lt 0 -and $c.Items.Count -gt 0){$c.SelectedIndex=0}}
      elseif($row.kind -eq 'secret'){$c=[Windows.Controls.PasswordBox]::new();$c.Password=[string]$row.value}
      else{$c=[Windows.Controls.TextBox]::new();$c.Text=[string]$row.value}
-     if($row.kind -eq 'file'){$line=[Windows.Controls.DockPanel]::new();$target=$c;$pick=Button '…' ({$dialog=[Microsoft.Win32.OpenFileDialog]::new();if($dialog.ShowDialog($script:Card)){$target.Text=$dialog.FileName}}.GetNewClosure());$pick.Width=38;$pick.Padding='0';[Windows.Controls.DockPanel]::SetDock($pick,'Right');[void]$line.Children.Add($pick);[void]$line.Children.Add($c);[void]$group.Children.Add($line)}else{[void]$group.Children.Add($c)}
+     if($row.kind -eq 'file'){$line=[Windows.Controls.DockPanel]::new();$target=$c;$pick=Button '…' {param($target);$dialog=[Microsoft.Win32.OpenFileDialog]::new();if($dialog.ShowDialog($script:Card)){$target.Text=$dialog.FileName}} 'secondary' $target;$pick.Width=38;$pick.Padding='0';[Windows.Controls.DockPanel]::SetDock($pick,'Right');[void]$line.Children.Add($pick);[void]$line.Children.Add($c);[void]$group.Children.Add($line)}else{[void]$group.Children.Add($c)}
      if($row.hint){$hint=Text $row.hint 10;$hint.Foreground=Brush $script:Palette.muted;$hint.Margin='2,6,0,0';[void]$group.Children.Add($hint)}
     };$script:Fields[[string]$row.key]=@{control=$c;kind=$row.kind}
    }
-   'item' {$inside=[Windows.Controls.StackPanel]::new();[void]$inside.Children.Add((Text $row.title 12 $true));$s=Text $row.subtitle 11;$s.Foreground=Brush $script:Palette.muted;$s.Margin='0,5,0,0';[void]$inside.Children.Add($s);if($row.route){$dest=$row.route;$key=$row.key;$b=Button '' ({Send 'navigate' @{} $dest $key}.GetNewClosure());$b.Content=$inside;$b.Background=Brush $script:Palette.field;$b.HorizontalContentAlignment='Stretch';[void]$group.Children.Add($b)}else{$b=[Windows.Controls.Border]::new();$b.Background=Brush $script:Palette.field;$b.CornerRadius='12';$b.Padding='10';$b.Child=$inside;[void]$group.Children.Add($b)}}
-   'action' {$action=$row;$b=Button $row.title ({Act $action}.GetNewClosure()) $row.style;[void]$group.Children.Add($b)}
+   'item' {$inside=[Windows.Controls.StackPanel]::new();[void]$inside.Children.Add((Text $row.title 12 $true));$s=Text $row.subtitle 11;$s.Foreground=Brush $script:Palette.muted;$s.Margin='0,5,0,0';[void]$inside.Children.Add($s);if($row.route){$dest=$row.route;$key=$row.key;$b=Button '' {param($data);Send 'navigate' @{} $data.route $data.key} 'secondary' @{route=$dest;key=$key};$b.Content=$inside;$b.Background=Brush $script:Palette.field;$b.HorizontalContentAlignment='Stretch';[void]$group.Children.Add($b)}else{$b=[Windows.Controls.Border]::new();$b.Background=Brush $script:Palette.field;$b.CornerRadius='12';$b.Padding='10';$b.Child=$inside;[void]$group.Children.Add($b)}}
+   'action' {$action=$row;$b=Button $row.title {param($data);Act $data} $row.style $action;[void]$group.Children.Add($b)}
    'report' {$report=[Windows.Controls.TextBox]::new();$report.Text=$row.text;$report.IsReadOnly=$true;$report.TextWrapping='Wrap';$report.AcceptsReturn=$true;$report.MinHeight=170;[void]$group.Children.Add($report)}
    default {$t=Text $row.text 12;$t.Foreground=Brush $script:Palette.muted;$t.Margin='3,5,3,5';[void]$group.Children.Add($t)}
   }
@@ -232,7 +257,7 @@ function Render($Value){$script:View=$Value;if($script:UpdateWidgets){$script:Up
  for($i=0;$i -lt $layout.columns;$i++){$column=[Windows.Controls.ColumnDefinition]::new();$column.Width=[Windows.GridLength]::new(1,'Star');[void]$foot.ColumnDefinitions.Add($column)}
  for($i=0;$i -lt $layout.rows;$i++){$r=[Windows.Controls.RowDefinition]::new();$r.Height=[Windows.GridLength]::new(36);[void]$foot.RowDefinitions.Add($r)}
  $items=@();if($Value.back){$items+=@{title='返回';isBack=$true}};$items+=@($Value.buttons);$i=0
- foreach($action in $items){$a=$action;if($a.isBack){$back=$Value.back;$key=$Value.key;$b=Button '返回' ({Send 'navigate' @{} $back $key}.GetNewClosure())}else{$b=Button $a.title ({Act $a}.GetNewClosure()) $a.style};$b.Margin='3,3,3,3';$b.Padding='4,3';$b.FontSize=11;$b.HorizontalAlignment='Stretch';[Windows.Controls.Grid]::SetColumn($b,($i % $layout.columns));[Windows.Controls.Grid]::SetRow($b,[Math]::Floor($i/$layout.columns));[void]$foot.Children.Add($b);$i++}
+ foreach($action in $items){$a=$action;if($a.isBack){$back=$Value.back;$key=$Value.key;$b=Button '返回' {param($data);Send 'navigate' @{} $data.route $data.key} 'secondary' @{route=$back;key=$key}}else{$b=Button $a.title {param($data);Act $data} $a.style $a};$b.Margin='3,3,3,3';$b.Padding='4,3';$b.FontSize=11;$b.HorizontalAlignment='Stretch';[Windows.Controls.Grid]::SetColumn($b,($i % $layout.columns));[Windows.Controls.Grid]::SetRow($b,[Math]::Floor($i/$layout.columns));[void]$foot.Children.Add($b);$i++}
  Refresh-Update;Card-Visual
  if(!$script:CardMotion -and $script:CardProgress -eq 1 -and !(Reduced)){
   $i=0;foreach($part in $grid.Children){$translate=[Windows.Media.TranslateTransform]::new();$part.RenderTransform=$translate;$duration=[Windows.Duration]::new([TimeSpan]::FromMilliseconds(180));$fade=[Windows.Media.Animation.DoubleAnimation]::new(0,1,$duration);$lift=[Windows.Media.Animation.DoubleAnimation]::new(6,0,$duration);$fade.BeginTime=[TimeSpan]::FromMilliseconds($i*15);$lift.BeginTime=$fade.BeginTime;$ease=[Windows.Media.Animation.CubicEase]::new();$ease.EasingMode='EaseOut';$lift.EasingFunction=$ease;$part.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade);$translate.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$lift);$i++}
