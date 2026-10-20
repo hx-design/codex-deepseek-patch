@@ -42,6 +42,65 @@ def native_ui_options():
     return {"creationflags": 0x08000000} if os.name == 'nt' else {}
 
 
+def grant_current_user(directory):
+    """Keep inherited UI access tied to the token user, including elevated writes.
+
+    Preserve the directory's other ACEs. Native APIs avoid a PowerShell startup
+    or module lookup on the first GUI launch.
+    """
+    from ctypes import wintypes as w
+    adv=ctypes.WinDLL('advapi32',use_last_error=True)
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    pointer=ctypes.c_void_p
+    class Trustee(ctypes.Structure):
+        _fields_=[('multiple',pointer),('operation',w.DWORD),('form',w.DWORD),
+                  ('kind',w.DWORD),('name',pointer)]
+    class Access(ctypes.Structure):
+        _fields_=[('permissions',w.DWORD),('mode',w.DWORD),
+                  ('inheritance',w.DWORD),('trustee',Trustee)]
+    kernel.GetCurrentProcess.restype=w.HANDLE
+    kernel.CloseHandle.argtypes=[w.HANDLE]
+    kernel.LocalFree.argtypes=[pointer];kernel.LocalFree.restype=pointer
+    adv.OpenProcessToken.argtypes=[w.HANDLE,w.DWORD,ctypes.POINTER(w.HANDLE)]
+    adv.GetTokenInformation.argtypes=[w.HANDLE,ctypes.c_int,pointer,w.DWORD,ctypes.POINTER(w.DWORD)]
+    adv.ConvertSidToStringSidW.argtypes=[pointer,ctypes.POINTER(pointer)]
+    adv.GetNamedSecurityInfoW.argtypes=[w.LPWSTR,ctypes.c_int,w.DWORD,
+        ctypes.POINTER(pointer),ctypes.POINTER(pointer),ctypes.POINTER(pointer),
+        ctypes.POINTER(pointer),ctypes.POINTER(pointer)]
+    adv.GetNamedSecurityInfoW.restype=w.DWORD
+    adv.SetEntriesInAclW.argtypes=[w.ULONG,ctypes.POINTER(Access),pointer,ctypes.POINTER(pointer)]
+    adv.SetEntriesInAclW.restype=w.DWORD
+    adv.SetNamedSecurityInfoW.argtypes=[w.LPWSTR,ctypes.c_int,w.DWORD,pointer,pointer,pointer,pointer]
+    adv.SetNamedSecurityInfoW.restype=w.DWORD
+    token=w.HANDLE();descriptor=pointer();updated=pointer();sid_text=pointer()
+    if not adv.OpenProcessToken(kernel.GetCurrentProcess(),0x0008,ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        length=w.DWORD()
+        adv.GetTokenInformation(token,1,None,0,ctypes.byref(length))
+        if not length.value:raise ctypes.WinError(ctypes.get_last_error())
+        data=ctypes.create_string_buffer(length.value)
+        if not adv.GetTokenInformation(token,1,data,length,ctypes.byref(length)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid=ctypes.cast(data,ctypes.POINTER(pointer)).contents
+        if not adv.ConvertSidToStringSidW(sid,ctypes.byref(sid_text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        value=ctypes.wstring_at(sid_text)
+        old=pointer();path=str(Path(directory).resolve())
+        code=adv.GetNamedSecurityInfoW(path,1,4,None,None,ctypes.byref(old),None,ctypes.byref(descriptor))
+        if code:raise ctypes.WinError(code)
+        entry=Access(0x1F01FF,2,3,Trustee(None,0,0,1,sid))
+        code=adv.SetEntriesInAclW(1,ctypes.byref(entry),old,ctypes.byref(updated))
+        if code:raise ctypes.WinError(code)
+        code=adv.SetNamedSecurityInfoW(path,1,4,None,None,updated,None)
+        if code:raise ctypes.WinError(code)
+        return value
+    finally:
+        for allocated in (sid_text,updated,descriptor):
+            if allocated:kernel.LocalFree(allocated)
+        kernel.CloseHandle(token)
+
+
 def native_ui_command(script, parameters):
     """Host bundled WinForms code as a command, without changing execution policy.
 
