@@ -434,7 +434,10 @@ class WhaleReliabilityTests(unittest.TestCase):
             while time.monotonic()<end:
                 if predicate():return
                 time.sleep(.1)
-            self.fail('Renderer lifecycle timed out: '+repr(read('renderer.json')))
+            detail=(case.root/'launcher.log').read_bytes().decode('utf-8',errors='replace')[-2000:]
+            error=ui_dir/'renderer-error.log'
+            if error.exists():detail+=' '+error.read_bytes().decode('utf-8',errors='replace')[-2000:]
+            self.fail('Renderer lifecycle timed out: '+repr(read('renderer.json'))+' '+detail)
         command=[str(Path(sys.executable).with_name('pythonw.exe')),str(ui.ROOT/'management.py'),
                  'show','--state-dir',str(case.root)]
         with isolated_desktop_options() as options,(case.root/'launcher.log').open('wb') as log:

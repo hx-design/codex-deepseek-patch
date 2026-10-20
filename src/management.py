@@ -550,19 +550,10 @@ def settings_access(directory):
     try:
         if monitor.load_json(directory/'access.json',{}).get('format')==1:return
     except OSError:pass
-    from official_client_shortcut import _powershell
-    import base64
-    encoded=base64.b64encode(str(directory.resolve()).encode()).decode()
-    script=r'''$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();
-$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PATH__'));
-$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
-$acl=Get-Acl -LiteralPath $p;
-$rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow');
-$acl.SetAccessRule($rule);Set-Acl -LiteralPath $p -AclObject $acl;
-@{sid=$sid}|ConvertTo-Json -Compress'''.replace('__PATH__',encoded)
-    result=_powershell(script)
-    require(re.fullmatch(r'S-\d+(?:-\d+)+',result.get('sid','')),'无法确认设置窗口的用户权限。')
-    monitor.atomic_json(directory/'access.json',{'format':1,'sid':result['sid']})
+    from windows_support import grant_current_user
+    sid=grant_current_user(directory)
+    monitor.atomic_json(directory/'access.json',{'format':1,'sid':sid})
+
 
 
 def _show_locked(directory, *, self_test=False, loop_test=False, page=None, notify=False):
