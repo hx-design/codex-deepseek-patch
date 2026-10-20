@@ -2,7 +2,9 @@
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Windows.Forms,System.Drawing
 $script:UI=Join-Path $StateDirectory 'settings-ui';$script:Jobs=Join-Path $script:UI 'jobs'
-function Read-Json($Path){if(Test-Path -LiteralPath $Path){return [IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8)|ConvertFrom-Json};return $null}
+$script:ReadErrors=@{}
+function Read-Json($Path){try{if(Test-Path -LiteralPath $Path){return [IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8)|ConvertFrom-Json}}catch{if(!$script:ReadErrors[$Path]){$script:ReadErrors[$Path]=$true;[Console]::Error.WriteLine('state_read_failed: '+[IO.Path]::GetFileName($Path)+' '+$_.Exception.GetType().Name)}};return $null}
+
 function Write-Json($Path,$Value){$tmp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp';[IO.File]::WriteAllText($tmp,($Value|ConvertTo-Json -Depth 60 -Compress),[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $tmp -Destination $Path -Force}
 $script:Initial=Read-Json (Join-Path $script:UI 'view.json');$script:Shell=$script:Initial.hub;$script:View=$script:Initial.view;$script:L=$script:Shell.layout
 $script:Pending=$null;$script:UpdateWidgets=$null;$script:UpdateState=$null;$script:Card=$null;$script:Expanded=$false;$script:Hidden=$false;$script:Closing=$false;$script:LastRaise='';$script:Fields=@{};$script:Rows=@();$script:Dragged=$false;$script:DragStart=$null;$script:WindowStart=$null
@@ -62,12 +64,12 @@ $saved=Read-Json (Join-Path $script:UI 'position.json');$work=[Windows.SystemPar
 $x=if($saved){[double]$saved.x}else{$work.Right-102};$y=if($saved){[double]$saved.y}else{$work.Bottom-160};Clamp-Window $script:Hub ($x-$script:L.closed_whale_x) $y $script:L.closed_width $script:L.bubble
 
 function Place($Control,$X,$Y){[Windows.Controls.Canvas]::SetLeft($Control,$X);[Windows.Controls.Canvas]::SetTop($Control,$Y)}
-$script:Whale=Button '' {if(!$script:Dragged){Toggle-Orbit}};$script:Whale.Style=$script:Hub.Resources['Whale'];$script:Whale.Width=$script:L.bubble;$script:Whale.Height=$script:L.bubble;$script:Whale.Margin='0';$script:Whale.ToolTip=Tip '鲸鱼菜单' '拖动贴边 · 右键隐藏';$image=[Windows.Controls.Image]::new();$image.Width=$script:L.bubble;$image.Height=$script:L.bubble;$image.Source=[Windows.Media.Imaging.BitmapImage]::new([uri](Join-Path $script:UI 'brand.png'));$script:Whale.Content=$image;Place $script:Whale $script:L.closed_whale_x 0;[void]$script:Canvas.Children.Add($script:Whale)
+$script:Whale=Button '' {if(!$script:Dragged){Toggle-Orbit}};$script:Whale.Style=$script:Hub.Resources['Whale'];$script:Whale.Width=$script:L.bubble;$script:Whale.Height=$script:L.bubble;$script:Whale.Margin='0';$script:Whale.ToolTip=Tip '鲸鱼菜单' '拖动贴边 · 右键设置';$image=[Windows.Controls.Image]::new();$image.Width=$script:L.bubble;$image.Height=$script:L.bubble;$image.Source=[Windows.Media.Imaging.BitmapImage]::new([uri](Join-Path $script:UI 'brand.png'));$script:Whale.Content=$image;Place $script:Whale $script:L.closed_whale_x 0;[void]$script:Canvas.Children.Add($script:Whale)
 [Windows.Automation.AutomationProperties]::SetName($script:Whale,'鲸鱼菜单')
 function Attach-Drag($Button){
  $Button.Add_PreviewMouseLeftButtonDown({$script:Dragged=$false;$script:DragStart=[Windows.Forms.Cursor]::Position})
  $Button.Add_PreviewMouseMove({param($sender,$event);if($event.LeftButton -eq 'Pressed' -and $script:DragStart){$p=[Windows.Forms.Cursor]::Position;if([Math]::Abs($p.X-$script:DragStart.X)+[Math]::Abs($p.Y-$script:DragStart.Y) -gt 6){$script:Dragged=$true;Detach-Dock;Hide-Orbit;$script:Hub.DragMove();$script:DragStart=$null;Finish-Drag}}})
- $Button.Add_PreviewMouseLeftButtonUp({$script:DragStart=$null});$Button.Add_MouseRightButtonUp({Hide-Hub})
+ $Button.Add_PreviewMouseLeftButtonUp({$script:DragStart=$null});$Button.Add_MouseRightButtonUp({Show-Hub;Open-Card 'preferences' $null 5})
 }
 Attach-Drag $script:Whale
 $script:Hub.Add_LocationChanged({if($script:Dragged -and $script:DragStart -and !$script:HintBusy){$script:HintBusy=$true;try{Update-DockHint}finally{$script:HintBusy=$false}}})
@@ -124,7 +126,7 @@ function Collapse-Orbit($Silent=$false) {
 function Hide-Orbit{Remove-Water;if($script:FoldTimer){$script:FoldTimer.Stop()};Dispose-Card;foreach($p in $script:Sprays){$script:Canvas.Children.Remove($p)};$script:Sprays=@();if(!$script:Expanded){return};$script:Expanded=$false;foreach($b in $script:Nodes){$b.Visibility='Collapsed';$b.BeginAnimation([Windows.Controls.Canvas]::LeftProperty,$null);$b.BeginAnimation([Windows.Controls.Canvas]::TopProperty,$null)};$script:Hub.Left+=$script:L.whale_x-$script:L.closed_whale_x;$script:Hub.Top+=$script:L.whale_y;$script:Hub.Width=$script:L.closed_width;$script:Hub.Height=$script:L.bubble;Place $script:Whale $script:L.closed_whale_x 0;Save-Position;Refresh-Update}
 
 function Hide-Hub{Hide-DockHint;Stop-DockTimer;Hide-Orbit;$script:Hub.Hide();$script:Hidden=$true}
-function Show-Hub($Toggle=$false,$Activate=$true){if($Toggle -and !$script:Hidden){Hide-Hub;return};$script:Hidden=$false;Ensure-DockTimer;if($Activate -and $script:Dock){Peek-Dock $true};$script:Hub.ShowActivated=$Activate;$script:Hub.Show();if($Activate){[void]$script:Hub.Activate()}}
+function Show-Hub($Toggle=$false,$Activate=$true){if($Toggle -and !$script:Hidden){Hide-Hub;return};$script:Hidden=$false;Ensure-DockTimer;if($Activate -and $script:Dock){Peek-Dock $true;$script:Dock.hoverArmed=$false};$script:Hub.ShowActivated=$Activate;$script:Hub.Show();if($Activate){[void]$script:Hub.Activate()}}
 function Capture-Test($Window,$Name){$Window.UpdateLayout();$bitmap=[Windows.Media.Imaging.RenderTargetBitmap]::new([int]$Window.Width*2,[int]$Window.Height*2,192,192,[Windows.Media.PixelFormats]::Pbgra32);$bitmap.Render($Window);$encoder=[Windows.Media.Imaging.PngBitmapEncoder]::new();$encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap));$stream=[IO.File]::Create((Join-Path $script:UI ($Name+'.png')));try{$encoder.Save($stream)}finally{$stream.Dispose()}}
 function Quit-Hub{Hide-DockHint;Stop-DockTimer;$script:DockHint.Close();foreach($sound in $script:Sounds.Values){$sound.Stop();$sound.Dispose()};Remove-Water;$script:Closing=$true;if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.id+'.cancel')) @{id=$script:Pending.id}};if($script:Card){$script:Card.Close()};$script:Hub.Close();$script:Application.Shutdown()}
 function Open-Card($Route,$Key,$Index=0){
@@ -156,7 +158,7 @@ function Morph-Geometry($Progress){
 }
 
 function Card-Visual{if(!$script:Card -or !$script:CardSource -or !$script:CardRoot){return};$geometry=Morph-Geometry $script:CardProgress;$script:CardSkin.Data=$geometry;$script:CardRoot.Clip=$geometry;$q=$script:CardProgress*$script:CardProgress*(3-2*$script:CardProgress);$s=$script:CardSource;$w=$s.size+(320-$s.size)*$q;$h=$s.size+(420-$s.size)*$q;$transform=[Windows.Media.TransformGroup]::new();$transform.Children.Add([Windows.Media.ScaleTransform]::new(($w/320),($h/420)));$transform.Children.Add([Windows.Media.TranslateTransform]::new((($s.x-$s.size/2)*(1-$q)),(($s.y-$s.size/2)*(1-$q))));$script:CardContent.RenderTransform=$transform;$i=0
- foreach($view in $script:CardGrid.Children){$t=[Math]::Max(0,[Math]::Min(1,($script:CardProgress-.60-[Math]::Min($i,8)*.022)/.22));$e=1-[Math]::Pow(1-$t,3);$view.Opacity=$e;$view.RenderTransform=[Windows.Media.TranslateTransform]::new(0,(7*(1-$e)));$i++}
+ foreach($view in $script:CardGrid.Children){$t=[Math]::Max(0,[Math]::Min(1,($script:CardProgress-.25-[Math]::Min($i,8)*.025)/.55));$e=1-[Math]::Pow(1-$t,3);$view.BeginAnimation([Windows.UIElement]::OpacityProperty,$null);$view.Opacity=$e;$view.RenderTransform=[Windows.Media.TranslateTransform]::new(0,(7*(1-$e)));$i++}
 }
 function Animate-Card{if(!$script:CardMotion -or !$script:Card){return};$a=$script:CardMotion;$t=[Math]::Min(1,([DateTime]::UtcNow-$a.start).TotalMilliseconds/$a.duration);$script:CardProgress=$a.from+($a.to-$a.from)*$t;Card-Visual;if($t -ge 1){$script:CardMotion=$null;if($a.to -eq 0){$script:MotionChecks.closed++;$after=$script:CardAfterClose;Dispose-Card;if($after){& $after}}else{$script:MotionChecks.opened++}}}
 
@@ -215,10 +217,17 @@ function Render($Value){$script:View=$Value;if($script:UpdateWidgets){$script:Up
   }
  }
  $status=[Windows.Controls.DockPanel]::new();[Windows.Controls.Grid]::SetRow($status,3);[void]$grid.Children.Add($status);$script:Cancel=Button '取消' {Cancel-Pending};$script:Cancel.FontSize=10;$script:Cancel.Padding='6,2';$script:Cancel.Visibility=if($script:Pending){'Visible'}else{'Collapsed'};[Windows.Controls.DockPanel]::SetDock($script:Cancel,'Right');[void]$status.Children.Add($script:Cancel);$script:Notice=Text $Value.notice 10;$script:Notice.Foreground=Brush $script:Palette.muted;$script:Notice.Margin='0,9,0,9';[void]$status.Children.Add($script:Notice)
- $foot=[Windows.Controls.DockPanel]::new();[Windows.Controls.Grid]::SetRow($foot,4);[void]$grid.Children.Add($foot)
- if($Value.back){$back=$Value.back;$key=$Value.key;$b=Button '返回' ({Send 'navigate' @{} $back $key}.GetNewClosure());[Windows.Controls.DockPanel]::SetDock($b,'Left');[void]$foot.Children.Add($b)}
- $bar=[Windows.Controls.StackPanel]::new();$bar.Orientation='Horizontal';$bar.HorizontalAlignment='Right';[void]$foot.Children.Add($bar)
- Refresh-Update;foreach($action in @($Value.buttons)){$a=$action;$b=Button $a.title ({Act $a}.GetNewClosure()) $a.style;[void]$bar.Children.Add($b)};Card-Visual
+ $foot=[Windows.Controls.Grid]::new();[Windows.Controls.Grid]::SetRow($foot,4);[void]$grid.Children.Add($foot)
+ $layout=$Value.footer;if(!$layout){$layout=@{columns=2;rows=2}}
+ for($i=0;$i -lt $layout.columns;$i++){$column=[Windows.Controls.ColumnDefinition]::new();$column.Width=[Windows.GridLength]::new(1,'Star');[void]$foot.ColumnDefinitions.Add($column)}
+ for($i=0;$i -lt $layout.rows;$i++){$r=[Windows.Controls.RowDefinition]::new();$r.Height=[Windows.GridLength]::new(36);[void]$foot.RowDefinitions.Add($r)}
+ $items=@();if($Value.back){$items+=@{title='返回';isBack=$true}};$items+=@($Value.buttons);$i=0
+ foreach($action in $items){$a=$action;if($a.isBack){$back=$Value.back;$key=$Value.key;$b=Button '返回' ({Send 'navigate' @{} $back $key}.GetNewClosure())}else{$b=Button $a.title ({Act $a}.GetNewClosure()) $a.style};$b.Margin='3,3,3,3';$b.Padding='4,3';$b.FontSize=11;$b.HorizontalAlignment='Stretch';[Windows.Controls.Grid]::SetColumn($b,($i % $layout.columns));[Windows.Controls.Grid]::SetRow($b,[Math]::Floor($i/$layout.columns));[void]$foot.Children.Add($b);$i++}
+ Refresh-Update;Card-Visual
+ if(!$script:CardMotion -and $script:CardProgress -eq 1 -and !(Reduced)){
+  $i=0;foreach($part in $grid.Children){$translate=[Windows.Media.TranslateTransform]::new();$part.RenderTransform=$translate;$duration=[Windows.Duration]::new([TimeSpan]::FromMilliseconds(180));$fade=[Windows.Media.Animation.DoubleAnimation]::new(0,1,$duration);$lift=[Windows.Media.Animation.DoubleAnimation]::new(6,0,$duration);$fade.BeginTime=[TimeSpan]::FromMilliseconds($i*15);$lift.BeginTime=$fade.BeginTime;$ease=[Windows.Media.Animation.CubicEase]::new();$ease.EasingMode='EaseOut';$lift.EasingFunction=$ease;$part.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade);$translate.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$lift);$i++}
+ }
+
 }
 function Build-UpdateRow($Group){
  $title=Text '' 13 $true;$title.Margin='2,1,0,5';[void]$Group.Children.Add($title)
@@ -273,7 +282,8 @@ $script:Phase=0
 $timer=[Windows.Threading.DispatcherTimer]::new();$timer.Interval=[TimeSpan]::FromMilliseconds(250)
 $timer.Add_Tick({try{
  if($script:Pending){$result=Read-Json (Join-Path $script:Jobs ($script:Pending.id+'.result.json'));if($result -and $result.status -ne 'running'){$previous=$script:Pending;$script:Pending=$null;if($script:Cancel){$script:Cancel.Visibility='Collapsed'};Remove-Item -LiteralPath (Join-Path $script:Jobs ($previous.id+'.result.json')) -Force;if($result.status -eq 'completed'){if($result.data.draft -and $previous.payload.values.key){$result.data.draft|Add-Member -NotePropertyName key -NotePropertyValue $previous.payload.values.key -Force};Render $result.data}else{if($script:Notice){$script:Notice.Text=$result.error.message}}}}
- Refresh-Update;$raised=Read-Json (Join-Path $script:UI 'raise.json');if($raised -and $raised.time -ne $script:LastRaise){$script:LastRaise=$raised.time;if($raised.notify){if($script:Hidden){Show-Hub $false $false}}else{Show-Hub ([bool]$raised.toggle);if($raised.page){Open-Card $raised.page $null 2}}}
+ if(!$SelfTest -and (!$script:Heartbeat -or ([DateTime]::UtcNow-$script:Heartbeat).TotalSeconds -ge 2)){$script:Heartbeat=[DateTime]::UtcNow;Write-Json (Join-Path $script:UI 'renderer.json') @{pid=$PID;visible=$script:Hub.IsVisible;card=[bool]$script:Card;route=$script:View.route;time=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}}
+ Refresh-Update;$raised=Read-Json (Join-Path $script:UI 'raise.json');if($raised -and $raised.time -ne $script:LastRaise){$script:LastRaise=$raised.time;if($raised.quit){Quit-Hub;return};if($raised.notify){if($script:Hidden){Show-Hub $false $false}}else{Show-Hub ([bool]$raised.toggle);if($raised.page){Open-Card $raised.page $null 2}}}
  if($SelfTest){if($script:Phase -eq 0){$script:Phase=1;$script:TestStarted=[DateTime]::UtcNow;$route=if($script:Initial.entry.page){$script:Initial.entry.page}else{'models'};Toggle-Orbit;Open-Card $route $null 0;Send 'refresh' @{} $route $null}elseif(!$script:Pending -and $script:Phase -eq 1 -and !$script:CardMotion -and ([DateTime]::UtcNow-$script:TestStarted).TotalMilliseconds -ge 700){$script:Phase=2;if($LoopTest){foreach($progress in @(.3,.6,.85,1)){$script:CardProgress=$progress;Card-Visual;Capture-Test $script:Card ('native-morph-'+[Math]::Round($progress*100))}};Capture-Test $script:Hub 'native-menu';Capture-Test $script:Card 'native-card';if($script:View.route -eq 'updates' -and $script:UpdateState){Capture-Test $script:Hub ('native-badge-'+$script:UpdateState.phase);Capture-Test $script:Card ('native-updates-'+$script:UpdateState.phase)};$script:TestResult=@{categories=$script:Nodes.Count;models=@($script:Initial.models).Count;request_completed=$true;event_loop=$true;closed=$true;visible=$script:Hub.IsVisible;status='操作完成。';orbit_expanded=$script:Expanded;route=$script:View.route;update_attention=[bool]($script:UpdateState -and $script:UpdateState.phase -ne 'completed');badge_visible=$script:Badge.Visibility -eq 'Visible';update_primary=$(if($script:UpdateWidgets){[string]$script:UpdateWidgets.primary.Content}else{$null})};Close-Card}else{Test-Motion}}
 }catch{if($SelfTest){[Console]::Error.WriteLine($_.ToString()+$_.ScriptStackTrace);Quit-Hub}else{throw}}})
 $script:Hub.Add_PreviewKeyDown({param($sender,$event);if($event.Key -eq 'Escape'){if($script:Card){Close-Card}elseif($script:Expanded){Hide-Orbit}else{Hide-Hub};$event.Handled=$true}})

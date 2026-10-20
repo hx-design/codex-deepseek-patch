@@ -513,6 +513,7 @@ def queue_ui_entry(directory, *, page=None, notify=False):
 
 def show(directory, *, self_test=False, loop_test=False, page=None, notify=False):
     directory=Path(directory).resolve();ui=monitor.private_directory(directory/'settings-ui')
+    settings_access(ui)
     monitor.private_directory(ui/'jobs')
     if not self_test:
         from update_progress import _alive
@@ -536,6 +537,32 @@ def show(directory, *, self_test=False, loop_test=False, page=None, notify=False
                         page=entry.get('page',page),notify=entry.get('notify',notify))
                 if self_test:raise SettingsError('window_busy','设置窗口正在运行，请先关闭窗口再检查。')
             time.sleep(.25)
+
+
+def settings_access(directory):
+    """Pin private UI IPC to the user SID, not Windows' mutable OWNER RIGHTS.
+
+    Elevated and ordinary launches can create files with different owners even
+    for the same account. Inherited explicit user access survives those writes.
+    """
+    if os.name!='nt':return
+    directory=Path(directory)
+    try:
+        if monitor.load_json(directory/'access.json',{}).get('format')==1:return
+    except OSError:pass
+    from official_client_shortcut import _powershell
+    import base64
+    encoded=base64.b64encode(str(directory.resolve()).encode()).decode()
+    script=r'''$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();
+$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PATH__'));
+$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+$acl=Get-Acl -LiteralPath $p;
+$rule=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow');
+$acl.SetAccessRule($rule);Set-Acl -LiteralPath $p -AclObject $acl;
+@{sid=$sid}|ConvertTo-Json -Compress'''.replace('__PATH__',encoded)
+    result=_powershell(script)
+    require(re.fullmatch(r'S-\d+(?:-\d+)+',result.get('sid','')),'无法确认设置窗口的用户权限。')
+    monitor.atomic_json(directory/'access.json',{'format':1,'sid':result['sid']})
 
 
 def _show_locked(directory, *, self_test=False, loop_test=False, page=None, notify=False):
@@ -659,7 +686,7 @@ def ensure_launcher(directory):
     ui=monitor.private_directory(directory/'settings-ui')
     owned=monitor.load_json(ui/'launcher.json',{})
     python=str(windowless_python(settings.get('python_path') or sys.executable))
-    command=[python,str(runtime/'management.py'),'show','--state-dir',str(directory)]
+    command=[python,str(runtime/'management.py'),'launch','--state-dir',str(directory)]
     label='Codex 模型设置（'+('DS 版' if p.EDITION=='ds' else '扩展版')+'）'
     brand_digest=p.file_sha(ROOT/'brand.svg')
     if sys.platform=='darwin':
@@ -668,7 +695,9 @@ def ensure_launcher(directory):
         files={'Contents/MacOS/settings':('#!/bin/sh\nexec '+shlex.join(command)+'\n').encode(),
             'Contents/Info.plist':plistlib.dumps({'CFBundleIdentifier':bundle,'CFBundleName':label,
                 'CFBundleDisplayName':label,'CFBundleExecutable':'settings','CFBundlePackageType':'APPL',
-                'LSUIElement':True,'NSHighResolutionCapable':True,'CFBundleIconFile':'model-patch.icns',
+                'LSUIElement':True,'NSHighResolutionCapable':True,
+                'CFBundleVersion':'2.'+str(int(brand_digest[:6],16)),
+                'CFBundleIconFile':'model-patch-'+brand_digest[:12]+'.icns',
                 'LSArchitecturePriority':['arm64','x86_64']})}
     elif sys.platform=='win32':
         destination=Path(os.environ['APPDATA'])/'Microsoft/Windows/Start Menu/Programs'/(label+'.lnk')
@@ -682,20 +711,31 @@ def ensure_launcher(directory):
             require(path.is_file() and not path.is_symlink() and p.file_sha(path)==digest,'设置入口已被用户修改，已保留。')
         if owned.get('command')==command and owned.get('brand')==brand_digest:return str(destination)
     _,brand=brand_assets(ui)
-    if files is not None:files['Contents/Resources/model-patch.icns']=brand['icns'].read_bytes()
+    if files is not None:files['Contents/Resources/model-patch-'+brand_digest[:12]+'.icns']=brand['icns'].read_bytes()
     destination.parent.mkdir(parents=True,exist_ok=True)
     if files is not None:
         for name,raw in files.items():
             target=destination/name;target.parent.mkdir(parents=True,exist_ok=True)
             private_write(target,raw)
             target.chmod(0o755 if name.endswith('/settings') else 0o644)
+        for name in owned.get('files',{}):
+            if name not in files:
+                (destination/name).unlink(missing_ok=True)
         hashes={name:p.sha(raw) for name,raw in files.items()}
+        # Change the icon URL as well as its bytes; Finder caches icons by URL.
+        os.utime(destination,None)
+        registrar=Path('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister')
+        if registrar.is_file():
+            subprocess.run([str(registrar),'-f',str(destination)],capture_output=True,timeout=10)
     else:
         from official_client_shortcut import write_link, _atomic
         staged=ui/'settings-entry.lnk'
+        icon=ui/('brand-'+brand_digest[:12]+'.ico')
+        private_write(icon,brand['ico'].read_bytes())
         write_link(staged,{'target':python,'arguments':subprocess.list2cmdline(command[1:]),
-            'working_directory':str(directory),'icon':str(brand['ico'])+',0'})
+            'working_directory':str(directory),'icon':str(icon)+',0'})
         _atomic(destination,staged.read_bytes());staged.unlink()
+        ctypes.windll.shell32.SHChangeNotify(0x00002000,0x0005,str(destination),None)
         hashes={'':p.file_sha(destination)}
     monitor.atomic_json(ui/'launcher.json',{'format':1,'edition':p.EDITION,'path':str(destination),'command':command,'files':hashes,'brand':brand_digest})
     return str(destination)
@@ -707,10 +747,11 @@ def maintenance(directory):
     if not (directory/'runtime/management.py').is_file():return
     ui=monitor.private_directory(directory/'settings-ui')
     previous=monitor.load_json(ui/'maintenance.json',{})
-    if time.time()-previous.get('checked_at',0)<86400:return
+    fingerprint=p.file_sha(ROOT/'management.py')+p.file_sha(ROOT/'brand.svg')
+    if previous.get('source')==fingerprint and time.time()-previous.get('checked_at',0)<86400:return
     with monitor.state_lock(ui/'maintenance') as locked:
         if not locked:return
-        outcome={'checked_at':time.time()}
+        outcome={'checked_at':time.time(),'source':fingerprint}
         try:outcome['launcher']=ensure_launcher(directory)
         except Exception as error:outcome['launcher_error']=public_error(error)['code']
         try:
@@ -744,7 +785,7 @@ def remove_launcher(directory):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('show','execute','diagnose'))
+    parser.add_argument('action',choices=('launch','show','close','execute','diagnose'))
     parser.add_argument('--state-dir',type=Path)
     parser.add_argument('--request')
     parser.add_argument('--page',choices=('models','connections','updates','tools','diagnostics','preferences'))
@@ -753,7 +794,19 @@ def main(argv=None):
     parser.add_argument('--loop-test',action='store_true')
     args=parser.parse_args(argv);directory=find_directory(args.state_dir)
     try:
-        if args.action=='execute':run_request(directory,args.request)
+        if args.action=='close':
+            monitor.atomic_json(directory/'settings-ui/raise.json',{'time':uuid.uuid4().hex,'quit':True})
+        elif args.action=='launch':
+            # A launcher must exit promptly: LaunchServices otherwise sends a
+            # reopen AppleEvent to a Python process with no application delegate.
+            from official_client_host import windowless_python
+            command=[str(windowless_python(sys.executable)),str(ROOT/'management.py'),
+                     'show','--state-dir',str(directory)]
+            if args.page:command+=['--page',args.page]
+            options=__import__('windows_support').background_options() if os.name=='nt' else {'start_new_session':True}
+            subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,**options)
+        elif args.action=='execute':run_request(directory,args.request)
         elif args.action=='diagnose':print(json.dumps(diagnose(directory,endpoints=True),ensure_ascii=False,indent=2))
         else:
             require(not args.loop_test or args.self_test,'窗口交互检查需要独立测试模式。')
@@ -1040,13 +1093,13 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         buttons += [hub_button('运行诊断','diagnose',style='primary')]
         if extra:buttons.append(hub_button('复制报告','copy',text=extra.get('text','')))
     elif route=='preferences':
-        data['subtitle']='小窗按需打开；隐藏后可用快捷键呼出。'
+        data['subtitle']='右键进入设置 · 隐藏后随时唤醒。'
         rows += [hub_field('theme','外观',opts['theme'],'choice',
                        choices=[['system','跟随系统'],['light','浅色'],['dark','深色']]),
                  hub_field('motion','动效',opts['motion'],'choice',choices=[['system','跟随系统'],['reduced','减少动效']]),
                  hub_field('sound','气泡音效',opts['sound'],'toggle'),
                  hub_field('hotkey','快捷键呼出 · '+hub_shell(directory)['shortcut'],opts['hotkey'],'toggle'),
-                 {'type':'note','text':'完全退出小窗会释放快捷键；再次打开 App 或开始菜单入口即可恢复。'},
+                 {'type':'note','text':'隐藏后可按快捷键，或再次点击 App / 开始菜单中的「Codex 模型设置」。退出小窗会释放快捷键。'},
                  hub_item('版本与状态','当前补丁、诊断与脱敏报告','diagnostics')]
         buttons += [hub_button('隐藏','hide'),hub_button('退出小窗','quit'),hub_button('保存','save_ui_options',style='primary')]
     elif route in ('preferences/maintenance','updates/maintenance'):
@@ -1057,7 +1110,17 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                  {'type':'action',**hub_button('撤销模型补丁','confirm_restore',style='danger')},
                  {'type':'note','text':'恢复操作会保留官方应用、登录和聊天记录。'}]
     else:require(False,'未知设置页面。')
+    data['footer']=footer_layout(buttons,bool(data.get('back')))
     return data
+
+
+def footer_layout(buttons, back=False):
+    """Shared bounded footer rows; long labels never compete with Back."""
+    count=len(buttons)+(1 if back else 0)
+    columns=2 if count>3 or any(len(b['title'])>6 for b in buttons) else max(1,count)
+    rows=math.ceil(count/columns)
+    return {'columns':columns,'rows':rows,'top':410-rows*36,
+            'width':(292-(columns-1)*6)/columns,'height':30,'gap':6}
 
 
 def hub_number(value):
@@ -1181,10 +1244,10 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
 
 class Hotkey:
     """Register one shortcut, not a keyboard monitor. No accessibility permission."""
-    def __init__(self, directory):
+    def __init__(self, directory, *, key_code=2):
         self.directory=Path(directory);self.enabled=False;self.registered=False;self.error=None
         self.carbon=None;self.hotkey=ctypes.c_void_p();self.handler=ctypes.c_void_p()
-        self.last=0
+        self.last=0;self.key_code=key_code
     def toggle(self):
         if time.monotonic()-self.last<.3:return
         self.last=time.monotonic()
@@ -1192,7 +1255,10 @@ class Hotkey:
     def configure(self, enabled):
         if enabled==self.enabled:return
         self.enabled=enabled
-        if not enabled:self.close();return
+        if not enabled:
+            self.close()
+            monitor.atomic_json(self.directory/'settings-ui/hotkey.json',{'registered':False,'error':None})
+            return
         self.error=None
         try:
             if sys.platform=='darwin':
@@ -1208,7 +1274,11 @@ class Hotkey:
                 event=EventType(0x6b657962,6)
                 target=c.GetApplicationEventTarget()
                 if c.InstallEventHandler(target,self.callback,1,ctypes.byref(event),None,ctypes.byref(self.handler)):raise OSError('handler')
-                if c.RegisterEventHotKey(2,4096|2048,HotkeyID(0x57484c45,1),target,0,ctypes.byref(self.hotkey)):raise OSError('shortcut')
+                if c.RegisterEventHotKey(self.key_code,4096|2048,HotkeyID(0x57484c45,1),target,0,ctypes.byref(self.hotkey)):raise OSError('shortcut')
+                c.ReceiveNextEvent.argtypes=[ctypes.c_uint32,ctypes.c_void_p,ctypes.c_double,ctypes.c_bool,ctypes.POINTER(ctypes.c_void_p)]
+                c.GetEventDispatcherTarget.restype=ctypes.c_void_p
+                c.SendEventToEventTarget.argtypes=[ctypes.c_void_p,ctypes.c_void_p]
+                c.ReleaseEvent.argtypes=[ctypes.c_void_p]
             elif sys.platform=='win32':
                 if not ctypes.windll.user32.RegisterHotKey(None,0x5748,0x4000|0x0001|0x0002,ord('D')):raise OSError('shortcut')
             self.registered=True
@@ -1216,11 +1286,13 @@ class Hotkey:
             self.close();self.error='快捷键已被占用，可从 App 或开始菜单打开。'
         monitor.atomic_json(self.directory/'settings-ui/hotkey.json',{'registered':self.registered,'error':self.error})
     def pump(self):
-        if sys.platform=='darwin':
-            cf=ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
-            cf.CFRunLoopRunInMode.argtypes=[ctypes.c_void_p,ctypes.c_double,ctypes.c_bool]
-            mode=ctypes.c_void_p.in_dll(cf,'kCFRunLoopDefaultMode')
-            cf.CFRunLoopRunInMode(mode,.2,True)
+        if sys.platform=='darwin' and self.carbon:
+            # Carbon registration queues an EventRef; a CFRunLoop alone never
+            # dispatches it to our application handler.
+            event=ctypes.c_void_p()
+            if self.carbon.ReceiveNextEvent(0,None,.2,True,ctypes.byref(event))==0:
+                try:self.carbon.SendEventToEventTarget(event,self.carbon.GetEventDispatcherTarget())
+                finally:self.carbon.ReleaseEvent(event)
         elif sys.platform=='win32':
             from ctypes import wintypes
             msg=wintypes.MSG()
@@ -1246,14 +1318,32 @@ def run_host(command, directory, **kwargs):
     host=Path(directory)/'settings-ui/host.json'
     monitor.atomic_json(host,{'pid':os.getpid(),'edition':p.EDITION,'view':HOST_VIEW})
     try:
-        with subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL,**kwargs) as child:
-            last=0
-            while child.poll() is None:
-                if time.monotonic()-last>1:
-                    hotkey.configure(hub_options(directory)['hotkey']);last=time.monotonic()
-                hotkey.pump()
-            return subprocess.CompletedProcess(command,child.returncode,b'',b'')
+        failures=0;last_raise=None
+        while True:
+            # Retain a bounded private error tail instead of losing the actual
+            # renderer error. Never include it in exported diagnostics.
+            with tempfile.TemporaryFile() as output:
+                child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=output,**kwargs)
+                monitor.atomic_json(host,{'pid':os.getpid(),'renderer_pid':child.pid,'edition':p.EDITION,'view':HOST_VIEW})
+                started=time.monotonic();last=0
+                while child.poll() is None:
+                    if time.monotonic()-last>1:
+                        hotkey.configure(hub_options(directory)['hotkey']);last=time.monotonic()
+                    hotkey.pump()
+                if child.returncode==0:return subprocess.CompletedProcess(command,0,b'',b'')
+                output.seek(0,os.SEEK_END);output.seek(max(0,output.tell()-16384))
+                private_write(host.parent/'renderer-error.log',output.read())
+            failures=1 if time.monotonic()-started>60 else failures+1
+            monitor.atomic_json(host.parent/'renderer-status.json',{'exit':child.returncode,'failures':failures,'time':time.time()})
+            if failures<3:
+                time.sleep(.5*failures)
+                continue
+            # Keep the shortcut and App entry alive after repeated failures,
+            # without a relaunch storm. An explicit wake retries once.
+            last_raise=monitor.load_json(host.parent/'raise.json',{}).get('time')
+            while monitor.load_json(host.parent/'raise.json',{}).get('time')==last_raise:
+                hotkey.configure(hub_options(directory)['hotkey']);hotkey.pump()
+            failures=2
     finally:
         hotkey.close()
         if monitor.load_json(host,{}).get('pid')==os.getpid():host.unlink(missing_ok=True)
