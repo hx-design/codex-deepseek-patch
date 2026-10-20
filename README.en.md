@@ -1,9 +1,11 @@
+<img src="src/brand.svg" width="88" alt="Codex Model Patch: a terminal prompt inside a blue whale">
 
-# Codex DeepSeek Adapter
 
-Add DeepSeek Flash alongside native GPT in the official Codex model picker, keeping the original login, tools and same-chat switching.
+# Codex × DeepSeek
 
-DS **0.5.0**, update branch `main`.
+**Use DeepSeek in the original Codex.** Add DeepSeek Flash alongside GPT, keep your login and native tools, and switch within one chat. Manage credentials, context limits and patch updates in the settings window.
+
+DS **0.5.1**, update branch `main`.
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
@@ -20,11 +22,13 @@ The extension does not require DeepSeek. Existing services continue to own subsc
 
 The official app stays unchanged: no ASAR edits, macOS re-signing, or copied Windows app. Windows retains its Store package identity and native updater. A small Python standard-library service listens only on loopback, forwarding GPT authentication to its original destination and using separate credentials for registered model services.
 
-The built-in `openai` provider identity is retained, including composer predictions. Model selection, permissions, tool execution and compaction scheduling remain native; external models generate portable readable handoffs through their own service. Switch models after the current reply completes. Provider-specific reasoning signatures are isolated across models; readable history and tool results remain available. Context defaults follow model maxima, while explicit reductions and hidden models are preserved.
+The built-in `openai` identity and native prediction request path are retained. Codex owns GPT stream deadlines, model selection, permissions, tools and compaction scheduling; external models generate readable handoffs through their own service. Switch models after the current reply completes. Provider-specific reasoning signatures are isolated across models; readable history and tool results remain available. Context defaults follow model maxima, while explicit reductions and hidden models are preserved.
 
 The adapter supports Responses and Chat Completions protocols. Claude, GLM, Qwen and other models can use existing services exposing these compatible APIs. Raw Anthropic Messages is not implemented. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
 
 Python 3.11+ and the official macOS/Windows Codex app are required. The native path has no additional Node.js requirement, resident management UI, database or model engine. A per-user system service runs the adapter; a separate scheduled monitor checks code/models and exits. Windows processes are windowless. Legacy code remains for recovery and regression, not new app modification.
+
+Composer predictions follow the official client's feature gates, supported models, sampling and request deadline, and require an eligible completed chat with an empty composer. Native prediction requests and actual composer display are validated separately. Update windows are explicitly labeled **Codex Model Patch Update**, with the DS/extension channel; the official app retains its own updater.
 
 
 ## Prepare and install

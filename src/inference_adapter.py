@@ -243,10 +243,20 @@ def network_proxy(url, profile):
     return proxies.get(scheme) or proxies.get('all')
 
 
-def _open(url, raw, headers, operation, profile):
+def _open(url, raw, headers, operation, profile, *, official=False):
     parsed = urlsplit(url)
-    connection = create_http_connection(url, timeout=120, proxy_url=network_proxy(url, profile))
+    connection = create_http_connection(url, timeout=15 if official else 120, proxy_url=network_proxy(url, profile))
     operation.attach(connection)
+    if official:
+        connection.connect()
+        operation.socket = connection.sock
+        if operation.cancelled.is_set():
+            operation.cancel()
+            raise OSError('Request cancelled')
+        # The native client owns inference/compaction idle deadlines. A shorter
+        # relay deadline breaks otherwise valid long responses. Its disconnect
+        # watcher still cancels this socket, including a silent upstream.
+        connection.sock.settimeout(None)
     target = parsed.path or '/'
     connection.request('POST', target, body=raw, headers=dict(headers))
     operation.socket = connection.sock
@@ -580,7 +590,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                 proxy_url=network_proxy(url, self.server.profile))
                         except (OSError, ValueError):
                             raise RelayError(502, 'upstream_unavailable', 'The official model connection is unavailable') from None
-                        upstream.sock.settimeout(120)
+                        upstream.sock.settimeout(None)  # Native client owns the stream deadline.
                     client = accept_websocket(self, response_headers=sticky)
                     upgraded = True
                     self.server.session_factory(self, client, upstream=upstream).run()
@@ -624,10 +634,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         stop = threading.Event()
         try:
             endpoint = self.boundary()
-            if endpoint.endswith('/responses/compact'):
-                raise RelayError(501, 'remote_compaction_unsupported', 'Remote compaction is unavailable at this endpoint')
+            standalone_compaction = endpoint == '/backend-api/codex/responses/compact'
             auxiliary = endpoint == '/backend-api/codex/alpha/search'
-            if endpoint != '/backend-api/codex/responses' and not auxiliary:
+            if endpoint != '/backend-api/codex/responses' and not auxiliary and not standalone_compaction:
                 raise RelayError(404, 'unsupported_endpoint', 'Unsupported local endpoint')
             if self.headers.get('Content-Encoding', 'identity').lower() != 'identity':
                 raise RelayError(415, 'unsupported_encoding', 'Use an uncompressed JSON request')
@@ -655,7 +664,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.watch_disconnect(operation, stop)
                 url = self.gpt_url().rsplit('/responses', 1)[0] + '/alpha/search'
                 forwarded = True
-                response = _open(url, raw, sanitize_headers(self.headers), operation, self.server.profile)
+                response = _open(url, raw, sanitize_headers(self.headers), operation, self.server.profile, official=True)
                 self.send_response(response.status)
                 for name, value in sanitize_headers(response.getheaders(), request=False):
                     self.send_header(name, value)
@@ -672,6 +681,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             started = True
             self.watch_disconnect(operation, stop)
             route = self.server.profile['routes'].get(body['model'])
+            if standalone_compaction and route:
+                raise RelayError(501, 'remote_compaction_unsupported', 'Standalone compaction is unavailable for this model route')
             adapter = None
             protocol = None
             if route:
@@ -702,10 +713,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body, _, changed = _resolve_origin(self.server, body)
                 if changed:
                     raw = _json(body)
-                url = self.gpt_url()
+                url = self.gpt_url() + ('/compact' if standalone_compaction else '')
                 headers = sanitize_headers(self.headers)
             forwarded = True
-            response = _open(url, raw, headers, operation, self.server.profile)
+            response = _open(url, raw, headers, operation, self.server.profile, official=not route)
             response_headers = sanitize_headers(response.getheaders(), request=False)
             content_type = response.getheader('Content-Type', '')
             if route and 'text/event-stream' not in content_type:
@@ -990,7 +1001,7 @@ class WebSocketSession:
                     url = self.handler.gpt_url().replace('https://', 'wss://', 1).replace('http://', 'ws://', 1)
                     upstream, _ = connect_websocket(url, self.handler.headers, timeout=15,
                         proxy_url=network_proxy(url, self.handler.server.profile))
-                    upstream.sock.settimeout(120)
+                    upstream.sock.settimeout(None)  # Native client owns the stream deadline.
                     if self.closed.is_set():
                         upstream.close()
                         return

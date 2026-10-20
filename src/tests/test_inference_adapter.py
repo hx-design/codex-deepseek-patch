@@ -38,6 +38,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers['Content-Length']))
         body = json.loads(raw)
         self.server.seen.append((self.path, dict(self.headers), raw, body))
+        if body.get('metadata',{}).get('fixture_delay'):
+            time.sleep(.12)
         if self.path.startswith('/redirect/'):
             self.send_response(302)
             self.send_header('Location', 'https://credential-leak.invalid/')
@@ -99,6 +101,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
                 elif body.get('input') == 'hang':
                     self.server.hanging.set()
                 else:
+                    if body.get('metadata',{}).get('fixture_delay'):
+                        time.sleep(.12)
                     ws.send(encoded({'type': 'response.completed', 'response': {'id': 'gpt-fixture', 'output': []}}))
         except OSError:
             pass
@@ -176,6 +180,52 @@ class AdapterTests(unittest.TestCase):
             result.append(value)
             if value['type'] in relay.TERMINAL:
                 return result
+
+    def test_native_silent_http_wait_and_standalone_compaction_keep_original_auth(self):
+        factory=relay.create_http_connection
+        def short_connect(*args,**kwargs):
+            kwargs['timeout']=.03  # A connect deadline must not become an inference deadline.
+            return factory(*args,**kwargs)
+        for edition in ('ds','proxy'):
+            self.server.profile['edition']=edition
+            for suffix in ('','/compact'):
+                with self.subTest(edition=edition,suffix=suffix),patch.object(relay,'create_http_connection',side_effect=short_connect):
+                    body={'model':'gpt-fixture','input':[{'type':'compaction_trigger'}],
+                          'metadata':{'fixture_delay':True}}
+                    status,_,raw=self.request(body,path=self.path+suffix,
+                        headers={'Authorization':'Bearer native-fixture','ChatGPT-Account-ID':'account-fixture'})
+                    self.assertEqual(status,200,raw)
+                    path,headers,transmitted,_=self.upstream.seen[-1]
+                    self.assertEqual(path,'/chatgpt/responses'+suffix)
+                    self.assertEqual(transmitted,encoded(body))
+                    self.assertEqual(headers['Authorization'],'Bearer native-fixture')
+
+    def test_native_silent_websocket_wait_is_owned_by_client_for_early_and_late_connect(self):
+        factory=relay.connect_websocket
+        sockets=[]
+        def short_connect(*args,**kwargs):
+            value=factory(*args,**kwargs);value[0].sock.settimeout(.03);sockets.append(value[0].sock)
+            return value
+        for edition in ('ds','proxy'):
+            self.server.profile['edition']=edition
+            for hint in ({},{'x-codex-turn-metadata':json.dumps({'model':'gpt-fixture'})}):
+                with self.subTest(edition=edition,early=bool(hint)),patch.object(relay,'connect_websocket',side_effect=short_connect):
+                    ws=self.connect(**hint)
+                    try:
+                        ws.send(encoded({'type':'response.create','model':'gpt-fixture','input':[],
+                                         'metadata':{'fixture_delay':True}}))
+                        self.assertEqual(self.receive_terminal(ws)[-1]['type'],'response.completed')
+                        self.assertIsNone(sockets[-1].gettimeout())
+                    finally:ws.close()
+
+    def test_native_silent_http_cancel_closes_upstream(self):
+        self.server.profile['gpt']['api_base_url']=self.base+'/hang'
+        conn=http.client.HTTPConnection('127.0.0.1',self.server.server_port,timeout=3)
+        conn.request('POST',self.path,body=encoded({'model':'gpt-fixture','stream':True,'input':[]}))
+        response=conn.getresponse()
+        self.assertTrue(self.upstream.hanging.wait(2))
+        response.close();conn.close()
+        self.assertTrue(self.upstream.cancelled.wait(2),'Native cancellation left a silent upstream open')
 
     def test_health_path_token_host_origin_and_encoding_boundaries(self):
         status, _, raw = self.request(path='/' + self.profile['token'] + '/health', method='GET')

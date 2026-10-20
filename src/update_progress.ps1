@@ -60,7 +60,8 @@ function Short-Text($Value, [int]$Limit) {
 }
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Codex 更新'
+$form.Text = 'Codex 模型补丁更新'
+if(Test-Path (Join-Path $StateDirectory 'settings-ui/brand.ico')){$form.Icon=[Drawing.Icon]::new((Join-Path $StateDirectory 'settings-ui/brand.ico'))}
 $form.ClientSize = New-Object Drawing.Size(560, 300)
 $form.MinimumSize = New-Object Drawing.Size(540, 338)
 $form.StartPosition = 'CenterScreen'
@@ -73,7 +74,7 @@ $form.ForeColor = [Drawing.Color]::FromArgb(239, 241, 244)
 $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10)
 
 $brand = New-Object Windows.Forms.Label
-$brand.Text = 'CODEX'
+$brand.Text = 'CODEX · 模型补丁'
 $brand.Location = New-Object Drawing.Point(28, 22)
 $brand.Size = New-Object Drawing.Size(490, 24)
 $brand.ForeColor = [Drawing.Color]::FromArgb(151, 160, 174)

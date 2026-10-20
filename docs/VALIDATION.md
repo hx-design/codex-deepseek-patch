@@ -1,3 +1,15 @@
+# Settings launch and native stream ownership
+
+2026-10-20. Follow-up checks reproduced two production launcher defects. Finder could launch JXA through Rosetta and stall in libffi callback initialization; Windows startup flags intended to hide a console also hid the first WinForms window. Native UI launch now pins the Mac host architecture and uses Windows `CREATE_NO_WINDOW` without a hidden-window startup override. A private-desktop Windows test verifies the actual window visibility, and both native event-loop tests click Refresh and close through the window callback.
+
+The official GPT relay no longer imposes a shorter 120-second stream timeout. The native client owns inference/compaction idle deadlines and cancellation; transport connection establishment remains bounded. Delayed HTTP and early/late WebSocket tests exercise this distinction in both editions. A silent HTTP cancellation closes the upstream socket. The exact official standalone compaction endpoint retains original authentication and request bytes; external routes and arbitrary paths remain rejected.
+
+Read-only WorkPC evidence showed the reported conversation completing native compaction after WebSocket retries and HTTP fallback. Its window remained 872,000 before and after compaction. Independent small live checks on Mac and Windows completed a native GPT turn, experimental prediction fork and nonempty JSON suggestion with the installed 0.6.0 adapter. Desktop display eligibility remains a separate investigation; no prediction gate or sampling policy was overridden.
+
+The code-prompt/blue-whale mark is a small source SVG. Launcher icons are generated locally with Python's standard library; no image runtime or binary application bundle is shipped. Update panels explicitly identify the model patch and edition.
+
+---
+
 # Settings, maintenance and native feature preservation
 
 2026-10-20. The coordinated DS 0.5 / extension 0.6 candidate adds an on-demand AppKit/WinForms settings window, queued update checks, verified archive downloads, conservative owned-cache cleanup, redacted diagnostics and cancellable old-history recovery status.

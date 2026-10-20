@@ -150,6 +150,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(value['status'],'操作完成。')
         self.assertTrue(value['closed'])
 
+    @unittest.skipUnless(sys.platform in ('darwin','win32'),'Native settings event loop')
+    def test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui(self):
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        self.save(self.root/'settings.json',{**self.settings,'edition':channel})
+        self.save(self.build/'manifest.json',{**self.manifest,'edition':channel})
+        with patch.object(ui.p,'EDITION',channel):result=ui.show(self.root,self_test=True,loop_test=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+        value=json.loads(result.stdout.decode('utf-8-sig'))
+        self.assertEqual(value['status'],'操作完成。')
+        self.assertEqual(value['models'],2)
+        self.assertTrue(value['event_loop']);self.assertTrue(value['closed'])
+        if sys.platform=='win32':self.assertTrue(value['visible'])
+
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Per-user native entry')
     def test_settings_entry_is_separate_idempotent_and_preserves_user_edits(self):
         runtime=self.root/'runtime';runtime.mkdir();(runtime/'management.py').write_text('#fixture')

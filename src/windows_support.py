@@ -37,6 +37,11 @@ def background_options():
     return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": startup}
 
 
+def native_ui_options():
+    """Suppress a console without hiding the application's first GUI window."""
+    return {"creationflags": 0x08000000} if os.name == 'nt' else {}
+
+
 def native_ui_command(script, parameters):
     """Host bundled WinForms code as a command, without changing execution policy.
 
@@ -52,7 +57,7 @@ def native_ui_command(script, parameters):
 $v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__VALUE__'))|ConvertFrom-Json;
 $p=@{};foreach($entry in $v.parameters.PSObject.Properties){$p[$entry.Name]=$entry.Value};
 $ui=[ScriptBlock]::Create([IO.File]::ReadAllText($v.script,[Text.Encoding]::UTF8));& $ui @p'''.replace('__VALUE__',value)
-    return ['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-STA','-WindowStyle','Hidden',
+    return ['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-STA',
             '-EncodedCommand',base64.b64encode(code.encode('utf-16le')).decode()]
 
 
@@ -106,7 +111,9 @@ def desktop_process(args, desktop, *, env, cwd, stdout):
         try:
             for h in handles:os.set_handle_inheritable(h,True)
             startup = Startup();startup.cb=ctypes.sizeof(startup);startup.desktop=desktop
-            startup.flags=0x101;startup.show=0
+            # The private desktop supplies isolation. Do not hide the first
+            # GUI window: the probe must exercise the production show path.
+            startup.flags=0x100
             startup.stdin=handles[0];startup.stdout=startup.stderr=handles[1]
             command=ctypes.create_unicode_buffer(subprocess.list2cmdline([str(a) for a in args]))
             environment=ctypes.create_unicode_buffer('\0'.join(k+'='+v for k,v in sorted(env.items()))+'\0\0')

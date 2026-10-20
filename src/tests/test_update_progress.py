@@ -149,7 +149,8 @@ class ProgressTest(unittest.TestCase):
             self.progress.present()
             self.assertEqual(self.spawn_mock.call_count,2)
         command=self.spawn_mock.call_args.args[0]
-        self.assertEqual(command[:3],['/usr/bin/osascript','-l','JavaScript'])
+        index=command.index('/usr/bin/osascript')
+        self.assertEqual(command[index:index+3],['/usr/bin/osascript','-l','JavaScript'])
         self.assertEqual(command[-3],str(self.root))
 
     def test_live_panel_not_duplicated_on_completion(self):
@@ -219,7 +220,7 @@ class ProgressTest(unittest.TestCase):
         with mock.patch.object(u.sys,'platform','win32'),mock.patch.object(u,'_python',return_value='C:/Python/pythonw.exe'):
             self.progress.present()
         args=self.spawn_mock.call_args.args[0]
-        self.assertIn('-STA',args);self.assertIn('Hidden',args)
+        self.assertIn('-STA',args);self.assertNotIn('-WindowStyle',args)
         wrapper=base64.b64decode(args[args.index('-EncodedCommand')+1]).decode('utf-16le')
         payload=json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)",wrapper)[1]))
         self.assertEqual(payload['parameters']['StateDirectory'],str(self.root))
@@ -228,6 +229,22 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(Path(payload['script']).name,'update_progress.ps1')
         self.assertNotIn('ExecutionPolicy',wrapper)
         self.assertNotIn(str(self.root),wrapper)  # Paths are data, never shell source.
+
+    def test_native_view_hides_console_without_hiding_gui(self):
+        self.spawn.stop()
+        try:
+            with mock.patch.object(u.subprocess,'Popen') as popen,mock.patch.object(u.os,'name','nt'):
+                u._spawn(['powershell.exe','view'],self.root,view=True)
+            self.assertEqual(popen.call_args.kwargs['creationflags'],0x08000000)
+            self.assertNotIn('startupinfo',popen.call_args.kwargs)
+        finally:self.spawn.start()
+
+    def test_macos_gui_architecture_is_explicit_for_finder_launch(self):
+        for machine in ('arm64','x86_64'):
+            with mock.patch('platform.machine',return_value=machine):
+                command=u.macos_ui_command('/private/test.js','/private/state with spaces')
+            self.assertEqual(command[:3],['/usr/bin/arch','-'+machine,'/usr/bin/osascript'])
+            self.assertEqual(command[-1],'/private/state with spaces')
 
     def test_mac_normal_close_exact_paths_no_kill(self):
         with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u.subprocess,'run') as run:

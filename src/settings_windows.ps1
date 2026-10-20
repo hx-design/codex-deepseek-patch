@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory=$true)][string]$StateDirectory,[Parameter(Mandatory=$true)][string]$PythonExecutable,[Parameter(Mandatory=$true)][string]$ControllerPath,[switch]$SelfTest)
+﻿param([Parameter(Mandatory=$true)][string]$StateDirectory,[Parameter(Mandatory=$true)][string]$PythonExecutable,[Parameter(Mandatory=$true)][string]$ControllerPath,[switch]$SelfTest,[switch]$LoopTest)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -32,12 +32,14 @@ function Dialog([string]$Title,$Rows,$Buttons){
 $script:State=Read-Json (Join-Path $script:UI 'view.json')
 if(!$script:State){throw 'Settings snapshot is missing'}
 $script:Form=[Windows.Forms.Form]::new();$script:Form.Text='Codex 模型设置';$script:Form.ClientSize=[Drawing.Size]::new(920,690);$script:Form.StartPosition='CenterScreen';$script:Form.FormBorderStyle='FixedSingle';$script:Form.MaximizeBox=$false;$script:Form.AutoScaleMode='Dpi';$script:Form.Font=[Drawing.Font]::new('Microsoft YaHei UI',9.5);$script:Form.BackColor=[Drawing.Color]::FromArgb(247,248,250)
-[void](Label $script:Form 26 22 650 36 'Codex 模型设置' 20 $true)
+if(Test-Path (Join-Path $script:UI 'brand.ico')){$script:Form.Icon=[Drawing.Icon]::new((Join-Path $script:UI 'brand.ico'))}
+if(Test-Path (Join-Path $script:UI 'brand.png')){$mark=[Windows.Forms.PictureBox]::new();$mark.SetBounds(28,22,38,38);$mark.SizeMode='Zoom';$mark.Image=[Drawing.Image]::FromFile((Join-Path $script:UI 'brand.png'));$script:Form.Controls.Add($mark)}
+[void](Label $script:Form 78 22 650 36 'Codex 模型设置' 20 $true)
 $script:Subtitle=Label $script:Form 28 61 860 28 '' 9
 $tabs=[Windows.Forms.TabControl]::new();$tabs.SetBounds(22,102,876,522);$script:Form.Controls.Add($tabs)
 $overview=[Windows.Forms.TabPage]::new('概览');$models=[Windows.Forms.TabPage]::new('模型与连接');$maintenance=[Windows.Forms.TabPage]::new('更新与维护');foreach($page in @($overview,$models,$maintenance)){$page.BackColor=[Drawing.Color]::White;$tabs.TabPages.Add($page)}
 $script:Banner=Label $script:Form 28 641 650 30 '' 9
-[void](Button $script:Form 692 635 96 '刷新' {Send-Action 'snapshot' @{} {param($value)Render $value}})
+$script:RefreshButton=Button $script:Form 692 635 96 '刷新' {Send-Action 'snapshot' @{} {param($value)Render $value}}
 [void](Button $script:Form 796 635 96 '取消操作' {if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.Id+'.cancel')) @{id=$script:Pending.Id};$script:Banner.Text='已请求取消；正在保存的操作会先安全完成。'}})
 $script:Health=Label $overview 24 22 805 38 '' 17 $true
 $script:Summary=Label $overview 24 70 805 60 '' 10
@@ -108,7 +110,7 @@ function Send-Action([string]$Action,$Payload=@{},[scriptblock]$Callback=$null){
  $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$PythonExecutable;$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WindowStyle='Hidden'
  $start.Arguments=(@($ControllerPath,'execute','--state-dir',$StateDirectory,'--request',$id)|ForEach-Object {'"'+$_+'"'}) -join ' '
  $process=[Diagnostics.Process]::Start($start);$script:Pending=@{Id=$id;Process=$process};$script:After=$Callback;$script:Banner.Text='正在处理…'
- if($SelfTest){if(!$process.WaitForExit(30000)){throw 'Settings self-test worker timed out'};Poll}
+ if($SelfTest -and !$LoopTest){if(!$process.WaitForExit(30000)){throw 'Settings self-test worker timed out'};Poll}
 }
 $script:LastRecoveryPoll=[datetime]::MinValue
 function Refresh-Recovery {
@@ -171,6 +173,13 @@ function Recover($Action){if(Confirm $(if($Action -eq 'restore'){'撤销适配�
 function Compare-Models {$names=@($script:State.models|ForEach-Object name);$d=Dialog '切换前比较' @(@{Key='from';Label='当前模型';Kind='choice';Value=0;Items=$names},@{Key='to';Label='目标模型';Kind='choice';Value=0;Items=$names}) @('比较','取消');try{if(!$d.Answer){Send-Action 'compare_models' @{from=$script:State.models[$d.Fields.from.SelectedIndex].id;to=$script:State.models[$d.Fields.to.SelectedIndex].id} {param($v)Notify '窗口与能力' ($v.message+"`r`n"+(Tokens $v.from)+' → '+(Tokens $v.to))}}}finally{$d.Form.Dispose()}}
 function Cancel-Recovery {$row=$script:State.recovery|Where-Object {$_.phase -notin @('completed','failed','cancelled')}|Select-Object -First 1;if($row){Send-Action 'cancel_recovery' @{id=$row.id}}else{Notify '没有进行中的恢复' '点击刷新可重新读取状态。'}}
 Render $script:State
-if($SelfTest){if($env:CODEX_SETTINGS_PRIVATE_DESKTOP -eq '1'){$script:Form.Show();[Windows.Forms.Application]::DoEvents()};$script:Form.CreateControl();Send-Action 'snapshot' @{} {param($value)Render $value};for($i=0;$i -lt $tabs.TabPages.Count;$i++){$tabs.SelectedIndex=$i;$script:Form.PerformLayout();[Windows.Forms.Application]::DoEvents();$bitmap=[Drawing.Bitmap]::new($script:Form.Width,$script:Form.Height);try{$script:Form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$bitmap.Width,$bitmap.Height));$bitmap.Save((Join-Path $script:UI ('preview-'+$i+'.png')),[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}};$result=@{tabs=$tabs.TabPages.Count;models=$script:Grid.Rows.Count;request_completed=($null -eq $script:Pending);status=$script:Banner.Text;closed=$false};$script:Form.Close();$script:Form.Dispose();$result.closed=$script:Form.IsDisposed;$result|ConvertTo-Json -Compress;exit 0}
+if($SelfTest -and !$LoopTest){if($env:CODEX_SETTINGS_PRIVATE_DESKTOP -eq '1'){$script:Form.Show();[Windows.Forms.Application]::DoEvents()};$script:Form.CreateControl();Send-Action 'snapshot' @{} {param($value)Render $value};for($i=0;$i -lt $tabs.TabPages.Count;$i++){$tabs.SelectedIndex=$i;$script:Form.PerformLayout();[Windows.Forms.Application]::DoEvents();$bitmap=[Drawing.Bitmap]::new($script:Form.Width,$script:Form.Height);try{$script:Form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$bitmap.Width,$bitmap.Height));$bitmap.Save((Join-Path $script:UI ('preview-'+$i+'.png')),[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}};$result=@{tabs=$tabs.TabPages.Count;models=$script:Grid.Rows.Count;request_completed=($null -eq $script:Pending);status=$script:Banner.Text;closed=$false};$script:Form.Close();$script:Form.Dispose();$result.closed=$script:Form.IsDisposed;$result|ConvertTo-Json -Compress;exit 0}
 $timer=[Windows.Forms.Timer]::new();$timer.Interval=500;$timer.Add_Tick({Poll});$timer.Start()
-try{[void]$script:Form.ShowDialog()}finally{$timer.Stop();$timer.Dispose();$script:Form.Dispose()}
+if($SelfTest -and $LoopTest){
+ if($env:CODEX_SETTINGS_PRIVATE_DESKTOP -ne '1'){throw 'Interaction probe requires a private desktop'}
+ Add-Type 'using System;using System.Runtime.InteropServices;public class SettingsProbeWindow { [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); }'
+ $script:LoopPhase=0;$script:LoopResult=$null
+ $timer.Add_Tick({if($script:LoopPhase -eq 0){$script:LoopPhase=1;$script:WindowVisible=[SettingsProbeWindow]::IsWindowVisible($script:Form.Handle);$tabs.SelectedIndex=1;$script:RefreshButton.PerformClick()}elseif(!$script:Pending){$script:LoopResult=@{tabs=$tabs.TabPages.Count;models=$script:Grid.Rows.Count;request_completed=$true;status=$script:Banner.Text;event_loop=$true;visible=$script:WindowVisible;closed=$false};$script:Form.Close()}})
+}
+try{$script:Form.Show();[Windows.Forms.Application]::Run($script:Form)}finally{$timer.Stop();$timer.Dispose();$script:Form.Dispose()}
+if($SelfTest -and $LoopTest){$script:LoopResult.closed=$script:Form.IsDisposed;$script:LoopResult|ConvertTo-Json -Compress}
