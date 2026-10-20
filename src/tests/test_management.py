@@ -233,9 +233,12 @@ class SettingsTests(unittest.TestCase):
                 self.assertTrue(held)
                 thread=threading.Thread(target=lambda:results.append(ui.show(self.root,notify=True)),daemon=True)
                 thread.start()
+                waiting=False
                 for _ in range(100):
-                    if (self.root/'settings-ui/entry.json').exists():break
+                    with ui.monitor.state_lock(self.root/'settings-ui/launch-control') as free:
+                        if not free:waiting=True;break
                     time.sleep(.01)
+                self.assertTrue(waiting,'Handoff launcher did not acquire its singleton lock')
                 # An explicit reopen takes precedence over another background notice.
                 ui.show(self.root,page='updates')
                 ui.show(self.root,notify=True)
