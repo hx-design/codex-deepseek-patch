@@ -5,6 +5,8 @@ import argparse
 import copy
 from contextlib import contextmanager
 import hashlib
+import ctypes
+import math
 import json
 import os
 from pathlib import Path
@@ -27,10 +29,10 @@ PHASES = {'installed': '已生效', 'idle': '等待检查', 'stabilizing': '正�
           'building': '正在准备', 'waiting_for_exit': '准备完成，退出 Codex 后应用',
           'installing': '正在安装', 'failed': '更新暂未完成', 'incompatible': '等待兼容适配',
           'unavailable': '暂时无法检查', 'busy': '后台任务进行中'}
-READ_ACTIONS = {'snapshot', 'diagnose', 'probe_connection', 'cleanup_preview', 'compare_models'}
+READ_ACTIONS = {'snapshot', 'diagnose', 'probe_connection', 'cleanup_preview', 'compare_models', 'hub'}
 ACTIONS = READ_ACTIONS | {'save_connection', 'remove_connection', 'save_model', 'save_options',
                          'save_proxy', 'save_deepseek', 'save_images', 'check_updates', 'retry_update',
-                         'show_progress', 'cleanup', 'recover', 'restore', 'cancel_recovery'}
+                         'show_progress', 'update_action', 'sync_models', 'cleanup', 'recover', 'restore', 'cancel_recovery'}
 
 
 class SettingsError(ValueError):
@@ -143,8 +145,7 @@ def snapshot(directory):
         'images_enabled': 'cpa_images' in current.get('mcp_servers', {}),
         'recovery': jobs, 'recovery_directory':str(Path(settings['codex_home'])/'model-adapter-operations'),
         'last_checked_at': state.get('last_checked_at'),
-        'progress': {k: v for k, v in monitor.load_json(directory/'progress.json', {}).items()
-                     if k in ('phase','title','detail','completed','total','version')},
+        'progress': hub_progress(directory),
         'help_url': 'https://github.com/limyum-creator/codex-deepseek-patch/tree/' +
                     ('main' if p.EDITION == 'ds' else 'codex/existing-proxy-models')}
 
@@ -289,6 +290,8 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
     payload = payload or {}
     require(action in ACTIONS and isinstance(payload,dict), '未知操作。')
     records(directory)  # Every action remains bound to the installed edition.
+    if action == 'hub':
+        return hub_dispatch(directory, payload, expected, cancelled)
     if action == 'snapshot':return snapshot(directory)
     if action == 'diagnose':return diagnose(directory,endpoints=payload.get('endpoints') is True)
     if action == 'probe_connection':
@@ -305,15 +308,17 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
             'message':'目标模型窗口更小，长对话可能需要先压缩；历史恢复使用目标模型的额度。' if smaller else '目标模型的窗口未缩小。',
             'tools':target['tools'],'images':target['images'],'reasoning':target['reasoning']}
     if action == 'show_progress':
-        from update_progress import Progress
-        progress = Progress(directory,directory/'runtime')
-        require(bool(progress.read()),'目前没有进行中的更新。','no_update')
-        progress.present(force=True)
-        return {'message':'已打开更新进度。'}
-    if action in ('check_updates','retry_update'):
-        monitor.request_update(directory,sync_now=True,code_now=True,retry=action=='retry_update')
+        return {'message':'更新进度已整合到更新页。','progress':hub_progress(directory)}
+    if action == 'update_action':
+        from update_progress import action as update_action
+        value=hub_progress(directory)
+        require(value and value['id']==payload.get('id'),'更新状态已改变，请刷新后重试。')
+        require(payload.get('command') in ('start','launch'),'未知更新操作。')
+        return update_action(directory,value['id'],payload['command'],payload.get('phase'))
+    if action in ('check_updates','retry_update','sync_models'):
+        monitor.request_update(directory,sync_now=True,code_now=action!='sync_models',retry=action=='retry_update')
         monitor.wake_monitor(directory)
-        return {'message':'检查已排队；可继续使用 Codex。'}
+        return {'message':'模型同步已排队。' if action=='sync_models' else '检查已排队；可继续使用 Codex。'}
     if action in ('cleanup_preview','cleanup'):
         from updater import prune_update_cache
         return prune_update_cache(directory,dry_run=action=='cleanup_preview')
@@ -482,7 +487,7 @@ def run_request(directory, identifier):
         require(value.get('action') in ACTIONS,'未知设置操作。')
         data=perform(directory,value['action'],value.get('payload'),value.get('revision'),cancelled)
         response={'status':'completed','data':data}
-        if value['action'] not in ('snapshot','probe_connection','diagnose','compare_models','restore'):
+        if value['action'] not in ('snapshot','probe_connection','diagnose','compare_models','restore','hub'):
             response['snapshot']=snapshot(directory)
     except Exception as error:response={'status':'failed','error':public_error(error)}
     finally:
@@ -491,44 +496,116 @@ def run_request(directory, identifier):
     return response
 
 
-def show(directory, *, self_test=False, loop_test=False):
-    from official_client_host import windowless_python
+HOST_VIEW = 'whale-v1'
+
+
+def queue_ui_entry(directory, *, page=None, notify=False):
+    """Keep one entry request while an older settings host finishes its edits."""
+    ui=monitor.private_directory(Path(directory)/'settings-ui')
+    with monitor.state_lock(ui/'entry-control') as locked:
+        require(locked,'设置入口正在处理，请稍后重试。','busy')
+        previous=monitor.load_json(ui/'entry.json',{})
+        value={'page':page or previous.get('page'),
+               'notify':bool(notify and previous.get('notify',True))}
+        monitor.atomic_json(ui/'entry.json',value)
+        return value
+
+
+def show(directory, *, self_test=False, loop_test=False, page=None, notify=False):
     directory=Path(directory).resolve();ui=monitor.private_directory(directory/'settings-ui')
     monitor.private_directory(ui/'jobs')
-    with monitor.state_lock(ui) as locked:
-        if not locked:
-            if self_test:raise SettingsError('window_busy','设置窗口正在运行，请先关闭窗口再检查。')
-            monitor.atomic_json(ui/'raise.json',{'time':uuid.uuid4().hex})
+    if not self_test:
+        from update_progress import _alive
+        host=monitor.load_json(ui/'host.json',{})
+        if host.get('view')==HOST_VIEW and host.get('edition')==p.EDITION and _alive(host.get('pid')):
+            monitor.atomic_json(ui/'raise.json',{'time':uuid.uuid4().hex,'page':page,'notify':notify})
             return subprocess.CompletedProcess([],0,b'',b'')
-        monitor.atomic_json(ui/'view.json',snapshot(directory))
-        runtime=windowless_python(sys.executable)
-        if sys.platform=='darwin':
-            from update_progress import macos_ui_command
-            command=macos_ui_command(ROOT/'settings_macos.js',directory,runtime,ROOT/'management.py')
-        elif sys.platform=='win32':
-            from windows_support import native_ui_command
-            command=native_ui_command(ROOT/'settings_windows.ps1',{'StateDirectory':str(directory),
-                'PythonExecutable':str(runtime),'ControllerPath':str(ROOT/'management.py'),
-                'SelfTest':self_test,'LoopTest':loop_test})
-        else:raise SettingsError('unsupported_platform','设置窗口支持 macOS 和 Windows。')
-        if self_test and sys.platform=='darwin':command.append('--self-test')
-        if loop_test and sys.platform=='darwin':command.append('--loop-test')
-        if self_test and sys.platform=='win32':
-            from windows_support import isolated_desktop_options, desktop_process
-            import shutil
-            command[0]=shutil.which(command[0]) or command[0]
-            log_path=ui/'native-selftest.log'
-            with isolated_desktop_options() as options, log_path.open('wb') as log:
-                child=desktop_process(command,options['desktop'],cwd=directory,stdout=log,
-                    env={**os.environ,'CODEX_SETTINGS_PRIVATE_DESKTOP':'1'})
-                try:code=child.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    child.kill();child.wait(timeout=5)
-                    raise
-            raw=log_path.read_bytes()
-            return subprocess.CompletedProcess(command,code,raw if code==0 else b'',raw if code else b'')
-        return subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,timeout=30 if self_test else None,
-                              **(__import__('windows_support').native_ui_options() if os.name=='nt' else {}))
+        queue_ui_entry(directory,page=page,notify=notify)
+    # A single windowless launcher waits for a legacy window to release its lock.
+    # Do not kill an editor or expose an update badge over an unsaved old form.
+    with monitor.state_lock(ui/'launch-control') as launching:
+        if not launching:
+            if self_test:raise SettingsError('window_busy','设置窗口正在运行，请先关闭窗口再检查。')
+            return subprocess.CompletedProcess([],0,b'',b'')
+        while True:
+            with monitor.state_lock(ui) as locked:
+                if locked:
+                    entry=monitor.load_json(ui/'entry.json',{}) if not self_test else {}
+                    (ui/'entry.json').unlink(missing_ok=True)
+                    return _show_locked(directory,self_test=self_test,loop_test=loop_test,
+                        page=entry.get('page',page),notify=entry.get('notify',notify))
+                if self_test:raise SettingsError('window_busy','设置窗口正在运行，请先关闭窗口再检查。')
+            time.sleep(.25)
+
+
+def _show_locked(directory, *, self_test=False, loop_test=False, page=None, notify=False):
+    from official_client_host import windowless_python
+    ui=Path(directory)/'settings-ui'
+    initial=snapshot(directory)
+    initial.update(hub=hub_shell(directory),view=hub_view(directory,page or 'models'),entry={'page':page,'notify':notify})
+    brand_assets(ui)
+    bubble_assets(ui)
+    monitor.atomic_json(ui/'view.json',initial)
+    runtime=windowless_python(sys.executable)
+    if sys.platform=='darwin':
+        from update_progress import macos_ui_command
+        command=macos_ui_command(ROOT/'settings_macos.js',directory,runtime,ROOT/'management.py')
+    elif sys.platform=='win32':
+        from windows_support import native_ui_command
+        command=native_ui_command(ROOT/'settings_windows.ps1',{'StateDirectory':str(directory),
+            'PythonExecutable':str(runtime),'ControllerPath':str(ROOT/'management.py'),
+            'SelfTest':self_test,'LoopTest':loop_test})
+    else:raise SettingsError('unsupported_platform','设置窗口支持 macOS 和 Windows。')
+    if self_test and sys.platform=='darwin':command.append('--self-test')
+    if loop_test and sys.platform=='darwin':command.append('--loop-test')
+    if self_test and sys.platform=='win32':
+        from windows_support import isolated_desktop_options, desktop_process
+        import shutil
+        command[0]=shutil.which(command[0]) or command[0]
+        log_path=ui/'native-selftest.log'
+        with isolated_desktop_options() as options, log_path.open('wb') as log:
+            child=desktop_process(command,options['desktop'],cwd=directory,stdout=log,
+                env={**os.environ,'CODEX_SETTINGS_PRIVATE_DESKTOP':'1'})
+            try:code=child.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                child.kill();child.wait(timeout=5)
+                raise
+        raw=log_path.read_bytes()
+        return subprocess.CompletedProcess(command,code,raw if code==0 else b'',raw if code else b'')
+    if not self_test:
+        return run_host(command,directory,
+            **(__import__('windows_support').native_ui_options() if os.name=='nt' else {}))
+    return subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,timeout=30)
+
+
+def bubble_assets(directory):
+    """Small original UI sounds, synthesized locally without an audio dependency."""
+    import io, struct, wave
+    rate=24000
+    # Damped chirps imitate small air bubbles; encoded level stays soft on both hosts.
+    profiles={'open':[(0,.095,850,1600,.15),(.047,.11,1200,2200,.075)],
+              'close':[(0,.115,1100,540,.13),(.045,.075,750,450,.05)]}
+    output={}
+    for name,tones in profiles.items():
+        length=max(start+duration for start,duration,*_ in tones)
+        samples=[]
+        for i in range(int(length*rate)+1):
+            t=i/rate;value=0.
+            for start,duration,low,high,level in tones:
+                u=(t-start)/duration
+                if 0<u<1:
+                    phase=2*math.pi*duration*(low*u+(high-low)*u*u/2)
+                    envelope=(1-math.exp(-u*55))*math.exp(-u*5)*(1-u)**2
+                    value+=level*envelope*(math.sin(phase)+.12*math.sin(phase*2))
+            samples.append(round(max(-.25,min(.25,value))*32767))
+        stream=io.BytesIO()
+        with wave.open(stream,'wb') as sound:
+            sound.setparams((1,2,rate,0,'NONE','not compressed'))
+            sound.writeframes(struct.pack('<'+'h'*len(samples),*samples))
+        path=Path(directory)/('bubble-'+name+'.wav');data=stream.getvalue()
+        if not path.is_file() or path.read_bytes()!=data:private_write(path,data)
+        output[name]=path
+    return output
 
 
 def brand_assets(directory):
@@ -540,13 +617,18 @@ def brand_assets(directory):
     if monitor.load_json(stamp,{}).get('source')==digest and all(path.is_file() for path in paths.values()):
         return digest,paths
     size=512;pixels=bytearray(size*size*4)
-    for shape in ET.fromstring(raw).iter('{http://www.w3.org/2000/svg}polygon'):
+    for shape in ET.fromstring(raw):
+        kind=shape.tag.rsplit('}',1)[-1]
+        if kind not in ('polygon','path'):continue
         color=bytes.fromhex(shape.attrib['fill'].lstrip('#'))+b'\xff'
-        points=[tuple(map(float,value.split(','))) for value in shape.attrib['points'].split()]
+        contours=vector_contours(shape.attrib['d']) if kind=='path' else [
+            [tuple(map(float,value.split(','))) for value in shape.attrib['points'].split()]]
+        points=[v for contour in contours for v in contour]
         for y in range(max(0,math.floor(min(v[1] for v in points))),min(size,math.ceil(max(v[1] for v in points)))):
             scan=y+.5;crossings=[]
-            for (x1,y1),(x2,y2) in zip(points,points[1:]+points[:1]):
-                if (y1<=scan<y2) or (y2<=scan<y1):crossings.append(x1+(scan-y1)*(x2-x1)/(y2-y1))
+            for contour in contours:
+                for (x1,y1),(x2,y2) in zip(contour,contour[1:]+contour[:1]):
+                    if (y1<=scan<y2) or (y2<=scan<y1):crossings.append(x1+(scan-y1)*(x2-x1)/(y2-y1))
             crossings.sort()
             for left,right in zip(crossings[::2],crossings[1::2]):
                 first=max(0,math.ceil(left-.5));last=min(size,math.ceil(right-.5))
@@ -665,6 +747,8 @@ def main(argv=None):
     parser.add_argument('action',choices=('show','execute','diagnose'))
     parser.add_argument('--state-dir',type=Path)
     parser.add_argument('--request')
+    parser.add_argument('--page',choices=('models','connections','updates','tools','diagnostics','preferences'))
+    parser.add_argument('--notify-update',action='store_true')
     parser.add_argument('--self-test',action='store_true')
     parser.add_argument('--loop-test',action='store_true')
     args=parser.parse_args(argv);directory=find_directory(args.state_dir)
@@ -673,12 +757,506 @@ def main(argv=None):
         elif args.action=='diagnose':print(json.dumps(diagnose(directory,endpoints=True),ensure_ascii=False,indent=2))
         else:
             require(not args.loop_test or args.self_test,'窗口交互检查需要独立测试模式。')
-            result=show(directory,self_test=args.self_test,loop_test=args.loop_test)
+            result=show(directory,self_test=args.self_test,loop_test=args.loop_test,page=args.page,notify=args.notify_update)
             if args.self_test:print(result.stdout.decode('utf-8',errors='replace'))
             return result.returncode
         return 0
     except Exception as error:
         print(json.dumps(public_error(error),ensure_ascii=False),file=sys.stderr);return 1
+
+
+
+
+# Shared native floating settings presentation and shortcut lifecycle.
+CATEGORIES = [
+    ('models', '模型', '上下文与压缩', 'M6 4H18V20H6Z M9 8H15 M9 12H15 M9 16H12'),
+    ('connections', '连接', '云端与本地模型', 'M9 8L7 6C4 3 0 7 3 10L6 13 M15 11L18 14C21 17 17 21 14 18L12 16 M8 14L15 7'),
+    ('updates', '更新', '补丁更新与模型同步', 'M5 8C8 2 17 3 20 9 M20 4V9H15 M19 16C16 22 7 21 4 15 M4 20V15H9'),
+    ('tools', '工具', '图片工具与历史恢复', 'M4 7H20V20H4Z M8 7V4H16V7 M4 12H20 M10 11V14H14V11'),
+    ('diagnostics', '诊断', '状态检查与故障排查', 'M3 12H7L10 5L14 19L17 12H21'),
+    ('preferences', '偏好', '外观、快捷键与维护', 'M5 4V20 M12 4V20 M19 4V20 M2 8H8 M9 16H15 M16 10H22'),
+]
+PALETTES = {
+    'light': {'surface':'#FFFFFF','field':'#F6F8FB','text':'#28344A','muted':'#8390A5',
+              'alert':'#FDEBED','alert_line':'#F0CBD0','alert_ink':'#B85D6B','line':'#E7ECF3','accent':'#4D6BFE','hover':'#EDF2FF','danger':'#C64861'},
+    'dark': {'surface':'#202A3C','field':'#151E2F','text':'#EEF3FF','muted':'#9AAAC5',
+             'alert':'#543540','alert_line':'#805564','alert_ink':'#F2B2BD','line':'#354159','accent':'#8196FF','hover':'#344366','danger':'#FF9DB0'},
+}
+DEFAULTS = {'theme':'light', 'motion':'system', 'hotkey':True, 'sound':True}
+# One layout in screen coordinates, shared by both native renderers. Every drop
+# stays above the whale; the small asymmetries suggest spray rather than a wheel.
+HUB_LAYOUT = {
+    # Transparent headroom absorbs the spring/arc overshoot and hover shadow.
+    # All visible y coordinates move together, preserving their screen spacing.
+    'width':148, 'height':164, 'bubble':64, 'closed_width':96, 'closed_whale_x':32, 'whale_x':42, 'whale_y':100,
+    'spout_x':66, 'spout_y':116,
+    'badge':{'offset_x':-20,'offset_y':10,'size':28,'angle':-65,'shape':0,
+             'icon_x':-1.25,'icon_y':0.5},
+    'card_width':320, 'card_height':420,
+    'dock':{'size':32, 'threshold':28, 'leave_ms':100, 'poll_ms':60, 'duration_ms':180,
+            'angles':{'left':90,'right':-90,'top':180,'bottom':0}},
+    'morph':{'duration_ms':340,'close_ms':250,'radius':16,'wave':0.018},
+    'drops':[
+        {'x':38,'y':46,'size':38,'angle':-18,'shape':0},
+        {'x':78,'y':42,'size':38,'angle':-3,'shape':1},
+        {'x':118,'y':50,'size':36,'angle':18,'shape':2},
+        {'x':26,'y':85,'size':36,'angle':-28,'shape':1},
+        {'x':66,'y':81,'size':38,'angle':-6,'shape':2},
+        {'x':106,'y':89,'size':36,'angle':24,'shape':0},
+    ],
+    'shapes':[
+        'M12 23 C10 20 3 17 2 11 C1 5 6 1 12 1 C19 1 23 6 22 12 C21 18 16 19 12 23 Z',
+        'M12 23 C9 20 2 17 2 10 C2 4 8 1 14 2 C21 3 23 8 21 14 C19 19 15 19 12 23 Z',
+        'M12 23 C10 19 3 18 2 12 C0 6 5 1 11 1 C18 0 23 5 22 11 C22 17 15 20 12 23 Z',
+    ],
+    # Filled liquid silhouettes share a (30, 42) source point. They stay close
+    # to the spout and dissolve into particles instead of connecting to buttons.
+    'water':[
+        'M30 42 C28 32 24 25 13 20 C5 13 1 20 9 24 C17 26 22 34 26 42 Z',
+        'M28 42 C25 30 26 18 30 11 C34 5 38 10 35 16 C32 26 33 35 32 42 Z',
+        'M29 42 C30 30 37 20 48 15 C56 11 57 18 50 20 C40 23 35 33 33 42 Z',
+    ],
+    'particles':[[-22,-25,1.8],[-12,-39,2.0],[3,-44,1.6],
+                 [21,-33,2.1],[29,-21,1.7],[10,-28,1.5]],
+}
+
+def vector_contours(data):
+    """Flatten the small, bounded M/L/C/Z source paths used by our icon."""
+    tokens=re.findall(r'[MLCZ]|[-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?',data)
+    paths=[];points=[];i=0;command=None;current=(0.,0.)
+    while i<len(tokens):
+        if tokens[i] in ('M','L','C','Z'):
+            command=tokens[i];i+=1
+            if command=='Z':
+                if points:paths.append(points);current=points[0];points=[]
+                continue
+        if command in ('M','L'):
+            pair=(float(tokens[i]),float(tokens[i+1]));i+=2
+            if command=='M' and points:paths.append(points);points=[]
+            points.append(pair);current=pair;command='L'
+        elif command=='C':
+            values=list(map(float,tokens[i:i+6]));i+=6
+            a=current;b=values[:2];c=values[2:4];d=values[4:]
+            steps=max(4,min(40,int((math.dist(a,b)+math.dist(b,c)+math.dist(c,d))/3)+1))
+            for step in range(1,steps+1):
+                t=step/steps;u=1-t
+                points.append(tuple(u**3*a[k]+3*u*u*t*b[k]+3*u*t*t*c[k]+t**3*d[k] for k in (0,1)))
+            current=tuple(d)
+        else:raise ValueError('Unsupported icon path')
+    if points:paths.append(points)
+    return paths
+
+
+def hub_options(directory):
+    value = monitor.load_json(Path(directory)/'settings-ui/options.json', {})
+    return {**DEFAULTS, **{k:v for k,v in value.items() if k in DEFAULTS}}
+
+
+def hub_save_options(directory, value):
+    from management import require
+    require(set(value) <= set(DEFAULTS), '存在未知的外观选项。')
+    require(value.get('theme','system') in ('system','light','dark'), '外观选项无效。')
+    require(value.get('motion','system') in ('system','reduced'), '动效选项无效。')
+    require(type(value.get('hotkey',True)) is bool, '快捷键选项无效。')
+    require(type(value.get('sound',True)) is bool, '音效选项无效。')
+    result = {**hub_options(directory), **value}
+    monitor.atomic_json(Path(directory)/'settings-ui/options.json', result)
+    return result
+
+
+def hub_shell(directory):
+    return {'categories':[{'id':key,'name':name,'description':description,'icon':icon}
+                           for key,name,description,icon in CATEGORIES],
+            'palettes':PALETTES, 'options':hub_options(directory),
+            'shortcut':'⌃⌥D' if sys.platform=='darwin' else 'Ctrl+Alt+D',
+            'layout':copy.deepcopy(HUB_LAYOUT),
+            'motion':{'duration_ms':300,'close_ms':170,'stagger_ms':10,'hover_ms':90},
+            'sound':{'cooldown_ms':140}}
+
+
+
+def hub_progress(directory):
+    from update_progress import TEXT
+    value=monitor.load_json(Path(directory)/'progress.json',{})
+    if not isinstance(value,dict) or value.get('edition')!=p.EDITION or value.get('phase') not in TEXT:
+        return {}
+    if not isinstance(value.get('id'),str) or not re.fullmatch(r'[a-f0-9]{32}',value['id']):return {}
+    return {k:value[k] for k in ('format','id','edition','version','phase','title','detail',
+            'completed','total','can_start','can_launch') if k in value}
+
+
+def hub_field(key, label, value='', kind='text', *, choices=None, hint=None):
+    row={'type':'field','key':key,'label':label,'value':value if value is not None else '',
+         'kind':kind}
+    if choices is not None:row['choices']=choices
+    if hint:row['hint']=hint
+    return row
+
+
+def hub_item(title, subtitle='', route=None, key=None):
+    return {'type':'item','title':title,'subtitle':subtitle,'route':route,'key':key}
+
+
+def hub_button(title, intent, *, style='secondary', **values):
+    return {'title':title,'intent':intent,'style':style,**values}
+
+
+def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
+    """Build one small card from the current authority, not a second settings store."""
+    from management import snapshot, require
+    state=snapshot(directory); opts=hub_options(directory)
+    base=route.split('/')[0]
+    require(base in {c[0] for c in CATEGORIES}, '未知设置分类。')
+    title=next(c[1] for c in CATEGORIES if c[0]==base)
+    rows=[];buttons=[];subtitle='';back=base if '/' in route else None
+    data={'route':route,'key':key,'revision':state['revision'],'edition':state['edition'],
+          'title':title,'subtitle':subtitle,'rows':rows,'buttons':buttons,'back':back,
+          'notice':notice or '', 'options':opts}
+    if route=='models':
+        data['subtitle']='窗口按模型规格同步，手动调小会保留。'
+        data['searchable']=True
+        for model in state['models']:
+            window=f"{model['effective']:,}" if model['effective'] else '未提供'
+            rows.append(hub_item(model['name'], f"{window} tokens · "+('已显示' if model['visible'] else '已隐藏'),
+                             'models/edit',model['id']))
+    elif route=='models/edit':
+        model=next((m for m in state['models'] if m['id']==key),None)
+        require(model is not None,'模型列表已变更，请重新选择。')
+        data['title']=model['name'];data['subtitle']=' / '.join(filter(None,[
+            '工具' if model['tools'] else '纯对话', '图片输入' if model['images'] else '',
+            '思考：'+', '.join(model['reasoning']) if model['reasoning'] else '']))
+        maximum=f"{model['maximum']:,}" if model['maximum'] else '未提供'
+        rows += [hub_item('模型最大窗口', maximum+' tokens'),
+                 hub_field('context','使用窗口',model['context_override'],'number',hint='留空使用模型最大值'),
+                 hub_field('compact','压缩阈值',model['compact_override'],'number',hint='留空使用窗口的 90%'),
+                 hub_field('visible','在模型菜单中显示',model['visible'],'toggle')]
+        if model['server_window']:rows.insert(1,hub_item('本地服务窗口',f"{model['server_window']:,} tokens"))
+        buttons += [hub_button('恢复默认','reset_model'),hub_button('保存','save_model',style='primary')]
+    elif route=='connections':
+        data['subtitle']='凭证保留在本机；接入已有服务。'
+        rows.append(hub_item('DeepSeek','已启用' if state['deepseek_enabled'] else '按需启用','connections/deepseek'))
+        if state['edition']=='proxy':
+            rows.append(hub_item('现成代理','已连接' if state['proxy'] else 'EasyCLI / CPA','connections/proxy'))
+            for connection in state['connections']:
+                rows.append(hub_item(connection.get('name') or connection['id'],
+                                 connection['kind']+' · '+str(len(connection.get('models',[])))+' 个型号',
+                                 'connections/edit',connection['id']))
+            buttons.append(hub_button('添加连接','navigate',route='connections/edit',style='primary'))
+    elif route=='connections/deepseek':
+        data['title']='DeepSeek'
+        rows += [hub_field('enabled','启用 DeepSeek',state['deepseek_enabled'],'toggle'),
+                 hub_field('key','API Key','','secret',hint='留空保留已有密钥')]
+        if state['edition']=='ds':rows[0]={'type':'note','text':'DS 版始终启用 DeepSeek。'}
+        buttons.append(hub_button('保存','save_deepseek',style='primary'))
+    elif route=='connections/proxy':
+        require(state['edition']=='proxy','此功能需要扩展版。')
+        proxy=state['proxy'] or state['disabled_proxy'] or {}
+        data['title']='现成代理'
+        rows += [hub_field('url','接口地址',proxy.get('base_url','http://127.0.0.1:8317/v1')),
+                 hub_field('config','配置文件',proxy.get('config',''),'file'),
+                 hub_field('models','使用型号',', '.join(proxy.get('models',[])),hint='多个型号用逗号分隔'),
+                 hub_field('auto','加入现有系列的新版本',state['proxy_auto_add'],'toggle')]
+        buttons += [hub_button('停用','disable_proxy'),hub_button('保存','save_proxy',style='primary')]
+    elif route=='connections/edit':
+        require(state['edition']=='proxy','此功能需要扩展版。')
+        connection=next((c for c in state['connections'] if c['id']==key),None) if key else None
+        require(not key or connection is not None,'连接已变更，请重新选择。')
+        c=connection or {}
+        data['title']=c.get('name') or '添加连接'
+        rows += [hub_field('name','连接名称',c.get('name','')),
+                 hub_field('kind','服务类型',c.get('kind','openai'),'choice',choices=[
+                     ['openai','通用兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
+                 hub_field('url','接口地址',c.get('base_url',''),hint='例如 http://127.0.0.1:11434/v1'),
+                 hub_field('wire','接口协议',c.get('wire_api','chat_completions'),'choice',
+                       choices=[['chat_completions','Chat Completions'],['responses','Responses']]),
+                 hub_field('key','API Key','','secret',hint='本地接口可留空；已有密钥保持不变'),
+                 hub_field('models','使用型号',', '.join(c.get('models',[])),hint='留空检测所有型号'),
+                 hub_field('respect','沿用服务端窗口',c.get('respect_server_context',False),'toggle'),
+                 hub_field('keyfile','凭证文件',c.get('key_file',''),'file'),
+                 hub_field('reasoning','支持思考参数',c.get('supports_reasoning_effort',False),'toggle')]
+        if connection:rows.append(hub_item('补充型号规格','最大窗口、工具与思考档位','connections/spec',key))
+        buttons += [hub_button('检测型号','probe_connection'),hub_button('保存','save_connection',style='primary')]
+        if connection:buttons.insert(0,hub_button('移除','confirm_remove',style='danger'))
+    elif route=='connections/spec':
+        data['title']='补充型号规格';data['back']='connections/edit'
+        rows += [hub_field('model','准确型号 ID'),hub_field('maximum','最大窗口','','number'),
+                 hub_field('levels','思考档位',hint='例如 low, medium, high'),
+                 hub_field('tools','支持工具调用',True,'toggle')]
+        buttons.append(hub_button('保存','save_spec',style='primary'))
+    elif route=='connections/discover':
+        require(isinstance(extra,dict) and isinstance(extra.get('available'),list),'检测结果已过期。')
+        data['title']='选择型号';data['subtitle']='勾选要加入的模型；缺少规格时补充最大窗口。'
+        data['draft']=extra['draft'];data['searchable']=True;data['back']='connections/edit'
+        for index,model in enumerate(extra['available']):
+            rows.append(hub_field('model_'+str(index),model,model in extra['selected'],'toggle'))
+            if model not in extra['specs']:
+                rows.append(hub_field('window_'+str(index),'最大窗口 · '+model,'','number'))
+        data['available']=extra['available'];data['specs']=extra['specs']
+        buttons += [hub_button('全选','select_all'),hub_button('清空','clear_all'),hub_button('保存所选','save_discovered',style='primary')]
+    elif route=='updates':
+        data['subtitle']=state['edition_label']+' · 当前 '+str(state['version'])
+        rows += [{'type':'update','progress':state['progress']},
+                 hub_item('自动更新与提醒','检查周期、模型同步、水滴提醒','updates/options'),
+                 hub_item('维护与恢复','失败重试、清理缓存与安装恢复','updates/maintenance')]
+        buttons += [hub_button('同步模型','sync_models'),hub_button('检查更新','check_updates',style='primary')]
+    elif route=='updates/options':
+        data['title']='更新设置';data['subtitle']='两个版本各自更新，保留手动模型设置。'
+        rows += [hub_field('auto_update','自动更新补丁',state['options']['auto_update'],'toggle'),
+                 hub_field('model_sync','同步模型与规格',state['options']['model_sync'],'toggle'),
+                 hub_field('progress_ui','显示鲸鱼更新提醒',state['options']['progress_ui'],'toggle'),
+                 hub_field('interval','检查周期（秒）',state['options']['interval'],'number'),
+                 {'type':'note','text':'有更新时显示小水滴提示；开始更新后会正常关闭 Codex。'}]
+        buttons.append(hub_button('保存','save_options',style='primary'))
+    elif route=='tools':
+        rows += [hub_item('模型能力比较','切换前查看窗口、图片与工具支持','tools/compare'),
+                 hub_item('图片工具','已启用' if state['images_enabled'] else '按需启用','tools/images'),
+                 hub_item('历史恢复','查看进度与取消恢复任务','tools/recovery')]
+    elif route=='tools/images':
+        data['title']='图片工具';proxy=state['proxy'] or {}
+        rows += [hub_field('enabled','启用图片工具',state['images_enabled'],'toggle'),
+                 hub_field('config','现成代理配置',proxy.get('config',''),'file'),
+                 hub_field('url','接口地址',proxy.get('base_url','http://127.0.0.1:8317/v1'))]
+        buttons.append(hub_button('保存','save_images',style='primary'))
+    elif route=='tools/compare':
+        data['title']='比较模型'
+        choices=[[m['id'],m['name']] for m in state['models']]
+        initial=choices[0][0] if choices else ''
+        rows += [hub_field('from','当前模型',initial,'choice',choices=choices),
+                 hub_field('to','目标模型',initial,'choice',choices=choices)]
+        buttons.append(hub_button('比较','compare_models',style='primary'))
+    elif route=='tools/recovery':
+        data['title']='历史恢复'
+        for job in state['recovery']:
+            rows.append(hub_item(job['model'],job['phase']+f" · {job.get('part',0)}/{job.get('total',0)}"))
+            if job['phase'] not in ('completed','failed','cancelled'):
+                rows.append({'type':'action',**hub_button('取消此恢复','cancel_recovery',id=job['id'])})
+        if not rows:rows.append({'type':'note','text':'当前没有历史恢复任务。'})
+        buttons.append(hub_button('刷新','refresh'))
+    elif route=='diagnostics':
+        data['subtitle']=state['edition_label']+' · '+str(state['version'])
+        rows += [hub_item('补丁状态',state['status']),hub_item('可用模型',str(len(state['models']))+' 个'),hub_item('Codex 版本',str(state['app_version'] or '未记录')),
+                 {'type':'note','text':'报告不包含密钥、聊天内容和私人文件路径。'}]
+        if extra:rows.append({'type':'report','text':extra.get('text','')})
+        buttons += [hub_button('运行诊断','diagnose',style='primary')]
+        if extra:buttons.append(hub_button('复制报告','copy',text=extra.get('text','')))
+    elif route=='preferences':
+        data['subtitle']='小窗按需打开；隐藏后可用快捷键呼出。'
+        rows += [hub_field('theme','外观',opts['theme'],'choice',
+                       choices=[['system','跟随系统'],['light','浅色'],['dark','深色']]),
+                 hub_field('motion','动效',opts['motion'],'choice',choices=[['system','跟随系统'],['reduced','减少动效']]),
+                 hub_field('sound','气泡音效',opts['sound'],'toggle'),
+                 hub_field('hotkey','快捷键呼出 · '+hub_shell(directory)['shortcut'],opts['hotkey'],'toggle'),
+                 {'type':'note','text':'完全退出小窗会释放快捷键；再次打开 App 或开始菜单入口即可恢复。'},
+                 hub_item('版本与状态','当前补丁、诊断与脱敏报告','diagnostics')]
+        buttons += [hub_button('隐藏','hide'),hub_button('退出小窗','quit'),hub_button('保存','save_ui_options',style='primary')]
+    elif route in ('preferences/maintenance','updates/maintenance'):
+        data['title']='维护与恢复'
+        rows += [{'type':'action',**hub_button('重试补丁更新','retry_update')},
+                 {'type':'action',**hub_button('清理过期缓存','cleanup_preview')},
+                 {'type':'action',**hub_button('恢复中断的安装','confirm_recover')},
+                 {'type':'action',**hub_button('撤销模型补丁','confirm_restore',style='danger')},
+                 {'type':'note','text':'恢复操作会保留官方应用、登录和聊天记录。'}]
+    else:require(False,'未知设置页面。')
+    return data
+
+
+def hub_number(value):
+    from management import require
+    if value is None or value=='':return None
+    require(not isinstance(value,bool) and re.fullmatch(r'[1-9][0-9]{0,10}',str(value)),'请输入正整数。')
+    return int(value)
+
+
+def hub_list(value):
+    return [v.strip() for v in re.split(r'[,，\n]',str(value or '')) if v.strip()]
+
+
+def hub_dispatch(directory, payload, revision, cancelled=None):
+    """Translate a UI intention to the existing, validated management action."""
+    import management as m
+    m.require(isinstance(payload,dict),'无效的界面请求。')
+    route=payload.get('route','models');key=payload.get('key');intent=payload.get('intent','refresh')
+    values=payload.get('values') or {}; extra=None;notice=None
+    m.require(isinstance(values,dict),'无效的表单内容。')
+    m.records(directory)
+    if intent in ('navigate','refresh'):
+        return hub_view(directory,route,key)
+    state=m.snapshot(directory)
+    def perform(action,data=None):
+        return m.perform(directory,action,data or {},revision,cancelled)
+    def connection():
+        old=next((c for c in state['connections'] if c['id']==key),None) if key else None
+        m.require(not key or old is not None,'连接已变更，请刷新。')
+        c=copy.deepcopy(old or {'id':'local-'+uuid.uuid4().hex[:10],'model_specs':{}})
+        c.update(name=str(values.get('name','')).strip(),kind=values.get('kind','openai'),
+                 base_url=str(values.get('url','')).strip(),wire_api=values.get('wire','chat_completions'),
+                 models=hub_list(values.get('models')),respect_server_context=values.get('respect') is True,
+                 supports_reasoning_effort=values.get('reasoning') is True)
+        if values.get('keyfile'):c['key_file']=values['keyfile']
+        else:c.pop('key_file',None)
+        return c
+    if intent in ('save_model','reset_model'):
+        perform('save_model',{'id':key,'context':None if intent=='reset_model' else hub_number(values.get('context')),
+            'compact':None if intent=='reset_model' else hub_number(values.get('compact')),
+            'visible':values.get('visible',True)})
+    elif intent=='save_deepseek':
+        perform(intent,{'enabled':state['edition']=='ds' or values.get('enabled') is True,'key':values.get('key','')})
+    elif intent in ('save_proxy','disable_proxy'):
+        perform('save_proxy',{'proxy':None if intent=='disable_proxy' else
+            {'base_url':values.get('url',''),'config':values.get('config',''),'models':hub_list(values.get('models'))},
+            'auto_add':values.get('auto') is True})
+    elif intent in ('save_connection','probe_connection'):
+        c=connection();secret=values.get('key','')
+        if intent=='save_connection':
+            perform(intent,{'connection':c,'key':secret});key=c['id']
+        else:
+            result=perform(intent,{'connection':c,'key':secret})
+            m.require(result['available'],'接口未返回可用型号。')
+            # The native form retains the password in memory until Save.
+            # Never echo it into a response/snapshot file.
+            extra={'draft':{'connection':c},'available':result['available'],
+                   'selected':c['models'] or result['available'],'specs':result['specs']}
+            return hub_view(directory,'connections/discover',key,extra=extra)
+    elif intent=='save_discovered':
+        context=payload.get('context') or {}
+        draft=context.get('draft') or {};c=copy.deepcopy(draft.get('connection') or {})
+        available=context.get('available') or []
+        m.require(isinstance(available,list) and len(available)<=10000,'检测结果无效。')
+        chosen=[model for i,model in enumerate(available) if values.get('model_'+str(i)) is True]
+        m.require(chosen,'至少选择一个型号。')
+        c['models']=chosen;c.setdefault('model_specs',{})
+        for i,model in enumerate(available):
+            if model in chosen and model not in context.get('specs',{}):
+                maximum=hub_number(values.get('window_'+str(i)))
+                m.require(maximum is not None and maximum>=1024,'请补充 '+model+' 的最大窗口。')
+                c['model_specs'][model]={'context_window':maximum,'supports_tools':True}
+        perform('save_connection',{'connection':c,'key':draft.get('key','')})
+        route='connections';key=None
+    elif intent=='save_spec':
+        c=next((copy.deepcopy(c) for c in state['connections'] if c['id']==key),None)
+        m.require(c is not None,'连接已变更。');model=str(values.get('model','')).strip()
+        m.require(model,'请填写准确型号。')
+        c.setdefault('model_specs',{})[model]={'context_window':hub_number(values.get('maximum')),
+            'reasoning_levels':hub_list(values.get('levels')),'supports_tools':values.get('tools') is True}
+        perform('save_connection',{'connection':c})
+    elif intent=='save_options':
+        perform(intent,{**{k:values.get(k) is True for k in ('auto_update','model_sync','progress_ui')},
+                        'interval':hub_number(values.get('interval'))})
+    elif intent=='save_ui_options':
+        hub_save_options(directory,values)
+    elif intent=='save_images':
+        perform(intent,{k:values.get(k) for k in ('enabled','url','config')})
+    elif intent=='compare_models':
+        result=perform(intent,values)
+        notice=result['message']+f"\n{result['from']:,} → {result['to']:,} tokens"
+    elif intent=='diagnose':
+        extra=perform(intent,{'endpoints':True})
+    elif intent in ('check_updates','retry_update','sync_models','show_progress'):
+        result=perform(intent);notice=result.get('message')
+    elif intent=='update_action':
+        perform('update_action',{k:payload.get(k) for k in ('id','phase','command')});route='updates';key=None
+    elif intent=='cancel_recovery':
+        perform(intent,{'id':payload.get('id')})
+    elif intent in ('confirm_remove','confirm_restore','confirm_recover','cleanup_preview'):
+        labels={'confirm_remove':('移除连接','服务、凭证和聊天记录保留。','remove_connection'),
+                'confirm_restore':('撤销模型补丁','请先正常退出 Codex；保留原应用、账户与聊天。','restore'),
+                'confirm_recover':('恢复安装','请先正常退出 Codex，再恢复中断的安装。','recover')}
+        if intent=='cleanup_preview':
+            result=perform(intent);labels[intent]=('清理缓存',f"预计释放 {result['bytes']/1048576:.1f} MB；保留当前安装和回退链。",'cleanup')
+        title,message,action=labels[intent]
+        return {**hub_view(directory,route,key),'title':title,'rows':[{'type':'note','text':message}],
+                'buttons':[hub_button('返回','navigate',route=route,key=key),
+                           hub_button('确认','confirmed',style='danger',action=action)],'confirmation':action}
+    elif intent=='confirmed':
+        action=payload.get('action')
+        m.require(action in ('remove_connection','restore','recover','cleanup'),'无效的确认操作。')
+        result=perform(action,{'id':key} if action=='remove_connection' else {'confirmed':True})
+        if action=='restore':
+            return {'route':'preferences','title':'已撤销模型补丁','rows':[{'type':'note','text':result.get('message','设置窗口可以关闭。')}],
+                    'buttons':[hub_button('退出','quit')],'revision':revision,'options':hub_options(directory)}
+        if action=='remove_connection':route='connections';key=None
+    else:m.require(False,'未知设置操作。')
+    return hub_view(directory,route,key,notice or ('操作完成。' if intent!='diagnose' else None),extra=extra)
+
+
+class Hotkey:
+    """Register one shortcut, not a keyboard monitor. No accessibility permission."""
+    def __init__(self, directory):
+        self.directory=Path(directory);self.enabled=False;self.registered=False;self.error=None
+        self.carbon=None;self.hotkey=ctypes.c_void_p();self.handler=ctypes.c_void_p()
+        self.last=0
+    def toggle(self):
+        if time.monotonic()-self.last<.3:return
+        self.last=time.monotonic()
+        monitor.atomic_json(self.directory/'settings-ui/raise.json',{'time':uuid.uuid4().hex,'toggle':True})
+    def configure(self, enabled):
+        if enabled==self.enabled:return
+        self.enabled=enabled
+        if not enabled:self.close();return
+        self.error=None
+        try:
+            if sys.platform=='darwin':
+                class EventType(ctypes.Structure):_fields_=[('kind',ctypes.c_uint32),('event',ctypes.c_uint32)]
+                class HotkeyID(ctypes.Structure):_fields_=[('signature',ctypes.c_uint32),('id',ctypes.c_uint32)]
+                self.carbon=ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
+                c=self.carbon
+                c.GetApplicationEventTarget.restype=ctypes.c_void_p
+                callback=ctypes.CFUNCTYPE(ctypes.c_int32,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p)
+                self.callback=callback(lambda *_:(self.toggle(),0)[1])
+                c.InstallEventHandler.argtypes=[ctypes.c_void_p,callback,ctypes.c_uint32,ctypes.POINTER(EventType),ctypes.c_void_p,ctypes.POINTER(ctypes.c_void_p)]
+                c.RegisterEventHotKey.argtypes=[ctypes.c_uint32,ctypes.c_uint32,HotkeyID,ctypes.c_void_p,ctypes.c_uint32,ctypes.POINTER(ctypes.c_void_p)]
+                event=EventType(0x6b657962,6)
+                target=c.GetApplicationEventTarget()
+                if c.InstallEventHandler(target,self.callback,1,ctypes.byref(event),None,ctypes.byref(self.handler)):raise OSError('handler')
+                if c.RegisterEventHotKey(2,4096|2048,HotkeyID(0x57484c45,1),target,0,ctypes.byref(self.hotkey)):raise OSError('shortcut')
+            elif sys.platform=='win32':
+                if not ctypes.windll.user32.RegisterHotKey(None,0x5748,0x4000|0x0001|0x0002,ord('D')):raise OSError('shortcut')
+            self.registered=True
+        except Exception:
+            self.close();self.error='快捷键已被占用，可从 App 或开始菜单打开。'
+        monitor.atomic_json(self.directory/'settings-ui/hotkey.json',{'registered':self.registered,'error':self.error})
+    def pump(self):
+        if sys.platform=='darwin':
+            cf=ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+            cf.CFRunLoopRunInMode.argtypes=[ctypes.c_void_p,ctypes.c_double,ctypes.c_bool]
+            mode=ctypes.c_void_p.in_dll(cf,'kCFRunLoopDefaultMode')
+            cf.CFRunLoopRunInMode(mode,.2,True)
+        elif sys.platform=='win32':
+            from ctypes import wintypes
+            msg=wintypes.MSG()
+            while ctypes.windll.user32.PeekMessageW(ctypes.byref(msg),None,0,0,1):
+                if msg.message==0x0312:self.toggle()
+            time.sleep(.2)
+        else:time.sleep(.2)
+    def close(self):
+        if self.carbon:
+            if self.hotkey.value:
+                self.carbon.UnregisterEventHotKey.argtypes=[ctypes.c_void_p]
+                self.carbon.UnregisterEventHotKey(self.hotkey);self.hotkey=ctypes.c_void_p()
+            if self.handler.value:
+                self.carbon.RemoveEventHandler.argtypes=[ctypes.c_void_p]
+                self.carbon.RemoveEventHandler(self.handler);self.handler=ctypes.c_void_p()
+        elif sys.platform=='win32' and self.registered:ctypes.windll.user32.UnregisterHotKey(None,0x5748)
+        self.registered=False
+
+
+def run_host(command, directory, **kwargs):
+    """Keep shortcut handling beside the existing on-demand UI process."""
+    hotkey=Hotkey(directory)
+    host=Path(directory)/'settings-ui/host.json'
+    monitor.atomic_json(host,{'pid':os.getpid(),'edition':p.EDITION,'view':HOST_VIEW})
+    try:
+        with subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL,**kwargs) as child:
+            last=0
+            while child.poll() is None:
+                if time.monotonic()-last>1:
+                    hotkey.configure(hub_options(directory)['hotkey']);last=time.monotonic()
+                hotkey.pump()
+            return subprocess.CompletedProcess(command,child.returncode,b'',b'')
+    finally:
+        hotkey.close()
+        if monitor.load_json(host,{}).get('pid')==os.getpid():host.unlink(missing_ok=True)
 
 
 if __name__=='__main__':raise SystemExit(main())

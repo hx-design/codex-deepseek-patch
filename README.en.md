@@ -5,14 +5,14 @@
 
 **Your models, in the original Codex.** Add existing cloud endpoints and local models to the native picker. Keep your login, history and tools, switch within one chat, and manage connections and patch updates in one settings window.
 
-Extension **0.5.11-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.7.0-proxy.1**, update branch `codex/existing-proxy-models`.
 <!-- /EDITION -->
 <!-- EDITION:ds -->
 # Codex × DeepSeek
 
 **Use DeepSeek in the original Codex.** Add DeepSeek Flash alongside GPT, keep your login and native tools, and switch within one chat. Manage credentials, context limits and patch updates in the settings window.
 
-DS **0.5.11-proxy.1**, update branch `main`.
+DS **0.7.0-proxy.1**, update branch `main`.
 <!-- /EDITION -->
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
@@ -88,15 +88,19 @@ Existing handoff caches remain usable. Long records and oversized old summaries 
 
 Open **Codex Model Settings** from the user Applications folder on macOS or Start menu on Windows, or run `python3 patch.py settings`.
 
-Three tabs combine status/diagnostics, models/connections, and updates/maintenance. Discover endpoints and select models, manage credential references, inspect model/server/effective windows, change visibility and reductions, configure update/sync options and optional image tools, reopen update progress, clean old caches, and recover an interrupted installation. Advanced operations are separated from common controls. Legacy-history recovery exposes progress, cache use and cancellation without exporting conversation text.
+On the first upgrade, save and close an existing older settings window; the whale takes over afterward without discarding the open form.
 
-The panel starts on demand and exits when closed. It uses native AppKit/WinForms and private file messages, with no web server, new dependency or permanent UI service. Initial installation still uses the CLI.
+A small draggable whale opens six compact water-drop categories: Models, Connections, Updates, Tools, Diagnostics and Preferences. Short hover hints and anchored cards share native styling. Drag near an edge to preview the docking spot; release to tuck into an edge-facing drop. The drop is white when no update is pending, pale red when attention is needed. Move away and return to peek; drag away to detach. Brief bubble sounds accompany deliberate opening and closing and can be disabled in Preferences. Manage visibility and context reductions, discover compatible endpoints, select models, configure image tools, compare capabilities, inspect/cancel history recovery, and copy redacted diagnostics.
 
-## Non-blocking progress
+Drag the whale to a screen edge to leave a small droplet. Hover to peek out, move away to tuck it back, or drag away to keep it floating. An open settings card stays visible while editing. Cards unfold from the selected drop with soft curved edges and staggered text; closing reverses the transition. Reduced motion switches directly between states.
 
-A native, dismissible progress window appears for a new update. Continue working or close it; background work continues. Pressing Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion offers Launch Codex, without opening it automatically.
+Updates combines patch checks/retries, independent model synchronization, progress and launch actions. Cache cleanup, interrupted-install recovery and patch removal live under Updates → Maintenance. Preferences holds appearance, motion and the shortcut. Hide/show the on-demand UI with **Ctrl+Alt+D** (⌃⌥D on macOS); quitting the UI releases the shortcut. AppKit and WPF need no web server or additional UI runtime. Initial installation still uses the CLI.
 
-Known work units show real counts; unknown-duration phases use an activity bar. The same version does not repeatedly reopen the prompt; completion can appear once after a progress view was dismissed. During the first legacy upgrade, the panel becomes available after the new components are downloaded.
+## Integrated update progress
+
+A new patch adds a small droplet beside the whale and tints the Updates button pale red. Background notifications reveal the badge without opening a settings card or taking focus. Click either entry to see the version and live progress in the same settings host. Closing the card or hiding the whale leaves the update running.
+
+Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion restores the normal button color and offers Launch Codex without launching it automatically. Known work units show real counts; unknown-duration phases use an activity bar. Repeated checks do not repeatedly reveal the same notice. During a legacy upgrade, the integrated UI is available after the new components are downloaded. Both release channels stay independent.
 
 ## Maintenance
 

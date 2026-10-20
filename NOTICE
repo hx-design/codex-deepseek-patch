@@ -6,6 +6,14 @@ It does not license the ChatGPT/Codex application, vendor model instructions,
 third-party software embedded in the application, or the referenced trademarks.
 Those materials are not distributed by this repository.
 
+The outer whale contour in src/brand.svg is adapted from DeepSeek's official
+DeepSeek-V2 logo. Its interior is replaced with an original terminal prompt:
+https://github.com/deepseek-ai/DeepSeek-V2/blob/main/figures/logo.svg
+Copyright (c) 2023 DeepSeek.
+The upstream code license is MIT:
+https://github.com/deepseek-ai/DeepSeek-V2/blob/main/LICENSE-CODE
+The artwork identifies this independent patch; it does not imply endorsement.
+
 The patch includes short version-specific matching strings required to locate
 the supported program behavior. Complete vendor source files and binaries are
 read only from the user's own local installation and kept in local build output.

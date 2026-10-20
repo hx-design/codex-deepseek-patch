@@ -1,185 +1,283 @@
-﻿param([Parameter(Mandatory=$true)][string]$StateDirectory,[Parameter(Mandatory=$true)][string]$PythonExecutable,[Parameter(Mandatory=$true)][string]$ControllerPath,[switch]$SelfTest,[switch]$LoopTest)
+﻿param([string]$StateDirectory,[string]$PythonExecutable,[string]$ControllerPath,[switch]$SelfTest,[switch]$LoopTest)
 $ErrorActionPreference='Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
+Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Windows.Forms,System.Drawing
 $script:UI=Join-Path $StateDirectory 'settings-ui';$script:Jobs=Join-Path $script:UI 'jobs'
-$script:Pending=$null;$script:After=$null;$script:Report='';$script:Selected=$null;$script:LastRaise=''
-function Read-Json([string]$Path){
- try{$stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete));try{$reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8);try{return ($reader.ReadToEnd()|ConvertFrom-Json)}finally{$reader.Dispose()}}finally{$stream.Dispose()}}catch{return $null}
+function Read-Json($Path){if(Test-Path -LiteralPath $Path){return [IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8)|ConvertFrom-Json};return $null}
+function Write-Json($Path,$Value){$tmp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp';[IO.File]::WriteAllText($tmp,($Value|ConvertTo-Json -Depth 60 -Compress),[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $tmp -Destination $Path -Force}
+$script:Initial=Read-Json (Join-Path $script:UI 'view.json');$script:Shell=$script:Initial.hub;$script:View=$script:Initial.view;$script:L=$script:Shell.layout
+$script:Pending=$null;$script:UpdateWidgets=$null;$script:UpdateState=$null;$script:Card=$null;$script:Expanded=$false;$script:Hidden=$false;$script:Closing=$false;$script:LastRaise='';$script:Fields=@{};$script:Rows=@();$script:Dragged=$false;$script:DragStart=$null;$script:WindowStart=$null
+$script:Dock=$null;$script:DockMotion=$null;$script:DockLeave=$null;$script:CardMotion=$null;$script:CardProgress=1;$script:CardSource=$null;$script:CardAfterClose=$null;$script:MotionTimer=$null
+$script:DockTimer=$null;$script:HintEdge=$null;$script:HintBusy=$false;$script:Sounds=@{};$script:LastSound=[DateTime]::MinValue
+$script:MotionChecks=@{opened=0;closed=0;hover_revealed=$false;leave_retracted=$false;detached=$false;form_held=$false}
+foreach($name in @('open','close')){try{$player=[System.Media.SoundPlayer]::new((Join-Path $script:UI ('bubble-'+$name+'.wav')));$player.Load();$script:Sounds[$name]=$player}catch{}}
+function Play-Bubble($Name){if($SelfTest -or $script:Hidden -or $script:View.options.sound -eq $false -or ([DateTime]::UtcNow-$script:LastSound).TotalMilliseconds -lt $script:Shell.sound.cooldown_ms){return};$script:LastSound=[DateTime]::UtcNow;try{foreach($sound in $script:Sounds.Values){$sound.Stop()};if($script:Sounds[$Name]){$script:Sounds[$Name].Play()}}catch{}}
+function Is-Dark{if($script:View.options.theme -ne 'system'){return $script:View.options.theme -eq 'dark'};try{return (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize').AppsUseLightTheme -eq 0}catch{return $false}}
+function Reduced{if($SelfTest){return $script:View.options.motion -eq 'reduced'};return $script:View.options.motion -eq 'reduced' -or ![Windows.SystemParameters]::ClientAreaAnimation}
+function Brush($Color){return [Windows.Media.BrushConverter]::new().ConvertFromString($Color)}
+function Resources {
+ $p=if(Is-Dark){$script:Shell.palettes.dark}else{$script:Shell.palettes.light};$script:Palette=$p
+ $template=@'
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <SolidColorBrush x:Key="Surface" Color="@surface@" Opacity="0.95"/><SolidColorBrush x:Key="Field" Color="@field@"/><SolidColorBrush x:Key="Ink" Color="@text@"/><SolidColorBrush x:Key="Muted" Color="@muted@"/><SolidColorBrush x:Key="Line" Color="@line@"/><SolidColorBrush x:Key="Accent" Color="@accent@"/><SolidColorBrush x:Key="Hover" Color="@hover@"/>
+ <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontFamily" Value="Microsoft YaHei UI, Segoe UI"/><Setter Property="FontSize" Value="12"/></Style>
+ <Style TargetType="Button"><Setter Property="HorizontalContentAlignment" Value="Center"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Padding" Value="9,6"/><Setter Property="FontFamily" Value="Microsoft YaHei UI"/><Setter Property="FontSize" Value="12"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="{DynamicResource Hover}"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.75"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ <Style x:Key="Whale" TargetType="Button"><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border Background="Transparent"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Opacity" Value="0.88"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ @drop_styles@
+
+ <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToolTip"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="9" Padding="10,7" MaxWidth="226"><ContentPresenter/></Border></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="TextBox"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Field}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="CaretBrush" Value="{DynamicResource Accent}"/><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/><Setter Property="Padding" Value="9,7"/><Setter Property="FontSize" Value="12"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8"><Grid><ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/><TextBlock x:Name="Hint" Text="{TemplateBinding Tag}" Foreground="{DynamicResource Muted}" Margin="{TemplateBinding Padding}" IsHitTestVisible="False" Visibility="Collapsed"/></Grid></Border><ControlTemplate.Triggers><Trigger Property="Text" Value=""><Setter TargetName="Hint" Property="Visibility" Value="Visible"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="PasswordBox"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Background" Value="{DynamicResource Field}"/><Setter Property="Padding" Value="9,7"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="PasswordBox"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8"><ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/></Border><ControlTemplate.Triggers><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="ScrollBar"><Setter Property="Width" Value="9"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar"><Grid Background="Transparent"><Track x:Name="PART_Track" IsDirectionReversed="True"><Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0"/></Track.DecreaseRepeatButton><Track.Thumb><Thumb Margin="2,0"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border Background="{DynamicResource Muted}" Opacity="0.45" CornerRadius="3"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb><Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0"/></Track.IncreaseRepeatButton></Track></Grid></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="CheckBox"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="FontSize" Value="12"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox"><Grid MinHeight="34"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions><ContentPresenter Margin="0,0,12,0" VerticalAlignment="Center"/><Border x:Name="Rail" Grid.Column="1" Width="36" Height="21" CornerRadius="11" Background="{DynamicResource Line}" VerticalAlignment="Center"><Ellipse x:Name="Knob" Width="15" Height="15" Fill="White" Margin="3,0,0,0" HorizontalAlignment="Left"/></Border></Grid><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="Rail" Property="Background" Value="{DynamicResource Accent}"/><Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Rail" Property="BorderBrush" Value="{DynamicResource Ink}"/><Setter TargetName="Rail" Property="BorderThickness" Value="1"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="ComboBoxItem"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem"><Border x:Name="B" CornerRadius="8" Padding="10,8" Margin="3,1" Background="Transparent"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="B" Property="Background" Value="{DynamicResource Hover}"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+ <Style TargetType="ComboBox"><Setter Property="Foreground" Value="{DynamicResource Ink}"/><Setter Property="MinHeight" Value="36"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox"><Grid><Border Background="{DynamicResource Field}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8"/><ToggleButton Focusable="False" IsChecked="{Binding IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Grid Background="Transparent"><Path Data="M0 0L5 5L10 0" Stroke="{DynamicResource Muted}" StrokeThickness="1.5" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/></Grid></ControlTemplate></ToggleButton.Template></ToggleButton><ContentPresenter Margin="11,8,32,8" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" IsHitTestVisible="False"/><Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}" Margin="0,5,0,0"><ScrollViewer MaxHeight="230" CanContentScroll="True" VerticalScrollBarVisibility="Auto"><ItemsPresenter/></ScrollViewer></Border></Popup></Grid></ControlTemplate></Setter.Value></Setter></Style>
+</ResourceDictionary>
+'@
+ $drops=''
+ $dropStyles=@($script:L.drops)+@($script:L.badge);foreach($edge in @('left','right','top','bottom')){$dropStyles+=@{shape=1;angle=$script:L.dock.angles.$edge}}
+ for($i=0;$i -lt $dropStyles.Count;$i++){
+  $d=$dropStyles[$i];$path=$script:L.shapes[$d.shape]
+  $drops+=@"
+ <Style x:Key="Drop$i" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Grid><Viewbox Margin="3"><Canvas Width="28" Height="28"><Path x:Name="Water" Data="$path" Fill="{TemplateBinding Background}" Stroke="{TemplateBinding BorderBrush}" StrokeThickness="0.4" Canvas.Left="2" Canvas.Top="2"><Path.RenderTransform><RotateTransform Angle="$($d.angle)" CenterX="12" CenterY="12"/></Path.RenderTransform><Path.Effect><DropShadowEffect Color="#25436A" BlurRadius="2" ShadowDepth="0.5" Opacity="0.10"/></Path.Effect></Path></Canvas></Viewbox><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,3"/></Grid><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Water" Property="Opacity" Value="0.82"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Water" Property="Stroke" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+"@
+ }
+ $template=$template.Replace('@drop_styles@',$drops)
+ foreach($name in @('surface','field','text','muted','line','accent','hover')){$template=$template.Replace('@'+$name+'@',[string]$p.$name)}
+ return [Windows.Markup.XamlReader]::Parse($template)
 }
-function Write-Json([string]$Path,$Value){[IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))}
-function As-Map($Object){$result=@{};if($null -ne $Object){foreach($p in $Object.PSObject.Properties){$result[$p.Name]=$p.Value}};return $result}
-function Tokens($Value){if($Value){return ('{0:N0} tokens' -f [long]$Value)};return '未提供'}
-function Optional-Number($Control){if([string]::IsNullOrWhiteSpace($Control.Text)){return $null};$value=[long]0;if(![long]::TryParse($Control.Text.Trim(),[ref]$value) -or $value -lt 1){throw '请输入正整数'};return $value}
-function Notify([string]$Title,[string]$Message){if(!$SelfTest){[void][Windows.Forms.MessageBox]::Show($script:Form,$Message,$Title,[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]::Information)}}
-function Confirm([string]$Title,[string]$Message){if($SelfTest){return $false};return [Windows.Forms.MessageBox]::Show($script:Form,$Message,$Title,[Windows.Forms.MessageBoxButtons]::OKCancel,[Windows.Forms.MessageBoxIcon]::Question) -eq [Windows.Forms.DialogResult]::OK}
-function Label($Parent,$X,$Y,$W,$H,$Text,$Size=10,$Bold=$false){$v=[Windows.Forms.Label]::new();$v.SetBounds($X,$Y,$W,$H);$v.Text=$Text;$v.Font=[Drawing.Font]::new('Microsoft YaHei UI',$Size,$(if($Bold){[Drawing.FontStyle]::Bold}else{[Drawing.FontStyle]::Regular}));$Parent.Controls.Add($v);return $v}
-function Input($Parent,$X,$Y,$W,$Text='',$Password=$false){$v=[Windows.Forms.TextBox]::new();$v.SetBounds($X,$Y,$W,29);$v.Text=[string]$Text;$v.UseSystemPasswordChar=$Password;$Parent.Controls.Add($v);return $v}
-function Button($Parent,$X,$Y,$W,$Title,[scriptblock]$Action){$v=[Windows.Forms.Button]::new();$v.SetBounds($X,$Y,$W,34);$v.Text=$Title;$v.FlatStyle=[Windows.Forms.FlatStyle]::System;$v.Tag=$Action;$v.Add_Click({param($sender,$event);try{& $sender.Tag}catch{$script:Banner.Text='操作未完成，请核对填写内容。'}});$Parent.Controls.Add($v);return $v}
-function Toggle($Parent,$X,$Y,$W,$Title,$Checked=$false){$v=[Windows.Forms.CheckBox]::new();$v.SetBounds($X,$Y,$W,28);$v.Text=$Title;$v.Checked=[bool]$Checked;$Parent.Controls.Add($v);return $v}
-function Dialog([string]$Title,$Rows,$Buttons){
- $d=[Windows.Forms.Form]::new();$d.Text=$Title;$d.StartPosition='CenterParent';$d.FormBorderStyle='FixedDialog';$d.MaximizeBox=$false;$d.MinimizeBox=$false;$d.Font=$script:Form.Font;$d.AutoScaleMode='Dpi';$d.ClientSize=[Drawing.Size]::new(600,($Rows.Count*46+78));$d.Tag=($Buttons.Count-1);$fields=@{};$y=18
- foreach($row in $Rows){[void](Label $d 18 $y 145 27 $row.Label);switch($row.Kind){
-  'check' {$control=Toggle $d 170 $y 405 '' $row.Value}
-  'choice' {$control=[Windows.Forms.ComboBox]::new();$control.SetBounds(170,$y,405,29);$control.DropDownStyle='DropDownList';[void]$control.Items.AddRange([object[]]$row.Items);$control.SelectedIndex=[int]$row.Value;$d.Controls.Add($control)}
-  default {$control=Input $d 170 $y $(if($row.Kind -eq 'file'){355}else{405}) $row.Value ($row.Kind -eq 'password');if($row.Kind -eq 'file'){$browse=[Windows.Forms.Button]::new();$browse.SetBounds(532,$y,43,29);$browse.Text='…';$browse.Tag=$control;$browse.Add_Click({param($sender,$event);$pick=[Windows.Forms.OpenFileDialog]::new();try{if($pick.ShowDialog($sender.FindForm()) -eq 'OK'){$sender.Tag.Text=$pick.FileName}}finally{$pick.Dispose()}});$d.Controls.Add($browse)}}
- };$fields[$row.Key]=$control;$y+=46}
- for($i=0;$i -lt $Buttons.Count;$i++){$v=[Windows.Forms.Button]::new();$v.Text=$Buttons[$i];$v.SetBounds((585-($Buttons.Count-$i)*142),($y+8),134,34);$v.Tag=$i;$v.Add_Click({param($sender,$event);$sender.FindForm().Tag=[int]$sender.Tag;$sender.FindForm().Close()});$d.Controls.Add($v)}
- if(!$SelfTest){[void]$d.ShowDialog($script:Form)}
- return @{Answer=[int]$d.Tag;Fields=$fields;Form=$d}
+function New-Window($Width,$Height){$w=[Windows.Window]::new();$w.Width=$Width;$w.Height=$Height;$w.WindowStyle='None';$w.AllowsTransparency=$true;$w.Background=[Windows.Media.Brushes]::Transparent;$w.ResizeMode='NoResize';$w.Topmost=$true;$w.ShowInTaskbar=$false;$w.Resources=Resources;$w.FontFamily=[Windows.Media.FontFamily]::new('Microsoft YaHei UI');$w.UseLayoutRounding=$true;return $w}
+function Text($Value,$Size=12,$Bold=$false){$v=[Windows.Controls.TextBlock]::new();$v.Text=[string]$Value;$v.FontSize=$Size;$v.TextWrapping='Wrap';if($Bold){$v.FontWeight='SemiBold'};return $v}
+function Tip($Title,$Description){$t=Text ($Title+' · '+$Description) 11;$t.TextWrapping='NoWrap';$t.TextTrimming='CharacterEllipsis';return $t}
+function Button($Label,[scriptblock]$Action,$Style='secondary'){$b=[Windows.Controls.Button]::new();$b.Content=$Label;$b.Tag=$Action;$b.Margin='3,0,3,0';$b.Add_Click({param($sender,$event);try{& $sender.Tag}catch{if($script:Notice){$script:Notice.Text='操作未完成，请检查填写内容。'}}});if($Style -eq 'primary'){$b.Background=Brush $script:Palette.accent;$b.Foreground=[Windows.Media.Brushes]::White};if($Style -eq 'danger'){$b.Foreground=Brush $script:Palette.danger};return $b}
+function Icon-View($PathData){
+ $path=[Windows.Shapes.Path]::new();$path.Data=[Windows.Media.Geometry]::Parse($PathData);$path.Stroke=Brush $script:Palette.text;$path.StrokeThickness=2.2;$path.StrokeStartLineCap='Round';$path.StrokeEndLineCap='Round';$path.StrokeLineJoin='Round'
+ $canvas=[Windows.Controls.Canvas]::new();$canvas.Width=24;$canvas.Height=24;[void]$canvas.Children.Add($path)
+ $view=[Windows.Controls.Viewbox]::new();$view.Width=14;$view.Height=14;$view.Stretch='Uniform';$view.Child=$canvas
+ return @{view=$view;path=$path}
 }
-$script:State=Read-Json (Join-Path $script:UI 'view.json')
-if(!$script:State){throw 'Settings snapshot is missing'}
-$script:Form=[Windows.Forms.Form]::new();$script:Form.Text='Codex 模型设置';$script:Form.ClientSize=[Drawing.Size]::new(920,690);$script:Form.StartPosition='CenterScreen';$script:Form.FormBorderStyle='FixedSingle';$script:Form.MaximizeBox=$false;$script:Form.AutoScaleMode='Dpi';$script:Form.Font=[Drawing.Font]::new('Microsoft YaHei UI',9.5);$script:Form.BackColor=[Drawing.Color]::FromArgb(247,248,250)
-if(Test-Path (Join-Path $script:UI 'brand.ico')){$script:Form.Icon=[Drawing.Icon]::new((Join-Path $script:UI 'brand.ico'))}
-if(Test-Path (Join-Path $script:UI 'brand.png')){$mark=[Windows.Forms.PictureBox]::new();$mark.SetBounds(28,22,38,38);$mark.SizeMode='Zoom';$mark.Image=[Drawing.Image]::FromFile((Join-Path $script:UI 'brand.png'));$script:Form.Controls.Add($mark)}
-[void](Label $script:Form 78 22 650 36 'Codex 模型设置' 20 $true)
-$script:Subtitle=Label $script:Form 28 61 860 28 '' 9
-$tabs=[Windows.Forms.TabControl]::new();$tabs.SetBounds(22,102,876,522);$script:Form.Controls.Add($tabs)
-$overview=[Windows.Forms.TabPage]::new('概览');$models=[Windows.Forms.TabPage]::new('模型与连接');$maintenance=[Windows.Forms.TabPage]::new('更新与维护');foreach($page in @($overview,$models,$maintenance)){$page.BackColor=[Drawing.Color]::White;$tabs.TabPages.Add($page)}
-$script:Banner=Label $script:Form 28 641 650 30 '' 9
-$script:RefreshButton=Button $script:Form 692 635 96 '刷新' {Send-Action 'snapshot' @{} {param($value)Render $value}}
-[void](Button $script:Form 796 635 96 '取消操作' {if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.Id+'.cancel')) @{id=$script:Pending.Id};$script:Banner.Text='已请求取消；正在保存的操作会先安全完成。'}})
-$script:Health=Label $overview 24 22 805 38 '' 17 $true
-$script:Summary=Label $overview 24 70 805 60 '' 10
-[void](Button $overview 20 144 140 '检查更新' {Send-Action 'check_updates'})
-[void](Button $overview 168 144 140 '运行诊断' {Send-Action 'diagnose' @{endpoints=$true} {param($value)$script:Report=$value.text;$script:ReportBox.Text=$script:Report;$tabs.SelectedIndex=0}})
-[void](Button $overview 316 144 140 '更新进度' {Send-Action 'show_progress'})
-[void](Button $overview 464 144 140 '复制诊断' {if($script:Report){[Windows.Forms.Clipboard]::SetText($script:Report);$script:Banner.Text='已复制脱敏诊断报告。'}else{Notify '尚无诊断报告' '先运行一次诊断。'}})
-$script:ReportBox=[Windows.Forms.TextBox]::new();$script:ReportBox.SetBounds(24,198,805,254);$script:ReportBox.Multiline=$true;$script:ReportBox.ReadOnly=$true;$script:ReportBox.ScrollBars='Vertical';$script:ReportBox.BackColor=[Drawing.Color]::FromArgb(250,251,253);$overview.Controls.Add($script:ReportBox)
-[void](Label $models 20 25 72 26 '搜索模型' 9);$script:Search=Input $models 96 22 394 '';$script:Search.Add_TextChanged({Filter-Models})
-$script:Grid=[Windows.Forms.DataGridView]::new();$script:Grid.SetBounds(20,64,470,270);$script:Grid.ReadOnly=$true;$script:Grid.AllowUserToAddRows=$false;$script:Grid.AllowUserToDeleteRows=$false;$script:Grid.RowHeadersVisible=$false;$script:Grid.MultiSelect=$false;$script:Grid.SelectionMode='FullRowSelect';$script:Grid.BackgroundColor=[Drawing.Color]::White;$script:Grid.BorderStyle='FixedSingle';$script:Grid.RowTemplate.Height=30
-[void]$script:Grid.Columns.Add('name','模型');[void]$script:Grid.Columns.Add('window','使用窗口');[void]$script:Grid.Columns.Add('visible','状态');$script:Grid.Columns[0].Width=235;$script:Grid.Columns[1].Width=140;$script:Grid.Columns[2].Width=70;$script:Grid.Add_SelectionChanged({Select-Model});$models.Controls.Add($script:Grid)
-$script:ModelLabel=Label $models 514 22 320 36 '选择一个模型' 14 $true
-$script:Capabilities=Label $models 514 66 320 73 '' 9
-$script:Maximum=Label $models 514 148 320 43 '' 9
-[void](Label $models 514 204 100 24 '使用窗口' 9);$script:Context=Input $models 622 200 208 ''
-[void](Label $models 514 246 100 24 '压缩阈值' 9);$script:Compact=Input $models 622 242 208 ''
-$script:Visible=Toggle $models 514 283 320 '在 Codex 模型菜单中显示' $true
-[void](Button $models 510 327 146 '恢复默认' {$script:Context.Text='';$script:Compact.Text='';Save-Model})
-[void](Button $models 664 327 170 '保存模型设置' {Save-Model})
-[void](Label $models 22 376 810 38 '留空使用自动窗口与压缩阈值。连接变更会先验证，退出 Codex 后再应用。' 9)
-if($script:State.edition -eq 'proxy'){
- [void](Button $models 16 422 128 '添加接口' {Edit-Connection $null})
- [void](Button $models 152 422 128 '管理连接' {Manage-Connections})
- [void](Button $models 288 422 128 '现成代理' {Edit-Proxy})
+$script:Hub=New-Window $script:L.closed_width $script:L.bubble;$script:Hub.Title='鲸鱼 · Codex 模型补丁';$script:Canvas=[Windows.Controls.Canvas]::new();$script:Hub.Content=$script:Canvas
+function Work-Area($X,$Y){$source=[Windows.PresentationSource]::FromVisual($script:Hub);$to=if($source){$source.CompositionTarget.TransformToDevice}else{[Windows.Media.Matrix]::Identity};$from=$to;$from.Invert();$pixel=$to.Transform([Windows.Point]::new($X,$Y));$screen=[Windows.Forms.Screen]::FromPoint([Drawing.Point]::new([int]$pixel.X,[int]$pixel.Y));$r=$screen.WorkingArea;$a=$from.Transform([Windows.Point]::new($r.Left,$r.Top));$b=$from.Transform([Windows.Point]::new($r.Right,$r.Bottom));return [Windows.Rect]::new($a,$b)}
+function Clamp-Window($Window,$X,$Y,$Width,$Height){$work=Work-Area ($X+$Width/2) ($Y+$Height/2);$Window.Width=$Width;$Window.Height=$Height;$Window.Left=[Math]::Max($work.Left+5,[Math]::Min($X,$work.Right-$Width-5));$Window.Top=[Math]::Max($work.Top+5,[Math]::Min($Y,$work.Bottom-$Height-5))}
+$saved=Read-Json (Join-Path $script:UI 'position.json');$work=[Windows.SystemParameters]::WorkArea
+$x=if($saved){[double]$saved.x}else{$work.Right-102};$y=if($saved){[double]$saved.y}else{$work.Bottom-160};Clamp-Window $script:Hub ($x-$script:L.closed_whale_x) $y $script:L.closed_width $script:L.bubble
+
+function Place($Control,$X,$Y){[Windows.Controls.Canvas]::SetLeft($Control,$X);[Windows.Controls.Canvas]::SetTop($Control,$Y)}
+$script:Whale=Button '' {if(!$script:Dragged){Toggle-Orbit}};$script:Whale.Style=$script:Hub.Resources['Whale'];$script:Whale.Width=$script:L.bubble;$script:Whale.Height=$script:L.bubble;$script:Whale.Margin='0';$script:Whale.ToolTip=Tip '鲸鱼菜单' '拖动贴边 · 右键隐藏';$image=[Windows.Controls.Image]::new();$image.Width=$script:L.bubble;$image.Height=$script:L.bubble;$image.Source=[Windows.Media.Imaging.BitmapImage]::new([uri](Join-Path $script:UI 'brand.png'));$script:Whale.Content=$image;Place $script:Whale $script:L.closed_whale_x 0;[void]$script:Canvas.Children.Add($script:Whale)
+[Windows.Automation.AutomationProperties]::SetName($script:Whale,'鲸鱼菜单')
+function Attach-Drag($Button){
+ $Button.Add_PreviewMouseLeftButtonDown({$script:Dragged=$false;$script:DragStart=[Windows.Forms.Cursor]::Position})
+ $Button.Add_PreviewMouseMove({param($sender,$event);if($event.LeftButton -eq 'Pressed' -and $script:DragStart){$p=[Windows.Forms.Cursor]::Position;if([Math]::Abs($p.X-$script:DragStart.X)+[Math]::Abs($p.Y-$script:DragStart.Y) -gt 6){$script:Dragged=$true;Detach-Dock;Hide-Orbit;$script:Hub.DragMove();$script:DragStart=$null;Finish-Drag}}})
+ $Button.Add_PreviewMouseLeftButtonUp({$script:DragStart=$null});$Button.Add_MouseRightButtonUp({Hide-Hub})
 }
-[void](Button $models $(if($script:State.edition -eq 'proxy'){424}else{16}) 422 128 'DeepSeek' {Edit-DeepSeek})
-[void](Button $models $(if($script:State.edition -eq 'proxy'){560}else{152}) 422 154 '切换前比较' {Compare-Models})
-$script:Code=Toggle $maintenance 24 22 370 '自动检查补丁更新' $true
-$script:Sync=Toggle $maintenance 24 62 370 '自动同步模型与规格' $true
-$script:Progress=Toggle $maintenance 24 102 370 '发现补丁更新时显示进度' $true
-[void](Label $maintenance 445 29 160 26 '检查间隔（分钟）' 9);$script:Interval=Input $maintenance 620 22 195 '5'
-[void](Button $maintenance 615 70 204 '保存维护设置' {Send-Action 'save_options' @{auto_update=$script:Code.Checked;model_sync=$script:Sync.Checked;progress_ui=$script:Progress.Checked;interval=((Optional-Number $script:Interval)*60)}})
-[void](Label $maintenance 24 163 600 30 '常用维护' 13 $true)
-[void](Button $maintenance 18 207 150 '立即检查' {Send-Action 'check_updates'})
-[void](Button $maintenance 176 207 150 '重新尝试更新' {Send-Action 'retry_update'})
-[void](Button $maintenance 334 207 150 '清理旧缓存' {Cleanup})
-[void](Button $maintenance 492 207 150 '图片工具' {Edit-Images})
-$script:Recovery=Label $maintenance 24 267 790 66 '' 9
-[void](Button $maintenance 18 337 200 '取消当前历史恢复' {Cancel-Recovery})
-$advanced=Toggle $maintenance 24 391 300 '高级维护' $false
-$script:RecoverButton=Button $maintenance 18 430 200 '恢复中断的安装' {Recover 'recover'};$script:RecoverButton.Visible=$false
-$script:RestoreButton=Button $maintenance 226 430 200 '撤销适配层' {Recover 'restore'};$script:RestoreButton.Visible=$false
-$advanced.Add_CheckedChanged({param($sender,$event)$script:RecoverButton.Visible=$sender.Checked;$script:RestoreButton.Visible=$sender.Checked})
-[void](Button $maintenance 661 430 158 '使用说明' {[Diagnostics.Process]::Start($script:State.help_url)|Out-Null})
-function Filter-Models {
- $query=$script:Search.Text.ToLowerInvariant();$script:Grid.Rows.Clear()
- foreach($row in $script:State.models){if(($row.name+' '+$row.id+' '+$row.provider).ToLowerInvariant().Contains($query)){$i=$script:Grid.Rows.Add([string]$row.name,(Tokens $row.effective),$(if($row.visible){'显示'}else{'隐藏'}));$script:Grid.Rows[$i].Tag=$row}}
- if($script:Grid.Rows.Count){$script:Grid.Rows[0].Selected=$true};Select-Model
+Attach-Drag $script:Whale
+$script:Hub.Add_LocationChanged({if($script:Dragged -and $script:DragStart -and !$script:HintBusy){$script:HintBusy=$true;try{Update-DockHint}finally{$script:HintBusy=$false}}})
+$script:EdgeBubble=Button '' {if(!$script:Dragged){Peek-Dock $true;Toggle-Orbit}};$script:EdgeBubble.Style=$script:Hub.Resources['Drop1'];$script:EdgeBubble.Width=$script:L.dock.size;$script:EdgeBubble.Height=$script:L.dock.size;$script:EdgeBubble.Margin='0';$edgeIcon=Icon-View 'M8 10L12 14L16 10';$script:EdgeBubble.Content=$edgeIcon.view;$script:EdgeBubble.Visibility='Collapsed';[Windows.Automation.AutomationProperties]::SetName($script:EdgeBubble,'贴边鲸鱼');[void]$script:Canvas.Children.Add($script:EdgeBubble);Attach-Drag $script:EdgeBubble
+$script:DockHint=New-Window $script:L.dock.size $script:L.dock.size;$script:DockHint.ShowActivated=$false;$script:DockHint.IsHitTestVisible=$false;$script:DockHint.Focusable=$false;$script:DockHint.Opacity=.85
+$script:HintDrop=Button '' {};$script:HintDrop.Margin='0';$hintIcon=Icon-View 'M8 10L12 14L16 10';$script:HintDrop.Content=$hintIcon.view;$script:HintDrop.Background=Brush $script:Palette.hover;$script:HintDrop.BorderBrush=Brush $script:Palette.accent;$script:DockHint.Content=$script:HintDrop
+$script:Badge=Button '↑' {Open-Card 'updates' $null -1};$script:Badge.Style=$script:Hub.Resources['Drop6'];$script:Badge.Width=28;$script:Badge.Height=28;$script:Badge.Margin='0';$badgeIcon=Icon-View 'M12 18V6 M7 11L12 6L17 11';$script:BadgeIcon=$badgeIcon.path;$badgeIcon.view.RenderTransform=[Windows.Media.TranslateTransform]::new($script:L.badge.icon_x,$script:L.badge.icon_y);$script:Badge.Content=$badgeIcon.view;$script:Badge.Visibility='Collapsed';$script:Badge.ToolTip=Tip '补丁更新' '点击查看';[Windows.Automation.AutomationProperties]::SetName($script:Badge,'补丁更新提醒');Place $script:Badge 2 20;[void]$script:Canvas.Children.Add($script:Badge)
+$script:Nodes=@();$script:NodeIcons=@();$script:Sprays=@()
+for($i=0;$i -lt $script:Shell.categories.Count;$i++){
+ $category=$script:Shell.categories[$i];$index=$i;$route=$category.id
+ $b=Button '' ({Open-Card $route $null $index}.GetNewClosure());$b.Style=$script:Hub.Resources['Drop'+$i];$b.Width=$script:L.drops[$i].size;$b.Height=$script:L.drops[$i].size;$b.Margin='0';$b.Visibility='Collapsed';$b.ToolTip=Tip $category.name $category.description
+ [Windows.Automation.AutomationProperties]::SetName($b,$category.name)
+ $icon=Icon-View $category.icon;$b.Content=$icon.view;$script:NodeIcons+=,$icon.path
+ $b.RenderTransformOrigin='0.5,0.5';$b.RenderTransform=[Windows.Media.ScaleTransform]::new(1,1)
+ $b.Add_MouseEnter({param($sender,$event);$a=[Windows.Media.Animation.DoubleAnimation]::new(1.06,[Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if(Reduced){0}else{$script:Shell.motion.hover_ms}))));$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$a);$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$a)})
+ $b.Add_MouseLeave({param($sender,$event);$a=[Windows.Media.Animation.DoubleAnimation]::new(1.0,[Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if(Reduced){0}else{$script:Shell.motion.hover_ms}))));$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$a);$sender.RenderTransform.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$a)})
+ [void]$script:Canvas.Children.Add($b);$script:Nodes+=,$b
 }
-function Select-Model {
- if(!$script:Grid.SelectedRows.Count){$script:Selected=$null;return};$script:Selected=$script:Grid.SelectedRows[0].Tag;if(!$script:Selected){return};$m=$script:Selected
- $script:ModelLabel.Text=$m.name;$script:Capabilities.Text='来源：'+$m.provider+"`r`n工具 "+$(if($m.tools){'支持'}else{'不支持'})+' · 图片 '+$(if($m.images){'支持'}else{'不支持'})+"`r`n思考档位："+$(if($m.reasoning.Count){$m.reasoning -join ' / '}else{'服务未提供'})
- $script:Maximum.Text='模型最大：'+(Tokens $m.maximum)+$(if($m.server_window){"`r`n服务加载："+(Tokens $m.server_window)}else{''})
- $script:Context.Text=[string]$m.context_override;$script:Compact.Text=[string]$m.compact_override;$script:Visible.Checked=[bool]$m.visible
+function Move-Animated($Control,$Property,$From,$To,$Delay){if(Reduced){$Control.SetValue($Property,[double]$To);return};$a=[Windows.Media.Animation.DoubleAnimation]::new($From,$To,[Windows.Duration]::new([TimeSpan]::FromMilliseconds($script:Shell.motion.duration_ms)));$a.BeginTime=[TimeSpan]::FromMilliseconds($Delay);$ease=[Windows.Media.Animation.BackEase]::new();$ease.EasingMode='EaseOut';$ease.Amplitude=.45;$a.EasingFunction=$ease;$Control.BeginAnimation($Property,$a)}
+function Remove-Water {
+ if($script:WaterTimer){$script:WaterTimer.Stop();$script:WaterTimer=$null}
+ if($script:WaterCanvas){$script:Canvas.Children.Remove($script:WaterCanvas);$script:WaterCanvas=$null}
+ $script:WaterParts=@();$script:WaterDrops=@()
 }
-function Save-Model {if($script:Selected){Send-Action 'save_model' @{id=$script:Selected.id;context=(Optional-Number $script:Context);compact=(Optional-Number $script:Compact);visible=$script:Visible.Checked}}}
-function Render($Value){
- $script:State=$Value;$script:Subtitle.Text=$Value.edition_label+' · '+$Value.version+'     官方 Codex '+$Value.app_version;$script:Health.Text=$Value.status
- $script:Summary.Text='已显示 '+@($Value.models|Where-Object visible).Count+' 个模型 · '+@($Value.connections).Count+" 个自定义连接`r`n"+$(if($Value.queued){'变更已排队，正在等待后台处理。'}else{'模型目录、登录与工具由官方 Codex 承载。'})
- $script:Code.Checked=[bool]$Value.options.auto_update;$script:Sync.Checked=[bool]$Value.options.model_sync;$script:Progress.Checked=[bool]$Value.options.progress_ui;$script:Interval.Text=[string]($Value.options.interval/60)
- Filter-Models
- if(@($Value.recovery).Count){$script:Recovery.Text=(@($Value.recovery|Select-Object -First 2|ForEach-Object {$_.model+' · '+$_.phase+$(if($_.total){' · '+$_.part+'/'+$_.total}else{''})}) -join "`r`n")}else{$script:Recovery.Text="当前没有历史恢复任务。`r`n长历史恢复由当前模型处理；可在此查看进度和取消。"}
- if(!$script:Report){$script:ReportBox.Text="可以在这里查看更新状态、运行诊断并复制反馈信息。`r`n`r`n设置窗口关闭后退出，不会增加常驻管理进程。"}
+function Update-Water {
+ $t=[Math]::Min(1,([DateTime]::UtcNow-$script:WaterStarted).TotalMilliseconds/$script:Shell.motion.duration_ms)
+ if($t -ge 1){Remove-Water;return}
+ $pulse=[Math]::Sin([Math]::PI*[Math]::Min(1,$t/.64));$scale=.35+.65*[Math]::Min(1,$t/.32)
+ foreach($p in $script:WaterParts){$p.Opacity=$pulse;$p.RenderTransform.ScaleX=$scale;$p.RenderTransform.ScaleY=$scale}
+ for($i=0;$i -lt $script:WaterDrops.Count;$i++){$d=$script:L.particles[$i];$p=$script:WaterDrops[$i];$u=[Math]::Max(0,[Math]::Min(1,($t-$i*.022)/.7));$travel=1-[Math]::Pow(1-$u,2);$r=$d[2]*(1-.4*$u);$p.Width=$r*2;$p.Height=$r*(2.8-$u);Place $p ($script:L.spout_x+$d[0]*$travel-$r) ($script:L.spout_y+$d[1]*$travel+7*$u*$u-$r*1.6);$p.Opacity=[Math]::Sin([Math]::PI*$u)*.52*(1-$t)}
+ if($SelfTest -and !$script:WaterCaptured -and $t -ge .3){$script:WaterCaptured=$true;Capture-Test $script:Hub 'native-water'}
 }
-function Send-Action([string]$Action,$Payload=@{},[scriptblock]$Callback=$null){
- if($script:Pending){Notify '有操作正在进行' '请等待当前操作完成。关闭设置窗口不会取消已经提交的操作。';return}
- $id=[guid]::NewGuid().ToString('N');Write-Json (Join-Path $script:Jobs ($id+'.request.json')) @{action=$Action;payload=$Payload;revision=$script:State.revision}
- $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$PythonExecutable;$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WindowStyle='Hidden'
- $start.Arguments=(@($ControllerPath,'execute','--state-dir',$StateDirectory,'--request',$id)|ForEach-Object {'"'+$_+'"'}) -join ' '
- $process=[Diagnostics.Process]::Start($start);$script:Pending=@{Id=$id;Process=$process};$script:After=$Callback;$script:Banner.Text='正在处理…'
- if($SelfTest -and !$LoopTest){if(!$process.WaitForExit(30000)){throw 'Settings self-test worker timed out'};Poll}
+function Start-Water {
+ Remove-Water;if(Reduced){return}
+ $script:WaterCanvas=[Windows.Controls.Canvas]::new();$script:WaterCanvas.Width=$script:L.width;$script:WaterCanvas.Height=$script:L.height;$script:WaterCanvas.IsHitTestVisible=$false;[void]$script:Canvas.Children.Insert(0,$script:WaterCanvas)
+ foreach($data in $script:L.water){$p=[Windows.Shapes.Path]::new();$p.Data=[Windows.Media.Geometry]::Parse($data);$p.Width=60;$p.Height=44;$p.Stretch='None';$p.IsHitTestVisible=$false
+  $fill=[Windows.Media.LinearGradientBrush]::new();$fill.StartPoint=[Windows.Point]::new(0,0);$fill.EndPoint=[Windows.Point]::new(0,1);$fill.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.ColorConverter]::ConvertFromString('#51B5D5FF'),0));$fill.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.ColorConverter]::ConvertFromString('#304D6BFE'),1));$p.Fill=$fill
+  $p.RenderTransform=[Windows.Media.ScaleTransform]::new(.35,.35,30,42);$p.Opacity=0;Place $p ($script:L.spout_x-30) ($script:L.spout_y-42);[void]$script:WaterCanvas.Children.Add($p);$script:WaterParts+=,$p
+ }
+ foreach($d in $script:L.particles){$p=[Windows.Shapes.Ellipse]::new();$p.Fill=Brush $script:Palette.accent;$p.Opacity=0;[void]$script:WaterCanvas.Children.Add($p);$script:WaterDrops+=,$p}
+ $script:WaterStarted=[DateTime]::UtcNow;$script:WaterCaptured=$false;$script:WaterTimer=[Windows.Threading.DispatcherTimer]::new();$script:WaterTimer.Interval=[TimeSpan]::FromMilliseconds(16);$script:WaterTimer.Add_Tick({Update-Water});$script:WaterTimer.Start()
 }
-$script:LastRecoveryPoll=[datetime]::MinValue
-function Refresh-Recovery {
- if(([datetime]::Now-$script:LastRecoveryPoll).TotalSeconds -lt 1){return};$script:LastRecoveryPoll=[datetime]::Now
- if(!$script:State.recovery_directory -or !(Test-Path -LiteralPath $script:State.recovery_directory)){return}
- $rows=@(Get-ChildItem -LiteralPath $script:State.recovery_directory -Filter '*.json' -File | Where-Object {$_.Name -match '^[a-f0-9]{32}\.json$' -and $_.Length -lt 8192 -and !($_.Attributes -band [IO.FileAttributes]::ReparsePoint)} | ForEach-Object {Read-Json $_.FullName} | Where-Object {$_.format -eq 1 -and ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-$_.updated_at) -lt 3600} | Sort-Object updated_at -Descending | Select-Object -First 20)
- $script:State.recovery=$rows;$names=@{recovering='正在恢复';summarizing='正在整理摘要';completed='已完成';failed='未完成';cancelled='已取消'}
- if($rows.Count){$script:Recovery.Text=(@($rows|Select-Object -First 2|ForEach-Object {$_.model+' · '+$names[$_.phase]+$(if($_.total){' · '+$_.part+'/'+$_.total}else{''})+$(if($_.cache){' · 使用摘要缓存'}else{''})}) -join "`r`n")}
+function Toggle-Orbit($Silent=$false) {
+ if($script:Dock -and !$script:Dock.revealed){Peek-Dock $true};if($script:Expanded){Collapse-Orbit;return};if(!$Silent){Play-Bubble 'open'};$script:Expanded=$true;Clamp-Window $script:Hub ($script:Hub.Left+$script:L.closed_whale_x-$script:L.whale_x) ($script:Hub.Top-$script:L.whale_y) $script:L.width $script:L.height;Place $script:Whale $script:L.whale_x $script:L.whale_y
+ for($i=0;$i -lt $script:Nodes.Count;$i++){$b=$script:Nodes[$i];$d=$script:L.drops[$i];$x=$d.x-$d.size/2;$y=$d.y-$d.size/2;$b.Visibility='Visible';Move-Animated $b ([Windows.Controls.Canvas]::LeftProperty) ($script:L.spout_x-$d.size/2) $x ($i*$script:Shell.motion.stagger_ms);Move-Animated $b ([Windows.Controls.Canvas]::TopProperty) ($script:L.spout_y-$d.size/2) $y ($i*$script:Shell.motion.stagger_ms)}
+ Refresh-Update;Start-Water
 }
-function Poll {
- Refresh-Recovery
- $raised=Read-Json (Join-Path $script:UI 'raise.json');if($raised -and [string]$raised.time -ne $script:LastRaise){$script:LastRaise=[string]$raised.time;$script:Form.WindowState='Normal';$script:Form.Activate();$script:Form.BringToFront()}
- if(!$script:Pending){return};$value=Read-Json (Join-Path $script:Jobs ($script:Pending.Id+'.result.json'))
- if(!$value -or $value.status -eq 'running'){if($script:Pending.Process.HasExited){$script:Pending.Process.Dispose();$script:Pending=$null;$script:Banner.Text='操作未完成，请刷新后重试。'};return}
- $script:Pending.Process.Dispose();$script:Pending=$null;$callback=$script:After;$script:After=$null
- if($value.status -eq 'failed'){$script:Banner.Text=$value.error.message;return}
- if($value.snapshot){Render $value.snapshot};$script:Banner.Text=$(if($value.data.message){$value.data.message}else{'操作完成。'});if($callback){& $callback $value.data}
+function Collapse-Orbit($Silent=$false) {
+ if(!$Silent){Play-Bubble 'close'};Remove-Water;
+ if($script:Card){Close-Card {Collapse-Orbit $true};return};if(Reduced){Hide-Orbit;return}
+ foreach($b in $script:Nodes){foreach($entry in @(@([Windows.Controls.Canvas]::LeftProperty,$script:L.spout_x-$b.Width/2),@([Windows.Controls.Canvas]::TopProperty,$script:L.spout_y-$b.Height/2))){$a=[Windows.Media.Animation.DoubleAnimation]::new([double]$entry[1],[Windows.Duration]::new([TimeSpan]::FromMilliseconds($script:Shell.motion.close_ms)));$ease=[Windows.Media.Animation.CubicEase]::new();$ease.EasingMode='EaseIn';$a.EasingFunction=$ease;$b.BeginAnimation($entry[0],$a)}}
+ $script:FoldTimer=[Windows.Threading.DispatcherTimer]::new();$script:FoldTimer.Interval=[TimeSpan]::FromMilliseconds(($script:Shell.motion.close_ms+5));$script:FoldTimer.Add_Tick({$script:FoldTimer.Stop();Hide-Orbit});$script:FoldTimer.Start()
 }
-function Edit-Connection($Old){
- if($script:State.edition -ne 'proxy'){Notify '扩展版功能' 'DS 版只管理 DeepSeek；其他接口可通过扩展版接入。';return}
- $row=if($Old){As-Map $Old}else{@{id=('local-'+[guid]::NewGuid().ToString('N').Substring(0,8));name='';kind='openai';base_url='';wire_api='chat_completions';models=@();model_specs=@{}}}
- $d=Dialog $(if($Old){'编辑连接'}else{'添加模型接口'}) @(
-  @{Key='name';Label='连接名称';Value=$row.name},@{Key='kind';Label='服务类型';Kind='choice';Value=([array]::IndexOf(@('openai','ollama','lmstudio'),$row.kind));Items=@('通用兼容接口','Ollama','LM Studio')},@{Key='url';Label='接口地址';Value=$row.base_url},@{Key='key';Label='API Key（可留空）';Kind='password';Value=''},@{Key='wire';Label='接口协议';Kind='choice';Value=$(if($row.wire_api -eq 'responses'){0}else{1});Items=@('Responses','Chat Completions')},@{Key='models';Label='型号（逗号分隔）';Value=($row.models -join ', ')},@{Key='respect';Label='沿用服务窗口';Kind='check';Value=$row.respect_server_context}
- ) @('检测并保存','保存','取消')
- try{if($d.Answer -eq 2){return};$c=$d.Fields;$row.name=$c.name.Text.Trim();$row.kind=@('openai','ollama','lmstudio')[$c.kind.SelectedIndex];$row.base_url=$c.url.Text.Trim();$row.wire_api=@('responses','chat_completions')[$c.wire.SelectedIndex];$row.models=@($c.models.Text -split '[,，\r\n]'|ForEach-Object {$_.Trim()}|Where-Object {$_});$row.respect_server_context=$c.respect.Checked;$key=$c.key.Text;$c.key.Clear();if($d.Answer -eq 1){Send-Action 'save_connection' @{connection=$row;key=$key}}else{$script:Draft=@{connection=$row;key=$key};Send-Action 'probe_connection' $script:Draft {param($result)$selected=Choose-Discovered $result $script:Draft.connection;if($selected){$script:Draft.connection=$selected;Send-Action 'save_connection' $script:Draft};$script:Draft=$null}}}finally{$d.Form.Dispose()}
+function Hide-Orbit{Remove-Water;if($script:FoldTimer){$script:FoldTimer.Stop()};Dispose-Card;foreach($p in $script:Sprays){$script:Canvas.Children.Remove($p)};$script:Sprays=@();if(!$script:Expanded){return};$script:Expanded=$false;foreach($b in $script:Nodes){$b.Visibility='Collapsed';$b.BeginAnimation([Windows.Controls.Canvas]::LeftProperty,$null);$b.BeginAnimation([Windows.Controls.Canvas]::TopProperty,$null)};$script:Hub.Left+=$script:L.whale_x-$script:L.closed_whale_x;$script:Hub.Top+=$script:L.whale_y;$script:Hub.Width=$script:L.closed_width;$script:Hub.Height=$script:L.bubble;Place $script:Whale $script:L.closed_whale_x 0;Save-Position;Refresh-Update}
+
+function Hide-Hub{Hide-DockHint;Stop-DockTimer;Hide-Orbit;$script:Hub.Hide();$script:Hidden=$true}
+function Show-Hub($Toggle=$false,$Activate=$true){if($Toggle -and !$script:Hidden){Hide-Hub;return};$script:Hidden=$false;Ensure-DockTimer;if($Activate -and $script:Dock){Peek-Dock $true};$script:Hub.ShowActivated=$Activate;$script:Hub.Show();if($Activate){[void]$script:Hub.Activate()}}
+function Capture-Test($Window,$Name){$Window.UpdateLayout();$bitmap=[Windows.Media.Imaging.RenderTargetBitmap]::new([int]$Window.Width*2,[int]$Window.Height*2,192,192,[Windows.Media.PixelFormats]::Pbgra32);$bitmap.Render($Window);$encoder=[Windows.Media.Imaging.PngBitmapEncoder]::new();$encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap));$stream=[IO.File]::Create((Join-Path $script:UI ($Name+'.png')));try{$encoder.Save($stream)}finally{$stream.Dispose()}}
+function Quit-Hub{Hide-DockHint;Stop-DockTimer;$script:DockHint.Close();foreach($sound in $script:Sounds.Values){$sound.Stop();$sound.Dispose()};Remove-Water;$script:Closing=$true;if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.id+'.cancel')) @{id=$script:Pending.id}};if($script:Card){$script:Card.Close()};$script:Hub.Close();$script:Application.Shutdown()}
+function Open-Card($Route,$Key,$Index=0){
+ if($script:Dock){Peek-Dock $true};$control=if($Index -eq -1){$script:Badge}elseif($script:Expanded){$script:Nodes[$Index]}else{$script:Whale};$point=$control.PointToScreen([Windows.Point]::new(($control.Width/2),($control.Height/2)));$source=[Windows.PresentationSource]::FromVisual($script:Hub);if($source){$point=$source.CompositionTarget.TransformFromDevice.Transform($point)};if(!$script:Expanded){Toggle-Orbit $true};$fresh=!$script:Card
+ if($fresh){$script:Card=New-Window $script:L.card_width $script:L.card_height;$script:Card.Title='Codex 模型补丁设置';$script:Card.Owner=$script:Hub;Clamp-Window $script:Card ($point.X-24) ($point.Y-24) $script:L.card_width $script:L.card_height
+  $script:CardSource=@{x=$point.X-$script:Card.Left;y=$point.Y-$script:Card.Top;size=[Math]::Max(16,([Math]::Min($control.Width,$control.Height)-8))};$script:CardProgress=0
+  $script:Card.Add_PreviewKeyDown({param($sender,$e);if($e.Key -eq 'Escape'){Close-Card;$e.Handled=$true}})
+ }
+ if($Route -eq $script:View.route -and $Key -eq $script:View.key){Render $script:View}else{Render $script:View;Send 'navigate' @{} $Route $Key}
+ if($fresh -or ($script:CardMotion -and $script:CardMotion.to -eq 0)){Play-Bubble 'open';Start-CardMotion 1};$script:Card.Show();[void]$script:Card.Activate()
 }
-function Choose-Discovered($Result,$Connection){
- if(!@($Result.available).Count){Notify '暂无模型' '接口可连接，但没有返回可用型号。';return $null}
- $d=[Windows.Forms.Form]::new();$d.Text='选择加入 Codex 的模型';$d.StartPosition='CenterParent';$d.FormBorderStyle='FixedDialog';$d.MaximizeBox=$false;$d.MinimizeBox=$false;$d.Font=$script:Form.Font;$d.ClientSize=[Drawing.Size]::new(610,440);$d.Tag=$false
- [void](Label $d 18 14 570 32 '勾选常用型号；服务缺少规格时再补充最大窗口。')
- $list=[Windows.Forms.CheckedListBox]::new();$list.SetBounds(18,50,574,300);$list.CheckOnClick=$true;$d.Controls.Add($list)
- foreach($id in $Result.available){[void]$list.Items.Add([string]$id,(!@($Connection.models).Count -or $id -in $Connection.models))}
- foreach($choice in @(@('全选',$true),@('清空',$false))){$b=[Windows.Forms.Button]::new();$b.SetBounds($(if($choice[1]){18}else{108}),358,82,30);$b.Text=$choice[0];$b.Tag=@{list=$list;selected=$choice[1]};$b.Add_Click({param($sender,$event);for($i=0;$i -lt $sender.Tag.list.Items.Count;$i++){$sender.Tag.list.SetItemChecked($i,$sender.Tag.selected)}});$d.Controls.Add($b)}
- $save=[Windows.Forms.Button]::new();$save.SetBounds(304,396,160,32);$save.Text='保存所选模型';$save.Add_Click({param($sender,$event);$sender.FindForm().Tag=$true;$sender.FindForm().Close()});$d.Controls.Add($save)
- $cancel=[Windows.Forms.Button]::new();$cancel.SetBounds(474,396,116,32);$cancel.Text='取消';$cancel.Add_Click({param($sender,$event);$sender.FindForm().Close()});$d.Controls.Add($cancel)
- try{if(!$SelfTest){[void]$d.ShowDialog($script:Form)};if(!$d.Tag){return $null};$Connection.models=@($list.CheckedItems|ForEach-Object {[string]$_})}finally{$d.Dispose()}
- if(!@($Connection.models).Count){Notify '尚未选择模型' '至少选择一个型号后再保存。';return $null}
- foreach($id in $Connection.models){if($Result.specs.PSObject.Properties[$id]){continue};$spec=Dialog ('补充 '+$id+' 的规格') @(@{Key='maximum';Label='模型最大上下文';Value=''},@{Key='tools';Label='支持工具调用';Kind='check';Value=$true}) @('继续','取消');try{if($spec.Answer){return $null};$maximum=Optional-Number $spec.Fields.maximum;if(!$maximum -or $maximum -lt 1024){Notify '窗口数值无效' '请填写至少 1024 的整数。';return $null};if(!$Connection.model_specs){$Connection.model_specs=@{}}elseif($Connection.model_specs -isnot [System.Collections.IDictionary]){$Connection.model_specs=As-Map $Connection.model_specs};$Connection.model_specs[$id]=@{context_window=$maximum;supports_tools=$spec.Fields.tools.Checked}}finally{$spec.Form.Dispose()}}
- return $Connection
+function Ensure-MotionTimer{if(!$script:MotionTimer){$script:MotionTimer=[Windows.Threading.DispatcherTimer]::new();$script:MotionTimer.Interval=[TimeSpan]::FromMilliseconds(16);$script:MotionTimer.Add_Tick({try{Animate-Card;Animate-Dock;Stop-IdleMotion}catch{if($SelfTest){[Console]::Error.WriteLine($_.ToString()+$_.ScriptStackTrace);Quit-Hub}else{throw}}});$script:MotionTimer.Start()}}
+function Stop-IdleMotion{if(!$script:CardMotion -and !$script:DockMotion -and $script:MotionTimer){$script:MotionTimer.Stop();$script:MotionTimer=$null}}
+function Start-CardMotion($To){if($To){$script:CardAfterClose=$null};$script:CardMotion=@{start=[DateTime]::UtcNow;from=$script:CardProgress;to=$To;duration=$(if(Reduced){1}else{$(if($To){$script:L.morph.duration_ms}else{$script:L.morph.close_ms})*[Math]::Max(.25,[Math]::Abs($To-$script:CardProgress))})};Ensure-MotionTimer;Animate-Card}
+function Close-Card([scriptblock]$After=$null){if(!$script:Card){if($After){& $After};return};Play-Bubble 'close';$script:CardAfterClose=$After;Start-CardMotion 0}
+function Dispose-Card{$script:CardMotion=$null;if($script:Card){$script:Card.Close();$script:Card=$null};$script:CardSource=$null;$script:CardAfterClose=$null;Stop-IdleMotion}
+function Morph-Geometry($Progress){
+ $s=$script:CardSource;$q=$Progress*$Progress*(3-2*$Progress);$x=($s.x-$s.size/2)*(1-$q)+$q;$y=($s.y-$s.size/2)*(1-$q)+$q;$w=$s.size+($script:L.card_width-2-$s.size)*$q;$h=$s.size+($script:L.card_height-2-$s.size)*$q
+ $r=[Math]::Min($w,$h)/2*[Math]::Pow(1-$q,1.1)+$script:L.morph.radius*$q;$r=[Math]::Min([Math]::Min($w,$h)/2,$r);$k=.55228475;$amp=[Math]::Pow([Math]::Sin($Progress*[Math]::PI),2)*[Math]::Min($w,$h)*$script:L.morph.wave
+ $geometry=[Windows.Media.StreamGeometry]::new();$ctx=$geometry.Open()
+ function Curve([double]$A,[double]$B,[double]$C,[double]$D,[double]$E,[double]$F){$ctx.BezierTo([Windows.Point]::new($A,$B),[Windows.Point]::new($C,$D),[Windows.Point]::new($E,$F),$true,$false)}
+ function Edge([double]$Ax,[double]$Ay,[double]$Bx,[double]$By,[double]$Nx,[double]$Ny,[int]$Index){$dx=$Bx-$Ax;$dy=$By-$Ay;$water=$amp*(.75+.25*[Math]::Sin($Progress*6-$Index*1.4));$mx=($Ax+$Bx)/2+$Nx*$water;$my=($Ay+$By)/2+$Ny*$water;Curve ($Ax+$dx*.25) ($Ay+$dy*.25) ($mx-$dx*.25) ($my-$dy*.25) $mx $my;Curve ($mx+$dx*.25) ($my+$dy*.25) ($Bx-$dx*.25) ($By-$dy*.25) $Bx $By}
+ try{
+  $ctx.BeginFigure([Windows.Point]::new(($x+$r),$y),$true,$true);Edge ($x+$r) $y ($x+$w-$r) $y 0 1 0;Curve ($x+$w-$r+$k*$r) $y ($x+$w) ($y+$r-$k*$r) ($x+$w) ($y+$r)
+  Edge ($x+$w) ($y+$r) ($x+$w) ($y+$h-$r) -1 0 1;Curve ($x+$w) ($y+$h-$r+$k*$r) ($x+$w-$r+$k*$r) ($y+$h) ($x+$w-$r) ($y+$h)
+  Edge ($x+$w-$r) ($y+$h) ($x+$r) ($y+$h) 0 -1 2;Curve ($x+$r-$k*$r) ($y+$h) $x ($y+$h-$r+$k*$r) $x ($y+$h-$r)
+  Edge $x ($y+$h-$r) $x ($y+$r) 1 0 3;Curve $x ($y+$r-$k*$r) ($x+$r-$k*$r) $y ($x+$r) $y
+ }finally{$ctx.Close()};$geometry.Freeze();return $geometry
 }
-function Manage-Connections {
- if(!@($script:State.connections).Count){Edit-Connection $null;return}
- $d=Dialog '管理已有连接' @(@{Key='connection';Label='选择连接';Kind='choice';Value=0;Items=@($script:State.connections|ForEach-Object name)}) @('编辑','移除','高级选项','取消')
- try{$row=$script:State.connections[$d.Fields.connection.SelectedIndex];switch($d.Answer){0{Edit-Connection $row}1{if(Confirm '移除连接' '会从模型目录移除此连接；服务、凭证文件和聊天记录保留。'){Send-Action 'remove_connection' @{id=$row.id}}}2{Advanced-Connection $row}}}finally{$d.Form.Dispose()}
+
+function Card-Visual{if(!$script:Card -or !$script:CardSource -or !$script:CardRoot){return};$geometry=Morph-Geometry $script:CardProgress;$script:CardSkin.Data=$geometry;$script:CardRoot.Clip=$geometry;$q=$script:CardProgress*$script:CardProgress*(3-2*$script:CardProgress);$s=$script:CardSource;$w=$s.size+(320-$s.size)*$q;$h=$s.size+(420-$s.size)*$q;$transform=[Windows.Media.TransformGroup]::new();$transform.Children.Add([Windows.Media.ScaleTransform]::new(($w/320),($h/420)));$transform.Children.Add([Windows.Media.TranslateTransform]::new((($s.x-$s.size/2)*(1-$q)),(($s.y-$s.size/2)*(1-$q))));$script:CardContent.RenderTransform=$transform;$i=0
+ foreach($view in $script:CardGrid.Children){$t=[Math]::Max(0,[Math]::Min(1,($script:CardProgress-.60-[Math]::Min($i,8)*.022)/.22));$e=1-[Math]::Pow(1-$t,3);$view.Opacity=$e;$view.RenderTransform=[Windows.Media.TranslateTransform]::new(0,(7*(1-$e)));$i++}
 }
-function Advanced-Connection($Row){
- $d=Dialog '连接高级选项' @(@{Key='keyfile';Label='凭证文件';Kind='file';Value=$Row.key_file},@{Key='reasoning';Label='支持思考参数';Kind='check';Value=$Row.supports_reasoning_effort},@{Key='model';Label='补充规格的型号';Value=''},@{Key='maximum';Label='模型最大窗口';Value=''},@{Key='levels';Label='思考档位（逗号）';Value=''},@{Key='tools';Label='支持工具调用';Kind='check';Value=$true}) @('保存','取消')
- try{if($d.Answer){return};$c=$d.Fields;$row=As-Map $Row;$row.supports_reasoning_effort=$c.reasoning.Checked;if($c.keyfile.Text.Trim()){$row.key_file=$c.keyfile.Text.Trim()}else{$row.Remove('key_file')};if($c.model.Text.Trim()){$row.model_specs=As-Map $Row.model_specs;$row.model_specs[$c.model.Text.Trim()]=@{context_window=(Optional-Number $c.maximum);reasoning_levels=@($c.levels.Text -split ','|ForEach-Object {$_.Trim()}|Where-Object {$_});supports_tools=$c.tools.Checked}};Send-Action 'save_connection' @{connection=$row}}finally{$d.Form.Dispose()}
+function Animate-Card{if(!$script:CardMotion -or !$script:Card){return};$a=$script:CardMotion;$t=[Math]::Min(1,([DateTime]::UtcNow-$a.start).TotalMilliseconds/$a.duration);$script:CardProgress=$a.from+($a.to-$a.from)*$t;Card-Visual;if($t -ge 1){$script:CardMotion=$null;if($a.to -eq 0){$script:MotionChecks.closed++;$after=$script:CardAfterClose;Dispose-Card;if($after){& $after}}else{$script:MotionChecks.opened++}}}
+
+function Save-Position{$x=$script:Hub.Left+$script:L.closed_whale_x;$y=$script:Hub.Top;if($script:Dock){$x=$script:Dock.peek.x+$script:L.closed_whale_x;$y=$script:Dock.peek.y};Write-Json (Join-Path $script:UI 'position.json') @{x=$x;y=$y;edge=$(if($script:Dock){$script:Dock.edge}else{$null})}}
+function Dock-Target($Edge){$r=Work-Area ($script:Hub.Left+48) ($script:Hub.Top+32);$x=[Math]::Max($r.Left+5,[Math]::Min($script:Hub.Left,$r.Right-$script:L.closed_width-5));$y=[Math]::Max($r.Top+5,[Math]::Min($script:Hub.Top,$r.Bottom-$script:L.bubble-5));$n=$script:L.dock.size
+ switch($Edge){'left'{$x=$r.Left+5};'right'{$x=$r.Right-$script:L.closed_width-5};'top'{$y=$r.Top+5};'bottom'{$y=$r.Bottom-$script:L.bubble-5}}
+ $sx=if($Edge -eq 'left'){$r.Left}elseif($Edge -eq 'right'){$r.Right-$n}else{[Math]::Max($r.Left,[Math]::Min($r.Right-$n,$x+$script:L.closed_whale_x+16))};$sy=if($Edge -eq 'top'){$r.Top}elseif($Edge -eq 'bottom'){$r.Bottom-$n}else{[Math]::Max($r.Top,[Math]::Min($r.Bottom-$n,$y+16))}
+ return @{edge=$Edge;peek=@{x=$x;y=$y};small=@{x=$sx;y=$sy};revealed=$true;hoverArmed=$true}
 }
-function Edit-Proxy {
- if($script:State.edition -ne 'proxy'){Notify '扩展版功能' '现成代理接口由扩展版提供。';return}
- $row=if($script:State.proxy){$script:State.proxy}else{[pscustomobject]@{base_url='http://127.0.0.1:8317/v1';config='';models=@()}}
- $d=Dialog '现成代理' @(@{Key='url';Label='接口地址';Value=$row.base_url},@{Key='config';Label='现有配置文件';Kind='file';Value=$row.config},@{Key='models';Label='型号（逗号分隔）';Value=($row.models -join ', ')},@{Key='auto';Label='加入系列新版本';Kind='check';Value=$script:State.proxy_auto_add}) @('保存','停用','取消')
- try{if($d.Answer -eq 2){return};$proxy=if($d.Answer -eq 1){$null}else{@{base_url=$d.Fields.url.Text.Trim();config=$d.Fields.config.Text.Trim();models=@($d.Fields.models.Text -split '[,，]'|ForEach-Object {$_.Trim()}|Where-Object {$_})}};Send-Action 'save_proxy' @{proxy=$proxy;auto_add=$d.Fields.auto.Checked}}finally{$d.Form.Dispose()}
+function Set-DockDirection($Button,$Icon,$Edge){$index=[array]::IndexOf(@('left','right','top','bottom'),$Edge);$Button.Style=$script:Hub.Resources['Drop'+(7+$index)];$Icon.RenderTransformOrigin='0.5,0.5';$Icon.RenderTransform=[Windows.Media.RotateTransform]::new($script:L.dock.angles.$Edge)}
+function Dock-At($Edge,$Instant=$false,$RequireLeave=$false){Hide-DockHint;Hide-Orbit;$script:Dock=Dock-Target $Edge;$script:Dock.hoverArmed=!$RequireLeave;Set-DockDirection $script:EdgeBubble $edgeIcon.view $Edge;$script:Hub.Left=$script:Dock.peek.x;$script:Hub.Top=$script:Dock.peek.y;Set-DockReveal $false $Instant;Ensure-DockTimer;Save-Position
 }
-function Edit-DeepSeek {$d=Dialog 'DeepSeek' @(@{Key='enabled';Label='启用 DeepSeek';Kind='check';Value=$script:State.deepseek_enabled},@{Key='key';Label='API Key（可留空）';Kind='password';Value=''}) @('保存','取消');try{if(!$d.Answer){$key=$d.Fields.key.Text;$d.Fields.key.Clear();Send-Action 'save_deepseek' @{enabled=($script:State.edition -eq 'ds' -or $d.Fields.enabled.Checked);key=$key}}}finally{$d.Form.Dispose()}}
-function Edit-Images {$row=$script:State.proxy;$d=Dialog '可选图片工具' @(@{Key='enabled';Label='启用图片工具';Kind='check';Value=$script:State.images_enabled},@{Key='config';Label='现成代理配置';Kind='file';Value=$row.config},@{Key='url';Label='接口地址';Value=$(if($row.base_url){$row.base_url}else{'http://127.0.0.1:8317/v1'})}) @('保存','取消');try{if(!$d.Answer){Send-Action 'save_images' @{enabled=$d.Fields.enabled.Checked;config=$d.Fields.config.Text.Trim();url=$d.Fields.url.Text.Trim()}}}finally{$d.Form.Dispose()}}
-function Cleanup {Send-Action 'cleanup_preview' @{} {param($value)if(!@($value.items).Count){Notify '无需清理' '没有可安全清理的过期缓存。'}elseif(Confirm '清理旧缓存' ('可释放约 '+[math]::Round($value.bytes/1MB,1)+' MB。当前安装、恢复链和最近的回退版本会保留。')){Send-Action 'cleanup'}}}
-function Recover($Action){if(Confirm $(if($Action -eq 'restore'){'撤销适配层'}else{'恢复中断的安装'}) '请先正常退出 Codex。原版应用、账户和聊天记录会保留。'){Send-Action $Action @{confirmed=$true}}}
-function Compare-Models {$names=@($script:State.models|ForEach-Object name);$d=Dialog '切换前比较' @(@{Key='from';Label='当前模型';Kind='choice';Value=0;Items=$names},@{Key='to';Label='目标模型';Kind='choice';Value=0;Items=$names}) @('比较','取消');try{if(!$d.Answer){Send-Action 'compare_models' @{from=$script:State.models[$d.Fields.from.SelectedIndex].id;to=$script:State.models[$d.Fields.to.SelectedIndex].id} {param($v)Notify '窗口与能力' ($v.message+"`r`n"+(Tokens $v.from)+' → '+(Tokens $v.to))}}}finally{$d.Form.Dispose()}}
-function Cancel-Recovery {$row=$script:State.recovery|Where-Object {$_.phase -notin @('completed','failed','cancelled')}|Select-Object -First 1;if($row){Send-Action 'cancel_recovery' @{id=$row.id}}else{Notify '没有进行中的恢复' '点击刷新可重新读取状态。'}}
-Render $script:State
-if($SelfTest -and !$LoopTest){if($env:CODEX_SETTINGS_PRIVATE_DESKTOP -eq '1'){$script:Form.Show();[Windows.Forms.Application]::DoEvents()};$script:Form.CreateControl();Send-Action 'snapshot' @{} {param($value)Render $value};for($i=0;$i -lt $tabs.TabPages.Count;$i++){$tabs.SelectedIndex=$i;$script:Form.PerformLayout();[Windows.Forms.Application]::DoEvents();$bitmap=[Drawing.Bitmap]::new($script:Form.Width,$script:Form.Height);try{$script:Form.DrawToBitmap($bitmap,[Drawing.Rectangle]::new(0,0,$bitmap.Width,$bitmap.Height));$bitmap.Save((Join-Path $script:UI ('preview-'+$i+'.png')),[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}};$result=@{tabs=$tabs.TabPages.Count;models=$script:Grid.Rows.Count;request_completed=($null -eq $script:Pending);status=$script:Banner.Text;closed=$false};$script:Form.Close();$script:Form.Dispose();$result.closed=$script:Form.IsDisposed;$result|ConvertTo-Json -Compress;exit 0}
-$timer=[Windows.Forms.Timer]::new();$timer.Interval=500;$timer.Add_Tick({Poll});$timer.Start()
-if($SelfTest -and $LoopTest){
- if($env:CODEX_SETTINGS_PRIVATE_DESKTOP -ne '1'){throw 'Interaction probe requires a private desktop'}
- Add-Type 'using System;using System.Runtime.InteropServices;public class SettingsProbeWindow { [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); }'
- $script:LoopPhase=0;$script:LoopResult=$null
- $timer.Add_Tick({if($script:LoopPhase -eq 0){$script:LoopPhase=1;$script:WindowVisible=[SettingsProbeWindow]::IsWindowVisible($script:Form.Handle);$tabs.SelectedIndex=1;$script:RefreshButton.PerformClick()}elseif(!$script:Pending){$script:LoopResult=@{tabs=$tabs.TabPages.Count;models=$script:Grid.Rows.Count;request_completed=$true;status=$script:Banner.Text;event_loop=$true;visible=$script:WindowVisible;closed=$false};$script:Form.Close()}})
+function Set-DockReveal($Reveal,$Instant=$false){if(!$script:Dock){return};Hide-Orbit;$script:DockLeave=$null;$script:Dock.revealed=$Reveal;$p=if($Reveal){$script:Dock.peek}else{$script:Dock.small}
+ $script:DockMotion=@{start=[DateTime]::UtcNow;duration=$(if($Instant -or (Reduced)){1}else{$script:L.dock.duration_ms});from=@{x=$script:Hub.Left;y=$script:Hub.Top;w=$script:Hub.Width;h=$script:Hub.Height};to=@{x=$p.x;y=$p.y;w=$(if($Reveal){$script:L.closed_width}else{$script:L.dock.size});h=$(if($Reveal){$script:L.bubble}else{$script:L.dock.size})};show=$Reveal}
+ $script:Whale.Visibility='Visible';$script:EdgeBubble.Visibility='Visible';$script:Badge.Visibility='Collapsed';Ensure-MotionTimer;if($Instant){$script:DockMotion.start=[DateTime]::UtcNow.AddSeconds(-1);Animate-Dock}
 }
-try{$script:Form.Show();[Windows.Forms.Application]::Run($script:Form)}finally{$timer.Stop();$timer.Dispose();$script:Form.Dispose()}
-if($SelfTest -and $LoopTest){$script:LoopResult.closed=$script:Form.IsDisposed;$script:LoopResult|ConvertTo-Json -Compress}
+function Animate-Dock{if(!$script:DockMotion -or !$script:Dock){return};$a=$script:DockMotion;$t=[Math]::Min(1,([DateTime]::UtcNow-$a.start).TotalMilliseconds/$a.duration);$e=$t*$t*(3-2*$t);$x=$a.from.x+($a.to.x-$a.from.x)*$e;$y=$a.from.y+($a.to.y-$a.from.y)*$e;$w=$a.from.w+($a.to.w-$a.from.w)*$e;$h=$a.from.h+($a.to.h-$a.from.h)*$e;$r=[Math]::Max(0,[Math]::Min(1,($w-$script:L.dock.size)/($script:L.closed_width-$script:L.dock.size)));$size=20+44*$r
+ $script:Hub.Left=$x;$script:Hub.Top=$y;$script:Hub.Width=$w;$script:Hub.Height=$h;$script:Whale.Width=$size;$script:Whale.Height=$size;$image.Width=$size;$image.Height=$size;Place $script:Whale (($w-$size)*$r) (($h-$size)/2);$script:Whale.Opacity=$r;$n=$script:L.dock.size*(1+.045*[Math]::Sin([Math]::PI*$t));$script:EdgeBubble.Width=$n;$script:EdgeBubble.Height=$n;Place $script:EdgeBubble (($w-$n)/2) (($h-$n)/2);$script:EdgeBubble.Opacity=1-$r
+ if($t -ge 1){$script:DockMotion=$null;$script:Whale.Visibility=if($a.show){'Visible'}else{'Collapsed'};$script:EdgeBubble.Visibility=if($a.show){'Collapsed'}else{'Visible'};$script:Whale.Opacity=1;$script:EdgeBubble.Opacity=1;if($a.show){Place $script:Whale $script:L.closed_whale_x 0};Refresh-Update;Stop-IdleMotion}
+}
+function Peek-Dock($Instant=$false){if($script:Dock -and (!$script:Dock.revealed -or $script:DockMotion)){Set-DockReveal $true $Instant}}
+function Detach-Dock{if(!$script:Dock){return};Peek-Dock $true;$script:Dock=$null;Stop-DockTimer;$script:DockMotion=$null;$script:DockLeave=$null;$script:EdgeBubble.Visibility='Collapsed';$script:Whale.Visibility='Visible';Save-Position;Stop-IdleMotion}
+function Nearest-Edge{$r=Work-Area ($script:Hub.Left+48) ($script:Hub.Top+32);$dist=@(@{edge='left';distance=$script:Hub.Left-$r.Left},@{edge='right';distance=$r.Right-$script:Hub.Left-$script:L.closed_width},@{edge='top';distance=$script:Hub.Top-$r.Top},@{edge='bottom';distance=$r.Bottom-$script:Hub.Top-$script:L.bubble})|Sort-Object {[double]$_.distance};if($dist[0].distance -le $script:L.dock.threshold){return $dist[0].edge};return $null}
+function Hide-DockHint{$script:HintEdge=$null;$script:DockHint.Hide()}
+function Update-DockHint{$edge=Nearest-Edge;if(!$edge){Hide-DockHint;return};$target=Dock-Target $edge;$changed=$script:HintEdge -ne $edge;$script:HintEdge=$edge;Set-DockDirection $script:HintDrop $hintIcon.view $edge;$script:DockHint.Left=$target.small.x;$script:DockHint.Top=$target.small.y;if(!$SelfTest){$script:DockHint.Show();if($changed){$fade=[Windows.Media.Animation.DoubleAnimation]::new(.15,.85,[Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if(Reduced){0}else{100}))));$script:DockHint.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)}}}
+function Finish-Drag{Hide-DockHint;Hide-Orbit;$edge=Nearest-Edge;if($edge){Dock-At $edge $false $true}else{$script:Dock=$null;Stop-DockTimer;Save-Position}}
+function Ensure-DockTimer{if($script:DockTimer -or !$script:Dock -or $script:Hidden){return};$script:DockTimer=[Windows.Threading.DispatcherTimer]::new();$script:DockTimer.Interval=[TimeSpan]::FromMilliseconds($script:L.dock.poll_ms);$script:DockTimer.Add_Tick({Poll-Dock});$script:DockTimer.Start()}
+function Stop-DockTimer{if($script:DockTimer){$script:DockTimer.Stop();$script:DockTimer=$null}}
+function Dock-Hover($Inside,$Now){if(!$script:Dock -or $script:Hidden -or $script:DragStart){return};if(!$script:Dock.hoverArmed){if(!$Inside){$script:Dock.hoverArmed=$true};return};if($script:Card){$script:DockLeave=$null;return};if($Inside){$script:DockLeave=$null;if(!$script:Dock.revealed){Peek-Dock}}elseif($script:Dock.revealed -and !$script:DockMotion){if(!$script:DockLeave){$script:DockLeave=$Now}elseif(($Now-$script:DockLeave).TotalMilliseconds -ge $script:L.dock.leave_ms){Set-DockReveal $false}}}
+function Poll-Dock{if(!$script:Dock -or $SelfTest){return};$p=[Windows.Forms.Cursor]::Position;$source=[Windows.PresentationSource]::FromVisual($script:Hub);$point=[Windows.Point]::new($p.X,$p.Y);if($source){$point=$source.CompositionTarget.TransformFromDevice.Transform($point)};$rect=[Windows.Rect]::new(($script:Hub.Left-4),($script:Hub.Top-4),($script:Hub.Width+8),($script:Hub.Height+8));$small=[Windows.Rect]::new(($script:Dock.small.x-4),($script:Dock.small.y-4),($script:L.dock.size+8),($script:L.dock.size+8));Dock-Hover ($rect.Contains($point) -or $small.Contains($point)) ([DateTime]::UtcNow)}
+function Render($Value){$script:View=$Value;if($script:UpdateWidgets){$script:UpdateWidgets.bar.IsIndeterminate=$false};$script:UpdateWidgets=$null;if(!$script:Card){return};$script:Card.Resources=Resources;$script:Hub.Resources=Resources;$script:Fields=@{};$script:Rows=@()
+ $border=[Windows.Controls.Border]::new();$border.CornerRadius='16';$cardBrush=Brush $script:Palette.surface;$cardBrush.Opacity=.95;$border.Background=[Windows.Media.Brushes]::Transparent;$border.Padding='16,14,16,12';$root=[Windows.Controls.Grid]::new();$skin=[Windows.Shapes.Path]::new();$skin.Fill=$cardBrush;$skin.Stroke=Brush $script:Palette.line;$skin.StrokeThickness=1;$skin.IsHitTestVisible=$false;[void]$root.Children.Add($skin);[void]$root.Children.Add($border);$script:Card.Content=$root;$script:CardRoot=$root;$script:CardSkin=$skin;$script:CardContent=$border
+ $grid=[Windows.Controls.Grid]::new();$script:CardGrid=$grid;$border.Child=$grid;foreach($height in @('Auto','Auto','*','Auto','Auto')){$row=[Windows.Controls.RowDefinition]::new();$row.Height=[Windows.GridLengthConverter]::new().ConvertFromString($height);[void]$grid.RowDefinitions.Add($row)}
+ $head=[Windows.Controls.Grid]::new();$title=Text $Value.title 16 $true;$title.Margin='0,1,40,3';[void]$head.Children.Add($title);$close=Button '×' {Close-Card};$close.Width=32;$close.Height=32;$close.Padding='0';$close.HorizontalAlignment='Right';[void]$head.Children.Add($close);[void]$grid.Children.Add($head)
+ $sub=Text $Value.subtitle 11;$sub.Foreground=Brush $script:Palette.muted;$sub.Margin='0,5,0,11';[Windows.Controls.Grid]::SetRow($sub,1);[void]$grid.Children.Add($sub)
+ $middle=[Windows.Controls.DockPanel]::new();[Windows.Controls.Grid]::SetRow($middle,2);[void]$grid.Children.Add($middle)
+ if($Value.searchable){$script:Search=[Windows.Controls.TextBox]::new();$script:Search.Margin='0,0,0,9';$script:Search.Tag='搜索';$script:Search.ToolTip='搜索模型或型号';[Windows.Controls.DockPanel]::SetDock($script:Search,'Top');$script:Search.Add_TextChanged({Filter-Rows});[void]$middle.Children.Add($script:Search)}else{$script:Search=$null}
+ $scroll=[Windows.Controls.ScrollViewer]::new();$scroll.VerticalScrollBarVisibility='Auto';$scroll.HorizontalScrollBarVisibility='Disabled';$scroll.Padding='0,0,4,0';[void]$middle.Children.Add($scroll);$stack=[Windows.Controls.StackPanel]::new();$scroll.Content=$stack
+ foreach($row in @($Value.rows)){$group=[Windows.Controls.StackPanel]::new();$group.Margin='0,0,0,8';[void]$stack.Children.Add($group);$script:Rows+=,@{view=$group;row=$row}
+  switch($row.type){
+   'update' {Build-UpdateRow $group}
+   'field' {
+    if($row.kind -eq 'toggle'){$c=[Windows.Controls.CheckBox]::new();$c.Content=$row.label;$c.IsChecked=[bool]$row.value;$c.Margin='2,3,2,3';[void]$group.Children.Add($c)}else{
+     $label=Text $row.label 11 $true;$label.Margin='2,0,0,7';[void]$group.Children.Add($label)
+     if($row.kind -eq 'choice'){$c=[Windows.Controls.ComboBox]::new();foreach($choice in @($row.choices)){$entry=[Windows.Controls.ComboBoxItem]::new();$entry.Content=[string]$choice[1];$entry.Tag=[string]$choice[0];[void]$c.Items.Add($entry);if([string]$choice[0] -eq [string]$row.value){$c.SelectedItem=$entry}};if($c.SelectedIndex -lt 0 -and $c.Items.Count -gt 0){$c.SelectedIndex=0}}
+     elseif($row.kind -eq 'secret'){$c=[Windows.Controls.PasswordBox]::new();$c.Password=[string]$row.value}
+     else{$c=[Windows.Controls.TextBox]::new();$c.Text=[string]$row.value}
+     if($row.kind -eq 'file'){$line=[Windows.Controls.DockPanel]::new();$target=$c;$pick=Button '…' ({$dialog=[Microsoft.Win32.OpenFileDialog]::new();if($dialog.ShowDialog($script:Card)){$target.Text=$dialog.FileName}}.GetNewClosure());$pick.Width=38;$pick.Padding='0';[Windows.Controls.DockPanel]::SetDock($pick,'Right');[void]$line.Children.Add($pick);[void]$line.Children.Add($c);[void]$group.Children.Add($line)}else{[void]$group.Children.Add($c)}
+     if($row.hint){$hint=Text $row.hint 10;$hint.Foreground=Brush $script:Palette.muted;$hint.Margin='2,6,0,0';[void]$group.Children.Add($hint)}
+    };$script:Fields[[string]$row.key]=@{control=$c;kind=$row.kind}
+   }
+   'item' {$inside=[Windows.Controls.StackPanel]::new();[void]$inside.Children.Add((Text $row.title 12 $true));$s=Text $row.subtitle 11;$s.Foreground=Brush $script:Palette.muted;$s.Margin='0,5,0,0';[void]$inside.Children.Add($s);if($row.route){$dest=$row.route;$key=$row.key;$b=Button '' ({Send 'navigate' @{} $dest $key}.GetNewClosure());$b.Content=$inside;$b.Background=Brush $script:Palette.field;$b.HorizontalContentAlignment='Stretch';[void]$group.Children.Add($b)}else{$b=[Windows.Controls.Border]::new();$b.Background=Brush $script:Palette.field;$b.CornerRadius='12';$b.Padding='10';$b.Child=$inside;[void]$group.Children.Add($b)}}
+   'action' {$action=$row;$b=Button $row.title ({Act $action}.GetNewClosure()) $row.style;[void]$group.Children.Add($b)}
+   'report' {$report=[Windows.Controls.TextBox]::new();$report.Text=$row.text;$report.IsReadOnly=$true;$report.TextWrapping='Wrap';$report.AcceptsReturn=$true;$report.MinHeight=170;[void]$group.Children.Add($report)}
+   default {$t=Text $row.text 12;$t.Foreground=Brush $script:Palette.muted;$t.Margin='3,5,3,5';[void]$group.Children.Add($t)}
+  }
+ }
+ $status=[Windows.Controls.DockPanel]::new();[Windows.Controls.Grid]::SetRow($status,3);[void]$grid.Children.Add($status);$script:Cancel=Button '取消' {Cancel-Pending};$script:Cancel.FontSize=10;$script:Cancel.Padding='6,2';$script:Cancel.Visibility=if($script:Pending){'Visible'}else{'Collapsed'};[Windows.Controls.DockPanel]::SetDock($script:Cancel,'Right');[void]$status.Children.Add($script:Cancel);$script:Notice=Text $Value.notice 10;$script:Notice.Foreground=Brush $script:Palette.muted;$script:Notice.Margin='0,9,0,9';[void]$status.Children.Add($script:Notice)
+ $foot=[Windows.Controls.DockPanel]::new();[Windows.Controls.Grid]::SetRow($foot,4);[void]$grid.Children.Add($foot)
+ if($Value.back){$back=$Value.back;$key=$Value.key;$b=Button '返回' ({Send 'navigate' @{} $back $key}.GetNewClosure());[Windows.Controls.DockPanel]::SetDock($b,'Left');[void]$foot.Children.Add($b)}
+ $bar=[Windows.Controls.StackPanel]::new();$bar.Orientation='Horizontal';$bar.HorizontalAlignment='Right';[void]$foot.Children.Add($bar)
+ Refresh-Update;foreach($action in @($Value.buttons)){$a=$action;$b=Button $a.title ({Act $a}.GetNewClosure()) $a.style;[void]$bar.Children.Add($b)};Card-Visual
+}
+function Build-UpdateRow($Group){
+ $title=Text '' 13 $true;$title.Margin='2,1,0,5';[void]$Group.Children.Add($title)
+ $version=Text '' 11;$version.Foreground=Brush $script:Palette.muted;$version.Margin='2,0,0,10';[void]$Group.Children.Add($version)
+ $detail=Text '' 11;$detail.Foreground=Brush $script:Palette.muted;$detail.Margin='2,0,0,12';[void]$Group.Children.Add($detail)
+ $bar=[Windows.Controls.ProgressBar]::new();$bar.Minimum=0;$bar.Maximum=100;$bar.Height=5;$bar.Background=Brush $script:Palette.field;$bar.Foreground=Brush $script:Palette.accent;$bar.BorderThickness='0';[void]$Group.Children.Add($bar)
+ $units=Text '' 10;$units.Margin='2,6,0,8';$units.Foreground=Brush $script:Palette.muted;[void]$Group.Children.Add($units)
+ $primary=Button '开始更新' {Update-Action} 'primary';$primary.HorizontalAlignment='Left';[void]$Group.Children.Add($primary)
+ $script:UpdateWidgets=@{title=$title;version=$version;detail=$detail;bar=$bar;units=$units;primary=$primary}
+}
+function Update-Action {
+ $p=$script:UpdateState;if(!$p -or $script:Pending){return};$command=if($p.can_launch){'launch'}elseif($p.can_start){'start'}else{$null};if($command){Send 'update_action' @{} 'updates' $null ([pscustomobject]@{id=$p.id;phase=$p.phase;command=$command})}
+}
+function Refresh-Update {
+ $p=Read-Json (Join-Path $StateDirectory 'progress.json');$phases=@('available','checking','downloading','building','verifying','waiting_for_exit','closing','installing','activating','completed','failed')
+ if(!$p -or $p.edition -ne $script:Initial.edition -or $p.id -notmatch '^[a-f0-9]{32}$' -or $p.phase -notin $phases){$p=$null};$script:UpdateState=$p
+ $attention=$p -and $p.phase -ne 'completed';$background=if($attention){$script:Palette.alert}else{$script:Palette.surface};$line=if($attention){$script:Palette.alert_line}else{$script:Palette.line};$ink=if($attention){$script:Palette.alert_ink}else{$script:Palette.text}
+ $script:Badge.Background=Brush $background;$script:Badge.BorderBrush=Brush $line;$script:Badge.Foreground=Brush $ink;$script:BadgeIcon.Stroke=Brush $ink;$script:EdgeBubble.Background=Brush $background;$script:EdgeBubble.BorderBrush=Brush $line;$edgeIcon.path.Stroke=Brush $ink;$script:Badge.Visibility=if($p -and ($attention -or $p.can_launch) -and !($script:Dock -and (!$script:Dock.revealed -or $script:DockMotion))){'Visible'}else{'Collapsed'}
+ Place $script:Badge ($(if($script:Expanded){$script:L.whale_x}else{$script:L.closed_whale_x})+$script:L.badge.offset_x) ($(if($script:Expanded){$script:L.whale_y}else{0})+$script:L.badge.offset_y)
+ if($script:Nodes.Count -gt 2){$b=$script:Nodes[2];$b.Background=Brush $background;$b.BorderBrush=Brush $line;$script:NodeIcons[2].Stroke=Brush $ink}
+ if(!$script:UpdateWidgets){return};$v=$script:UpdateWidgets;if(!$script:Card -or $script:View.route -ne 'updates'){$v.bar.IsIndeterminate=$false;return}
+ $v.title.Text=if($p){[string]$p.title}else{'当前没有待安装的补丁'};$v.version.Text=if($p.version){'目标版本 · '+$p.version}else{'已安装 · '+$script:Initial.version};$v.detail.Text=if($p){[string]$p.detail}else{'可检查补丁更新，或单独同步模型与规格。'}
+ $known=$p -and $null -ne $p.completed -and $null -ne $p.total -and $p.total -gt 0;$active=$p -and $p.phase -notin @('available','waiting_for_exit','completed','failed');$v.bar.IsIndeterminate=[bool]($active -and !$known)
+ $v.bar.Value=if($known){[Math]::Max(0,[Math]::Min(100,100*$p.completed/$p.total))}elseif($p.phase -eq 'completed'){100}else{0}
+ $v.units.Text=if($known){[string]$p.completed+' / '+$p.total}elseif($active){'后台处理中'}elseif($p.phase -eq 'completed'){'已完成'}else{''}
+ $visible=$p -and ($p.can_start -or $p.can_launch);$v.primary.Visibility=if($visible){'Visible'}else{'Collapsed'};$v.primary.IsEnabled=$visible -and !$script:Pending;$v.primary.Content=if($p.can_launch){'启动 Codex'}else{'开始更新'}
+}
+function Filter-Rows{$query=if($script:Search){$script:Search.Text.ToLowerInvariant()}else{''};foreach($entry in $script:Rows){$match=!$query -or (($entry.row|ConvertTo-Json -Compress -Depth 8).ToLowerInvariant().Contains($query));$entry.view.Visibility=if($match){'Visible'}else{'Collapsed'}}}
+function Values{$v=@{};foreach($key in $script:Fields.Keys){$f=$script:Fields[$key];$v[$key]=switch($f.kind){'toggle'{[bool]$f.control.IsChecked};'choice'{[string]$f.control.SelectedItem.Tag};'secret'{$f.control.Password};default{$f.control.Text}}};return $v}
+function Act($Action){switch($Action.intent){'hide'{Hide-Hub;return};'quit'{Quit-Hub;return};'copy'{[Windows.Clipboard]::SetText([string]$Action.text);$script:Notice.Text='已复制脱敏报告。';return};'select_all'{foreach($key in $script:Fields.Keys){if($key.StartsWith('model_')){$script:Fields[$key].control.IsChecked=$true}};return};'clear_all'{foreach($key in $script:Fields.Keys){if($key.StartsWith('model_')){$script:Fields[$key].control.IsChecked=$false}};return}}
+ $route=if($Action.route){$Action.route}else{$script:View.route};$key=if($Action.PSObject.Properties.Name -contains 'key'){$Action.key}else{$script:View.key};Send $Action.intent (Values) $route $key $Action
+}
+function Cancel-Pending{if($script:Pending){Write-Json (Join-Path $script:Jobs ($script:Pending.id+'.cancel')) @{id=$script:Pending.id};$script:Notice.Text='正在取消…'}}
+function Send($Intent,$Values,$Route,$Key,$Extras=$null){if($script:Pending){if($script:Notice){$script:Notice.Text='正在处理，稍后可继续。'};return};$id=[guid]::NewGuid().ToString('N');$payload=@{intent=$Intent;values=$Values;route=$Route;key=$Key;context=@{draft=$script:View.draft;available=$script:View.available;specs=$script:View.specs}};if($Extras){foreach($k in @('action','id','phase','command')){if($Extras.$k){$payload[$k]=$Extras.$k}}};Write-Json (Join-Path $script:Jobs ($id+'.request.json')) @{action='hub';revision=$script:View.revision;payload=$payload};$script:Pending=@{id=$id;payload=$payload};if($script:Cancel){$script:Cancel.Visibility='Visible'};if($script:Notice){$script:Notice.Text='正在处理…'}
+ $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$PythonExecutable;$start.Arguments=(@($ControllerPath,'execute','--state-dir',$StateDirectory,'--request',$id)|ForEach-Object {'"'+$_+'"'}) -join ' ';$start.UseShellExecute=$false;$start.CreateNoWindow=$true;[void][Diagnostics.Process]::Start($start)
+}
+function Test-Motion{
+ $now=[DateTime]::UtcNow
+ if($script:Phase -eq 2 -and !$script:Card -and !$script:CardMotion){$script:Phase=3;Dock-At 'left' $true;Capture-Test $script:Hub 'native-docked';Dock-Hover $true $now}
+ elseif($script:Phase -eq 3 -and !$script:DockMotion){$script:MotionChecks.hover_revealed=[bool]($script:Dock.revealed -and $script:Whale.Visibility -eq 'Visible' -and $script:EdgeBubble.Visibility -eq 'Collapsed');$script:Phase=4;Open-Card $script:View.route $script:View.key 0}
+ elseif($script:Phase -eq 4 -and !$script:CardMotion){Dock-Hover $false $now;Dock-Hover $false ($now.AddSeconds(1));$script:MotionChecks.form_held=[bool]($script:Dock.revealed -and $script:Card);$script:Phase=5;Close-Card}
+ elseif($script:Phase -eq 5 -and !$script:Card -and !$script:CardMotion){Dock-Hover $false $now;Dock-Hover $false ($now.AddSeconds(1));$script:Phase=6}
+ elseif($script:Phase -eq 6 -and !$script:DockMotion){$script:MotionChecks.leave_retracted=[bool](!$script:Dock.revealed -and $script:EdgeBubble.Visibility -eq 'Visible' -and $script:Hub.Width -eq $script:L.dock.size);Detach-Dock;$r=Work-Area $script:Hub.Left $script:Hub.Top;$script:Hub.Left=$r.Left+$r.Width/2;$script:Hub.Top=$r.Top+$r.Height/2;Finish-Drag;Dock-Hover $false $now;Dock-Hover $false ($now.AddSeconds(1));$script:MotionChecks.detached=!$script:Dock
+  $script:MotionChecks.audio_loaded=$script:Sounds.Count;$script:MotionChecks.edges=@();$script:MotionChecks.directions=@();foreach($edge in @('left','right','top','bottom')){Dock-At $edge $true;$script:MotionChecks.directions+=($edgeIcon.view.RenderTransform.Angle);$r=Work-Area ($script:Hub.Left+16) ($script:Hub.Top+16);$script:MotionChecks.edges+=($script:Hub.Left -ge $r.Left -and $script:Hub.Top -ge $r.Top -and $script:Hub.Left+32 -le $r.Right -and $script:Hub.Top+32 -le $r.Bottom);Detach-Dock}
+  Dock-At 'left' $true $true;Dock-Hover $true $now;$script:MotionChecks.release_stays_collapsed=!$script:Dock.revealed;Dock-Hover $false ($now.AddMilliseconds(1));Dock-Hover $true ($now.AddMilliseconds(2));$script:MotionChecks.reentry_reveals=$script:Dock.revealed;Detach-Dock
+  $r=Work-Area $script:Hub.Left $script:Hub.Top;$script:Hub.Left=$r.Left+5;$script:Hub.Top=$r.Top+100;Update-DockHint;$script:MotionChecks.hint_detail=@{edge=$script:HintEdge;x=$script:Hub.Left;y=$script:Hub.Top;work=@($r.Left,$r.Top,$r.Width,$r.Height);nearest=(Nearest-Edge)};$script:MotionChecks.arrival_hint=$script:HintEdge -eq 'left';$script:Hub.Left=$r.Left+$r.Width/2;$script:Hub.Top=$r.Top+$r.Height/2;Update-DockHint;$script:MotionChecks.hint_cleared=$null -eq $script:HintEdge
+  $mode=$script:View.options.motion;$script:View.options.motion='reduced';Dock-At 'right' $true;Peek-Dock $true;$script:MotionChecks.reduced=[bool]($script:Dock.revealed -and !$script:DockMotion);Detach-Dock;$script:View.options.motion=$mode;Stop-IdleMotion;$script:MotionChecks.idle_timer_stopped=!$script:MotionTimer -and !$script:DockTimer;$script:MotionChecks.spray_released=!$script:WaterCanvas -and !$script:WaterTimer
+  $script:TestResult.motion=$script:MotionChecks;[Console]::OutputEncoding=[Text.UTF8Encoding]::new();[Console]::WriteLine(($script:TestResult|ConvertTo-Json -Depth 6 -Compress));Quit-Hub
+ }
+}
+$script:Phase=0
+$timer=[Windows.Threading.DispatcherTimer]::new();$timer.Interval=[TimeSpan]::FromMilliseconds(250)
+$timer.Add_Tick({try{
+ if($script:Pending){$result=Read-Json (Join-Path $script:Jobs ($script:Pending.id+'.result.json'));if($result -and $result.status -ne 'running'){$previous=$script:Pending;$script:Pending=$null;if($script:Cancel){$script:Cancel.Visibility='Collapsed'};Remove-Item -LiteralPath (Join-Path $script:Jobs ($previous.id+'.result.json')) -Force;if($result.status -eq 'completed'){if($result.data.draft -and $previous.payload.values.key){$result.data.draft|Add-Member -NotePropertyName key -NotePropertyValue $previous.payload.values.key -Force};Render $result.data}else{if($script:Notice){$script:Notice.Text=$result.error.message}}}}
+ Refresh-Update;$raised=Read-Json (Join-Path $script:UI 'raise.json');if($raised -and $raised.time -ne $script:LastRaise){$script:LastRaise=$raised.time;if($raised.notify){if($script:Hidden){Show-Hub $false $false}}else{Show-Hub ([bool]$raised.toggle);if($raised.page){Open-Card $raised.page $null 2}}}
+ if($SelfTest){if($script:Phase -eq 0){$script:Phase=1;$script:TestStarted=[DateTime]::UtcNow;$route=if($script:Initial.entry.page){$script:Initial.entry.page}else{'models'};Toggle-Orbit;Open-Card $route $null 0;Send 'refresh' @{} $route $null}elseif(!$script:Pending -and $script:Phase -eq 1 -and !$script:CardMotion -and ([DateTime]::UtcNow-$script:TestStarted).TotalMilliseconds -ge 700){$script:Phase=2;if($LoopTest){foreach($progress in @(.3,.6,.85,1)){$script:CardProgress=$progress;Card-Visual;Capture-Test $script:Card ('native-morph-'+[Math]::Round($progress*100))}};Capture-Test $script:Hub 'native-menu';Capture-Test $script:Card 'native-card';if($script:View.route -eq 'updates' -and $script:UpdateState){Capture-Test $script:Hub ('native-badge-'+$script:UpdateState.phase);Capture-Test $script:Card ('native-updates-'+$script:UpdateState.phase)};$script:TestResult=@{categories=$script:Nodes.Count;models=@($script:Initial.models).Count;request_completed=$true;event_loop=$true;closed=$true;visible=$script:Hub.IsVisible;status='操作完成。';orbit_expanded=$script:Expanded;route=$script:View.route;update_attention=[bool]($script:UpdateState -and $script:UpdateState.phase -ne 'completed');badge_visible=$script:Badge.Visibility -eq 'Visible';update_primary=$(if($script:UpdateWidgets){[string]$script:UpdateWidgets.primary.Content}else{$null})};Close-Card}else{Test-Motion}}
+}catch{if($SelfTest){[Console]::Error.WriteLine($_.ToString()+$_.ScriptStackTrace);Quit-Hub}else{throw}}})
+$script:Hub.Add_PreviewKeyDown({param($sender,$event);if($event.Key -eq 'Escape'){if($script:Card){Close-Card}elseif($script:Expanded){Hide-Orbit}else{Hide-Hub};$event.Handled=$true}})
+$script:Hub.Add_Closing({param($sender,$event);if(!$script:Closing){$event.Cancel=$true;Hide-Hub}})
+$script:Application=[Windows.Application]::new();$script:Application.ShutdownMode='OnExplicitShutdown'
+if($SelfTest -and $env:CODEX_SETTINGS_PRIVATE_DESKTOP -ne '1'){throw 'Native UI test requires an isolated desktop'}
+$raised=Read-Json (Join-Path $script:UI 'raise.json');if($raised){$script:LastRaise=$raised.time};if($saved.edge -in @('left','right','top','bottom')){Dock-At $saved.edge $true};$timer.Start();Refresh-Update;$script:Hub.ShowActivated=!($script:Initial.entry.notify);$script:Hub.Show();if($script:Initial.entry.page -and !$SelfTest){Open-Card $script:Initial.entry.page $null 2};try{[void]$script:Application.Run()}finally{$timer.Stop()}

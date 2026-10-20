@@ -149,9 +149,18 @@ class ProgressTest(unittest.TestCase):
             self.progress.present()
             self.assertEqual(self.spawn_mock.call_count,2)
         command=self.spawn_mock.call_args.args[0]
-        index=command.index('/usr/bin/osascript')
-        self.assertEqual(command[index:index+3],['/usr/bin/osascript','-l','JavaScript'])
-        self.assertEqual(command[-3],str(self.root))
+        self.assertEqual(Path(command[1]).name,'management.py')
+        self.assertEqual(command[2:4],['show','--state-dir'])
+        self.assertEqual(command[-1],'--notify-update')
+        self.assertNotIn('--page',command)
+
+    def test_monitor_update_notice_uses_whale_instead_of_an_os_balloon(self):
+        self.settings()
+        with mock.patch.object(monitor,'native_notify') as notification, \
+             mock.patch.object(u.Progress,'present') as present:
+            watcher=monitor.Monitor(self.root,object(),notifier=notification)
+            watcher.notify('installed','fixture','Ready')
+        present.assert_called_once();notification.assert_not_called()
 
     def test_live_panel_not_duplicated_on_completion(self):
         self.settings()
@@ -220,15 +229,35 @@ class ProgressTest(unittest.TestCase):
         with mock.patch.object(u.sys,'platform','win32'),mock.patch.object(u,'_python',return_value='C:/Python/pythonw.exe'):
             self.progress.present()
         args=self.spawn_mock.call_args.args[0]
-        self.assertIn('-STA',args);self.assertNotIn('-WindowStyle',args)
-        wrapper=base64.b64decode(args[args.index('-EncodedCommand')+1]).decode('utf-16le')
-        payload=json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)",wrapper)[1]))
-        self.assertEqual(payload['parameters']['StateDirectory'],str(self.root))
-        self.assertEqual(payload['parameters']['PythonExecutable'],'C:/Python/pythonw.exe')
-        self.assertEqual(Path(payload['parameters']['ControllerPath']).name,'update_progress.py')
-        self.assertEqual(Path(payload['script']).name,'update_progress.ps1')
-        self.assertNotIn('ExecutionPolicy',wrapper)
-        self.assertNotIn(str(self.root),wrapper)  # Paths are data, never shell source.
+        self.assertEqual(args[0],'C:/Python/pythonw.exe')
+        self.assertEqual(Path(args[1]).name,'management.py')
+        self.assertEqual(args[2:],['show','--state-dir',str(self.root),'--notify-update'])
+        self.assertNotIn('powershell.exe',args)
+
+    def test_existing_whale_receives_badge_then_explicit_page_without_another_window(self):
+        self.settings()
+        monitor.atomic_json(self.root/'settings-ui/host.json',{'edition':'proxy','pid':9876,'view':'whale-v1'})
+        with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=True):
+            self.progress.present()
+            notification=monitor.load_json(self.root/'settings-ui/raise.json')
+            self.assertTrue(notification['notify']);self.assertNotIn('page',notification)
+            self.progress.present(force=True)
+            opened=monitor.load_json(self.root/'settings-ui/raise.json')
+            self.assertEqual(opened['page'],'updates');self.assertNotIn('notify',opened)
+        self.spawn_mock.assert_not_called()
+
+    def test_legacy_editor_is_not_reused_as_whale_or_interrupted(self):
+        self.settings()
+        monitor.atomic_json(self.root/'settings-ui/host.json',{'edition':'proxy','pid':9876})
+        with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u,'_alive',return_value=True):
+            self.progress.present()
+            self.assertEqual(self.spawn_mock.call_count,1)
+            self.assertNotEqual(monitor.load_json(self.root/'progress.ui.json')['pid'],9876)
+            self.progress.present(force=True)
+            self.assertEqual(self.spawn_mock.call_count,1)
+        self.assertFalse((self.root/'settings-ui/raise.json').exists())
+        self.assertEqual(monitor.load_json(self.root/'settings-ui/entry.json')['page'],'updates')
+        self.assertEqual(monitor.load_json(self.root/'settings-ui/host.json')['pid'],9876)
 
     def test_native_view_hides_console_without_hiding_gui(self):
         self.spawn.stop()

@@ -135,6 +135,144 @@ class SettingsTests(unittest.TestCase):
             self.perform('save_options',{'interval':600,'auto_update':False})
         self.assertEqual(json.loads((self.root/'settings.json').read_text()),self.settings)
 
+    def test_whale_cards_share_existing_model_rules_and_keep_editions_separate(self):
+        self.assertEqual(len(ui.hub_shell(self.root)['categories']),6)
+        for route in ('models','connections','updates','tools','diagnostics','preferences'):
+            page=ui.hub_view(self.root,route)
+            self.assertEqual(page['route'],route)
+            self.assertEqual(page['revision'],ui.revision(self.root))
+        result=ui.hub_dispatch(self.root,{'route':'models/edit','key':'local-test',
+            'intent':'save_model','values':{'context':'8192','compact':'7000','visible':False}},
+            ui.revision(self.root))
+        self.assertEqual(result['route'],'models/edit')
+        saved=json.loads((self.root/'model-preferences.json').read_text())
+        self.assertEqual(saved['context_windows']['local-test'],8192)
+        self.assertIn('local-test',saved['hidden'])
+        with self.assertRaises(ui.SettingsError):
+            ui.hub_dispatch(self.root,{'route':'models/edit','key':'local-test',
+                'intent':'save_model','values':{'context':'NaN'}},ui.revision(self.root))
+        self.save(self.root/'settings.json',{**self.settings,'edition':'ds'})
+        self.save(self.build/'manifest.json',{**self.manifest,'edition':'ds'})
+        with patch.object(ui.p,'EDITION','ds'):
+            page=ui.hub_view(self.root,'connections')
+            self.assertEqual([r['title'] for r in page['rows']],['DeepSeek'])
+            with self.assertRaises(ui.SettingsError):ui.hub_view(self.root,'connections/edit')
+
+    def test_update_page_embeds_progress_and_actions_keep_current_update_identity(self):
+        import update_progress
+        progress=update_progress.Progress(self.root)
+        identity=progress.begin('proxy','1.0.0-proxy.1','fixture')
+        progress.publish('downloading',2,7)
+        page=ui.hub_view(self.root,'updates')
+        row=next(r for r in page['rows'] if r['type']=='update')
+        self.assertEqual((row['progress']['completed'],row['progress']['total']),(2,7))
+        self.assertNotIn('show_progress',[b['intent'] for b in page['buttons']])
+        with patch.object(update_progress,'action') as action:
+            ui.hub_dispatch(self.root,{'route':'updates','intent':'update_action','id':identity,
+                'command':'start','phase':'downloading'},ui.revision(self.root))
+            action.assert_called_once_with(self.root,identity,'start','downloading')
+            progress.begin('proxy','1.0.1-proxy.1','new')
+            with self.assertRaises(ui.SettingsError):
+                self.perform('update_action',{'id':identity,'command':'start'})
+        self.save(self.root/'progress.json',{'id':'a'*32,'edition':'ds','phase':'available'})
+        self.assertEqual(ui.hub_progress(self.root),{})
+
+    def test_manual_model_sync_does_not_request_patch_download(self):
+        with patch.object(ui.monitor,'request_update') as request,patch.object(ui.monitor,'wake_monitor'):
+            self.perform('sync_models',{})
+        request.assert_called_once_with(self.root,sync_now=True,code_now=False,retry=False)
+
+    @unittest.skipUnless(sys.platform in ('darwin','win32'),'Native integrated update page')
+    def test_native_update_card_badge_and_completion_share_the_settings_host(self):
+        import update_progress
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        self.save(self.root/'settings.json',{**self.settings,'edition':channel})
+        self.save(self.build/'manifest.json',{**self.manifest,'edition':channel})
+        progress=update_progress.Progress(self.root)
+        progress.begin(channel,'1.0.0','fixture')
+        for phase,attention,primary in [('available',True,'开始更新'),('completed',False,'启动 Codex')]:
+            progress.publish(phase)
+            with patch.object(ui.p,'EDITION',channel):result=ui.show(self.root,self_test=True,page='updates',notify=True)
+            self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+            value=json.loads(result.stdout.decode('utf-8-sig'))
+            self.assertEqual(value['route'],'updates')
+            self.assertEqual(value['update_attention'],attention)
+            self.assertTrue(value['badge_visible'])
+            self.assertEqual(value['update_primary'],primary)
+            self.assertFalse(value.get('draw_error'))
+
+    def test_discovery_never_echoes_password_into_a_native_result(self):
+        result={'available':['remote-x'],'specs':{'remote-x':{'context_window':131072}},'warnings':[]}
+        with patch.object(ui,'probe_connection',return_value=result):
+            page=ui.hub_dispatch(self.root,{'route':'connections/edit','intent':'probe_connection',
+                'values':{'name':'Test','kind':'openai','wire':'chat_completions',
+                          'url':'http://127.0.0.1:1234/v1','key':'synthetic-password'}},ui.revision(self.root))
+        self.assertEqual(page['route'],'connections/discover')
+        self.assertNotIn('synthetic-password',json.dumps(page))
+        self.assertNotIn('key',page['draft'])
+
+    def test_appearance_does_not_queue_a_model_rebuild_or_change_credentials(self):
+        original=ui.revision(self.root)
+        page=ui.hub_dispatch(self.root,{'route':'preferences','intent':'save_ui_options',
+            'values':{'theme':'dark','motion':'reduced','hotkey':False}},original)
+        self.assertEqual(page['options'],{'theme':'dark','motion':'reduced','hotkey':False,'sound':True})
+        ui.hub_save_options(self.root,{'sound':False})
+        self.assertFalse(ui.hub_options(self.root)['sound'])
+        self.assertEqual(ui.revision(self.root),original)
+        self.queued.assert_not_called()
+        with self.assertRaises(ui.SettingsError):
+            ui.hub_save_options(self.root,{'theme':'remote-script'})
+
+    def test_upgrade_waits_for_old_editor_and_coalesces_one_new_host(self):
+        import threading,time
+        results=[]
+        original=ui.revision(self.root)
+        ui.monitor.atomic_json(self.root/'settings-ui/host.json',{'edition':'proxy','pid':os.getpid()})
+        with patch.object(ui,'_show_locked',return_value='new-whale') as opened:
+            with ui.monitor.state_lock(self.root/'settings-ui') as held:
+                self.assertTrue(held)
+                thread=threading.Thread(target=lambda:results.append(ui.show(self.root,notify=True)),daemon=True)
+                thread.start()
+                for _ in range(100):
+                    if (self.root/'settings-ui/entry.json').exists():break
+                    time.sleep(.01)
+                # An explicit reopen takes precedence over another background notice.
+                ui.show(self.root,page='updates')
+                ui.show(self.root,notify=True)
+                opened.assert_not_called();self.assertTrue(thread.is_alive())
+                self.assertFalse((self.root/'settings-ui/raise.json').exists())
+            thread.join(3)
+            self.assertFalse(thread.is_alive());self.assertEqual(results,['new-whale'])
+            opened.assert_called_once()
+            self.assertEqual(opened.call_args.kwargs['page'],'updates')
+            self.assertFalse(opened.call_args.kwargs['notify'])
+        self.assertEqual(ui.revision(self.root),original)
+
+    def test_bubble_audio_is_soft_bounded_and_reused(self):
+        import wave, struct
+        sounds=ui.bubble_assets(self.root)
+        before={name:path.stat().st_mtime_ns for name,path in sounds.items()}
+        for path in sounds.values():
+            with wave.open(str(path),'rb') as audio:
+                self.assertEqual((audio.getnchannels(),audio.getsampwidth(),audio.getframerate()),(1,2,24000))
+                duration=audio.getnframes()/audio.getframerate()
+                self.assertGreater(duration,.1);self.assertLess(duration,.2)
+                data=audio.readframes(audio.getnframes())
+            values=struct.unpack('<'+'h'*(len(data)//2),data)
+            self.assertEqual((values[0],values[-1]),(0,0))
+            self.assertGreater(max(map(abs,values)),500)
+            self.assertLess(max(map(abs,values)),8192)
+        ui.bubble_assets(self.root)
+        self.assertEqual(before,{name:path.stat().st_mtime_ns for name,path in sounds.items()})
+        with self.assertRaises(ui.SettingsError):ui.hub_save_options(self.root,{'sound':'false'})
+
+    def test_logo_has_one_whale_contour_and_one_terminal_mark(self):
+        import xml.etree.ElementTree as ET
+        paths=list(ET.fromstring((ui.ROOT/'brand.svg').read_bytes()).iter('{http://www.w3.org/2000/svg}path'))
+        self.assertEqual(len(paths),2)
+        self.assertEqual(len(ui.vector_contours(paths[0].attrib['d'])),1)
+        self.assertEqual(len(ui.vector_contours(paths[1].attrib['d'])),2)
+
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Native settings widgets')
     def test_native_widgets_complete_private_snapshot_and_close_headlessly(self):
         channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
@@ -144,11 +282,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
         try:value=json.loads(result.stdout.decode('utf-8-sig'))
         except ValueError:self.fail('Native settings output: '+repr(result.stdout)+' stderr: '+repr(result.stderr))
-        self.assertEqual(value['tabs'],3)
+        self.assertEqual(value['categories'],6)
+        self.assertFalse(value.get('draw_error'))
+        if sys.platform=='darwin':self.assertGreaterEqual(value['animation_top_clearance'],4)
         self.assertEqual(value['models'],2)
         self.assertTrue(value['request_completed'])
         self.assertEqual(value['status'],'操作完成。')
         self.assertTrue(value['closed'])
+        motion=value['motion']
+        self.assertGreaterEqual(motion['opened'],2)
+        self.assertGreaterEqual(motion['closed'],2)
+        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released'):
+            self.assertTrue(motion[name],(name,motion))
+        self.assertEqual(motion['edges'],[True]*4)
+        self.assertEqual(motion['directions'],[90,-90,180,0])
+        self.assertEqual(motion['audio_loaded'],2)
+        self.assertFalse(value['update_attention'])
 
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Native settings event loop')
     def test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui(self):
@@ -175,6 +324,23 @@ class SettingsTests(unittest.TestCase):
             with self.assertRaises(ui.SettingsError):ui.ensure_launcher(self.root)
             self.assertFalse(ui.remove_launcher(self.root))
             self.assertEqual(target.read_bytes(),b'user changed entry')
+
+    @unittest.skipUnless(sys.platform=='darwin','AppKit lazy list')
+    def test_macos_long_model_list_keeps_search_and_scrolling(self):
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        self.save(self.root/'settings.json',{**self.settings,'edition':channel})
+        self.save(self.build/'manifest.json',{**self.manifest,'edition':channel})
+        self.save(self.build/'desktop-models.json',{'models':[
+            {'slug':f'gpt-{i:02d}','context_window':1000000} for i in range(40)]})
+        with patch.object(ui.p,'EDITION',channel):result=ui.show(self.root,self_test=True,loop_test=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+        value=json.loads(result.stdout.decode('utf-8-sig'))
+        self.assertFalse(value.get('draw_error'))
+        listing=value['motion']['list']
+        self.assertEqual(listing['total'],40)
+        self.assertLessEqual(listing['initial_rows'],8)
+        for behavior in ('tail_visible','searchable','restored'):
+            self.assertTrue(listing[behavior],behavior)
 
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Per-user native entry')
     def test_uninstall_removes_only_unchanged_owned_launcher(self):
