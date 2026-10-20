@@ -515,10 +515,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Connection', 'close')
-        self.end_headers()
         self.close_connection = True
-        self.wfile.write(raw)
-        self.wfile.flush()
+        try:
+            self.end_headers()
+            self.wfile.write(raw)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return  # The caller already cancelled; no response remains to send.
         if status >= 400 and self.command == 'POST':
             self.drain_rejected_body()
 
