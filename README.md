@@ -6,7 +6,7 @@
 
 把已有云端接口和本地模型加入 Codex 的模型菜单。保留原登录、聊天记录与原生工具，在同一个聊天里切换模型，用一个设置窗口管理连接和自动更新。
 
-扩展版 **0.7.3-proxy.1** · 更新分支 `codex/existing-proxy-models`
+扩展版 **0.7.4-proxy.1** · 更新分支 `codex/existing-proxy-models`
 
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
@@ -39,7 +39,7 @@
 
 适配器由系统按用户启动；更新监测由 launchd / Windows 任务计划程序定时执行，检查后退出。Windows 使用无控制台 Python。发布包仅含源码和文档；旧应用修改逻辑保留用于历史版本的恢复和回归，新安装路径不执行它。
 
-需要 **Python 3.11+** 和已安装的官方 macOS / Windows Codex。新架构安装与自动验证无需额外 Node.js；原生工具使用 Codex 自带运行时。外部模型服务需自行准备。
+需要 **Python 3.11+** 和已安装的官方 macOS / Windows Codex。无需另装 Node.js；较早的 Python 使用 Codex 自带运行时处理原生请求压缩。外部模型服务需自行准备。
 
 指令预判由官方客户端在回复结束、输入框为空等条件下触发，还受功能开关、模型支持、服务端抽样和请求时限影响。补丁保留原生预判链路；预判请求成功与输入框实际展示分别验证。
 

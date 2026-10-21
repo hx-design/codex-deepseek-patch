@@ -26,13 +26,14 @@ from urllib.parse import unquote, urlsplit
 import urllib.request
 
 from inference_transport import (WebSocketError, accept_websocket, connect_websocket,
-                                 create_http_connection, sanitize_headers)
+                                 create_http_connection, sanitize_headers, zstd_body)
 from responses_compat import ToolAdapter
 from legacy_history import LegacyHistory, LegacyHistoryError, RecoveryProgress, visible_reasoning, handoff_item, expand_handoffs
 from reasoning_origin import (LegacyOriginIndex, LegacyOriginIndexError, ReasoningOriginError,
                                resolve_request, stamp_event, stamp_response)
 from chat_completions_compat import ChatCompatibilityError, ResponsesToChat
 
+# Bound untrusted upstream events, not the authenticated native client's history.
 MAX_BODY = 64_000_000
 TERMINAL = {'response.completed', 'response.failed', 'response.incomplete', 'error'}
 
@@ -90,6 +91,9 @@ def validate_profile(profile):
             raise ValueError('Legacy history conversion requires an absolute cache directory and official summary model')
     if 'history_home' in profile and (not isinstance(profile['history_home'], str) or not Path(profile['history_home']).is_absolute()):
         raise ValueError('Local history recovery requires an absolute native home')
+    if profile.get('compression_node') is not None and (not isinstance(profile['compression_node'], str)
+            or not Path(profile['compression_node']).is_absolute()):
+        raise ValueError('Native compression runtime must be an absolute vendor path')
     if 'legacy_origins_file' in profile and (not isinstance(profile['legacy_origins_file'], str)
                                            or not Path(profile['legacy_origins_file']).is_absolute()):
         raise ValueError('Legacy reasoning origin index requires an absolute path')
@@ -247,16 +251,15 @@ def _open(url, raw, headers, operation, profile, *, official=False, method='POST
     parsed = urlsplit(url)
     connection = create_http_connection(url, timeout=15 if official else 120, proxy_url=network_proxy(url, profile))
     operation.attach(connection)
-    if official:
-        connection.connect()
-        operation.socket = connection.sock
-        if operation.cancelled.is_set():
-            operation.cancel()
-            raise OSError('Request cancelled')
-        # The native client owns inference/compaction idle deadlines. A shorter
-        # relay deadline breaks otherwise valid long responses. Its disconnect
-        # watcher still cancels this socket, including a silent upstream.
-        connection.sock.settimeout(None)
+    connection.connect()
+    operation.socket = connection.sock
+    if operation.cancelled.is_set():
+        operation.cancel()
+        raise OSError('Request cancelled')
+    # Native inference/compaction owns the idle deadline for every selected
+    # model. External slow reasoning must not inherit a 120-second socket cap.
+    # Disconnect/cancel still closes a silent upstream immediately.
+    connection.sock.settimeout(None)
     target = parsed.path or '/'
     if parsed.query:
         target += '?' + parsed.query
@@ -591,12 +594,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if model and model not in self.server.profile['routes'] and _is_official_model(self.server.profile, model):
                         url = self.gpt_url().replace('https://', 'wss://', 1).replace('http://', 'ws://', 1)
                         try:
-                            upstream, sticky = connect_websocket(url, self.headers, timeout=15,
+                            upstream, sticky = connect_websocket(url, self.headers, timeout=15, max_message=None,
                                 proxy_url=network_proxy(url, self.server.profile))
                         except (OSError, ValueError):
                             raise RelayError(502, 'upstream_unavailable', 'The official model connection is unavailable') from None
                         upstream.sock.settimeout(None)  # Native client owns the stream deadline.
-                    client = accept_websocket(self, response_headers=sticky)
+                    client = accept_websocket(self, max_message=None, response_headers=sticky)
                     upgraded = True
                     self.server.session_factory(self, client, upstream=upstream).run()
                 finally:
@@ -643,8 +646,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if endpoint != '/backend-api/codex/responses' and not standalone_compaction:
                 self.forward_official(endpoint)
                 return
-            if self.headers.get('Content-Encoding', 'identity').lower() != 'identity':
-                raise RelayError(415, 'unsupported_encoding', 'Use an uncompressed JSON request')
+            encoding = self.headers.get('Content-Encoding', 'identity').lower()
+            if encoding not in ('identity', 'zstd'):
+                raise RelayError(415, 'unsupported_encoding', 'Unsupported native request encoding')
             lengths = self.headers.get_all('Content-Length', [])
             if self.headers.get('Transfer-Encoding') or len(lengths) != 1:
                 raise RelayError(400, 'invalid_length', 'A single Content-Length is required')
@@ -652,18 +656,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 length = int(lengths[0])
             except ValueError:
                 raise RelayError(400, 'invalid_length', 'Invalid Content-Length') from None
-            if not 0 < length <= MAX_BODY:
-                raise RelayError(413, 'request_too_large', 'Request exceeds the size limit')
+            if not 0 < length < 2**63:
+                raise RelayError(400, 'invalid_length', 'Invalid Content-Length')
             raw = self.rfile.read(length)
             self.body_bytes_read = len(raw)
             if len(raw) != length:
                 raise RelayError(400, 'truncated_body', 'Incomplete request body')
-            body = json.loads(raw)
-            _check_body(body)
-            _check_model(self.server.profile, body['model'])
             self.server.active += 1
             started = True
             self.watch_disconnect(operation, stop)
+            decoded = zstd_body(raw, node=self.server.profile.get('compression_node'),
+                                cancelled=operation.cancelled) if encoding == 'zstd' else raw
+            body = json.loads(decoded)
+            del decoded
+            _check_body(body)
+            _check_model(self.server.profile, body['model'])
             route = self.server.profile['routes'].get(body['model'])
             if standalone_compaction and route:
                 raise RelayError(501, 'remote_compaction_unsupported', 'Standalone compaction is unavailable for this model route')
@@ -697,6 +704,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body, _, changed = _resolve_origin(self.server, body)
                 if changed:
                     raw = _json(body)
+                    if encoding == 'zstd':
+                        raw = zstd_body(raw, decompress=False, node=self.server.profile.get('compression_node'),
+                                        cancelled=operation.cancelled)
                 url = self.gpt_url('responses/compact' if standalone_compaction else 'responses')
                 headers = sanitize_headers(self.headers)
             forwarded = True
@@ -1021,8 +1031,6 @@ class WebSocketSession:
                     self.client.send(_json({'type': 'response.completed', 'response': response}))
                     return
                 self.pending_input = copy.deepcopy(body)
-                if len(_json(body)) > MAX_BODY:
-                    raise RelayError(413, 'request_too_large', 'Reconstructed input exceeds the size limit')
                 self.mode = 'route'
                 self.operation = Operation()
                 self.request_id += 1
@@ -1051,8 +1059,6 @@ class WebSocketSession:
             body, adapter = prepare_request(body, route)
             body['stream'] = True
             wire_body, protocol = _protocol_request(body, route)
-            if len(_json(wire_body)) > MAX_BODY:
-                raise RelayError(413, 'request_too_large', 'Reconstructed input exceeds the size limit')
             headers = _route_headers(self.handler.server, route, stream=True)
             response = _open(_route_url(route), _json(wire_body), headers, operation, self.handler.server.profile)
             if response.status >= 400:
@@ -1081,7 +1087,7 @@ class WebSocketSession:
             with self.upstream_lock:
                 if not self.upstream:
                     url = self.handler.gpt_url().replace('https://', 'wss://', 1).replace('http://', 'ws://', 1)
-                    upstream, _ = connect_websocket(url, self.handler.headers, timeout=15,
+                    upstream, _ = connect_websocket(url, self.handler.headers, timeout=15, max_message=None,
                         proxy_url=network_proxy(url, self.handler.server.profile))
                     upstream.sock.settimeout(None)  # Native client owns the stream deadline.
                     if self.closed.is_set():

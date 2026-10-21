@@ -51,6 +51,18 @@ class ModelSyncTests(unittest.TestCase):
         self.assertEqual(entry['context_window'],200000)
         self.assertEqual(entry['max_context_window'],1000000)
 
+    def test_native_policy_is_preserved_and_explicit_compaction_is_not_capped_at_ninety_percent(self):
+        entry={'slug':'gpt-fixture','context_window':272000,'max_context_window':872000,
+               'auto_compact_token_limit':None,'effective_context_window_percent':95}
+        self.assertIsNone(m.apply_reductions(entry,{},native=True))
+        self.assertEqual(entry['context_window'],872000)
+        self.assertEqual(entry['effective_context_window_percent'],95)
+        prefs={'context_windows':{'gpt-fixture':200000},'compact_limits':{'gpt-fixture':190000}}
+        self.assertEqual(m.apply_reductions(entry,prefs,native=True),190000)
+        self.assertEqual(entry['effective_context_window_percent'],95)
+        external={'slug':'glm-fixture','context_window':200000}
+        self.assertEqual(m.apply_reductions(external,{'compact_limits':{'glm-fixture':190000}}),190000)
+
     def test_no_proxy_url_or_html_can_supply_an_arbitrary_spec_origin(self):
         for name in ['../../secret','grok-4.7/../../auth','gemini-4-argon','grok-imagine-image']:
             with self.assertRaises(ValueError):m.specification_url(name)
@@ -403,7 +415,8 @@ class NativeModelSyncTests(unittest.TestCase):
             result=m.synchronize(settings,state,baseline,**kwargs)
             entry=next(row for row in result['catalog']['models'] if row['slug']=='gpt-6.1-sol')
             self.assertEqual(entry['context_window'],entry['max_context_window'])
-            self.assertEqual(entry['auto_compact_token_limit'],int(entry['max_context_window']*.9))
+            official=next(row for row in native['models'] if row['slug']==entry['slug'])
+            self.assertEqual(entry.get('auto_compact_token_limit'),official.get('auto_compact_token_limit'))
             # After the maximum is installed, a later manual reduction remains valid.
             p.save_json(baseline/'synced-models.json',result)
             p.save_json(baseline/'desktop-models.json',result['catalog'])
@@ -412,7 +425,7 @@ class NativeModelSyncTests(unittest.TestCase):
             lowered=m.synchronize(settings,state,baseline,**kwargs)
             gpt=next(row for row in lowered['catalog']['models'] if row['slug']=='gpt-6.1-sol')
             self.assertEqual(gpt['context_window'],128000)
-            self.assertEqual(gpt['auto_compact_token_limit'],115200)
+            self.assertEqual(gpt.get('auto_compact_token_limit'),official.get('auto_compact_token_limit'))
 
     def test_hidden_provider_keeps_metadata_credential_reference(self):
         manifest={'model_routes':{},'keychain_account':'fixture-account','keychain_service':'fixture-service'}

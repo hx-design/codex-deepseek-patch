@@ -116,7 +116,8 @@ def _models(directory, build, manifest):
             'maximum': maximum, 'effective': effective, 'installed_window': item.get('context_window'),
             'server_window': spec.get('configured_context_window'), 'context_override': selected,
             'compact_override': preferences.get('compact_limits', {}).get(model),
-            'compact': preferences.get('compact_limits', {}).get(model) or (int(effective*.9) if effective else None),
+            'compact': preferences.get('compact_limits', {}).get(model) or
+                (item.get('auto_compact_token_limit') if model not in routes else int(effective*.9) if effective else None),
             'tools': routes.get(model, {}).get('supports_tools', spec.get('supports_tools', item.get('shell_type') != 'disabled')),
             'images': 'image' in item.get('input_modalities', []),
             'reasoning': [v['effort'] for v in item.get('supported_reasoning_levels', [])],
@@ -407,7 +408,7 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
                 value.setdefault(key,{})[model]=number
             requested=value.get('context_windows',{}).get(model) or models[model]['maximum']
             compact=value.get('compact_limits',{}).get(model)
-            require(compact is None or requested and compact<=int(requested*.9),'压缩阈值不能超过使用窗口的 90%。')
+            require(compact is None or requested and compact<=requested,'压缩阈值不能超过使用窗口。')
             monitor.atomic_json(directory/'model-preferences.json',model_sync.validate_preferences(value));changed_models=True
         elif action=='save_options':
             require(set(payload)<= {'auto_update','model_sync','interval','progress_ui'},'存在未知设置。')
@@ -972,7 +973,8 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         maximum=f"{model['maximum']:,}" if model['maximum'] else '未提供'
         rows += [hub_item('模型最大窗口', maximum+' tokens'),
                  hub_field('context','使用窗口',model['context_override'],'number',hint='留空使用模型最大值'),
-                 hub_field('compact','压缩阈值',model['compact_override'],'number',hint='留空使用窗口的 90%'),
+                 hub_field('compact','压缩阈值',model['compact_override'],'number',
+                           hint='留空沿用 Codex 原生设置' if model['provider']=='GPT' else '留空默认使用窗口的 90%'),
                  hub_field('visible','在模型菜单中显示',model['visible'],'toggle')]
         if model['server_window']:rows.insert(1,hub_item('本地服务窗口',f"{model['server_window']:,} tokens"))
         buttons += [hub_button('恢复默认','reset_model'),hub_button('保存','save_model',style='primary')]

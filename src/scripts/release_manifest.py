@@ -28,6 +28,7 @@ REQUIRED_NATIVE = frozenset((
     'native_websocket_compression',
     'native_adapter_errors_finish_without_idle_wait',
     'native_close_retries_without_idle_wait',
+    'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
     'test_native_image_generate_and_edit_keep_official_auth_and_bytes',
@@ -43,6 +44,14 @@ REQUIRED_REGRESSIONS = frozenset((
     'test_recheck_keeps_same_release_build_for_close_and_launch',
     'test_launch_failure_releases_claim_and_allows_retry',
     'test_identity_poll_preserves_terminal_and_active_update_progress',
+    'test_native_large_image_requests_and_compaction_keep_bytes_and_auth',
+    'test_upstream_payload_rejection_is_returned_without_local_retries',
+    'test_native_requests_can_exceed_message_limit_without_unbounding_upstream_replies',
+    'test_native_compression_preserves_defaults_and_user_choices_across_updates',
+    'test_native_policy_is_preserved_and_explicit_compaction_is_not_capped_at_ninety_percent',
+    'test_external_slow_reasoning_uses_native_deadline_and_separate_auth',
+    'test_native_zstd_roundtrip_invalid_data_and_cancellation',
+    'test_provider_owns_reference_count_image_and_response_sizes',
     'test_native_widgets_complete_private_snapshot_and_close_headlessly',
     'test_native_update_card_badge_and_completion_share_the_settings_host',
     'test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui',
@@ -260,6 +269,8 @@ def verify_candidate(path, channel, app, output):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(data)
         env = {**os.environ, 'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost'}
+        codec=Path(app)/('Contents/Resources/cua_node/bin/node' if host=='macos' else 'resources/cua_node/bin/node.exe')
+        if codec.is_file():env['CODEX_TEST_COMPRESSION_NODE']=str(codec)
         options = {'creationflags': 0x08000000} if os.name == 'nt' else {}
         logs = {}
         for name, arguments in (

@@ -250,15 +250,17 @@ def select_models(available, selected, state, preferences, allowed):
     return retained
 
 
-def apply_reductions(entry, preferences, fallback=None):
+def apply_reductions(entry, preferences, fallback=None, *, native=False):
     maximum = entry.get('max_context_window') or entry.get('context_window')
     p.require(type(maximum) is int and maximum > 0, 'Model context maximum is missing: '+entry['slug'])
     requested = preferences.get('context_windows', {}).get(entry['slug'], fallback)
     entry['max_context_window'] = maximum
     entry['context_window'] = min(requested, maximum) if requested else maximum
-    entry['effective_context_window_percent'] = 100
-    compact = int(entry['context_window'] * .9)
-    return min(preferences.get('compact_limits', {}).get(entry['slug']) or compact, compact)
+    if not native:
+        entry['effective_context_window_percent'] = 100
+    compact = entry.get('auto_compact_token_limit') if native else int(entry['context_window'] * .9)
+    selected = preferences.get('compact_limits', {}).get(entry['slug']) or compact
+    return min(selected, entry['context_window']) if selected is not None else None
 
 
 def make_entry(template, model, provider, spec, priority):
@@ -366,8 +368,9 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
         entry=copy.deepcopy(raw);slug=entry['slug']
         if slug in preferences.get('hidden',[]):continue
         if entry.get('max_context_window') or entry.get('context_window'):
-            compact=apply_reductions(entry,preferences)
-            if native_mode:entry['auto_compact_token_limit']=compact
+            compact=apply_reductions(entry,preferences,native=native_mode)
+            if native_mode and (compact is not None or 'auto_compact_token_limit' in entry):
+                entry['auto_compact_token_limit']=compact
             defaults[slug]=entry['context_window']
         entries.append(entry)
     template=p.catalog_template(native)
