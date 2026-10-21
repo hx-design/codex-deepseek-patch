@@ -244,16 +244,34 @@ def summarize_records(records, context_window, summarize, *, cancelled):
         parts = list(_chunks(text, chunk_bytes))
         if calls + len(parts) > 128:
             raise unavailable('This history needs a larger-context model or a readable handoff')
-        summaries = []
-        for index, part in enumerate(parts):
+        summaries, depths, index = [], [0] * len(parts), 0
+        while index < len(parts):
             if cancelled.is_set():
                 raise LegacyHistoryError('request_cancelled', 'History recovery was cancelled', 499)
+            if calls >= 128:
+                raise unavailable('This history needs a larger-context model or a readable handoff')
+            part = parts[index]
             calls += 1
-            summary = summarize(part, output_tokens, output_bytes, level, index, len(parts))
+            try:
+                summary = summarize(part, output_tokens, output_bytes, level, index, len(parts))
+            except LegacyHistoryError as error:
+                # Never cache partial text or repeat the same truncated request.
+                # Split only the failing input, keeping all UTF-8 bytes in order.
+                # Provider quota/auth/filter/transport failures are not retried.
+                size = len(part.encode())
+                if error.code != 'local_summary_output_limit' or size <= 1024 or depths[index] >= 8:
+                    raise
+                left = next(_chunks(part, size // 2))
+                smaller = [left, part[len(left):]]
+                depth = depths[index] + 1
+                parts[index:index+1] = smaller
+                depths[index:index+1] = [depth] * len(smaller)
+                continue
             if not isinstance(summary, str) or not summary.strip() or len(summary.encode()) > output_bytes:
                 raise LegacyHistoryError('local_summary_invalid',
                     'The selected model did not return a complete, bounded history summary. Try another model.', 502)
             summaries.append(summary.strip())
+            index += 1
         if len(summaries) == 1:
             return summaries[0]
         reduced = '\n\n'.join(summaries)
