@@ -577,7 +577,8 @@ def install(directory, manifest):
 def _original_config(text, ownership):
     parsed = p.tomllib.loads(text)
     return (all(parsed.get(key) == value for key, value in ownership['original_root'].items())
-            and parsed.get('features', {}).get('enable_request_compression') == ownership['original_compression']
+            and (ownership.get('compression_policy') == 'native'
+                 or parsed.get('features', {}).get('enable_request_compression') == ownership['original_compression'])
             and parsed.get('model_providers', {}).get('codex-model-adapter') is None)
 
 

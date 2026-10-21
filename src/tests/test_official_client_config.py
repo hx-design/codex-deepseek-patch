@@ -33,7 +33,11 @@ class NativeConfigTest(unittest.TestCase):
                 changed=_replace_section(updated,('features',),{'enable_request_compression':True})
                 again, final_owned=prepare_config(changed,self.catalog,self.endpoint,previous=next_owned)
                 self.assertTrue(tomllib.loads(again)['features']['enable_request_compression'])
-                self.assertTrue(tomllib.loads(restore_config(again,final_owned))['features']['enable_request_compression'])
+                restored=restore_config(again,final_owned)
+                self.assertTrue(tomllib.loads(restored)['features']['enable_request_compression'])
+                from official_client_install import _original_config
+                self.assertTrue(_original_config(restored,final_owned),
+                                'Interrupted uninstall must recognize the restored config with a user compression choice')
 
     def test_changes_only_owned_settings_and_can_restore(self):
         text = ('# user comment\nmodel="gpt-6-astra"\nmodel_context_window=512000\n'
