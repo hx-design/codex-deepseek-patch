@@ -223,7 +223,8 @@ def _guard_staged_config(current, staged):
 def _owned_config(text, ownership):
     value = p.tomllib.loads(text)
     return (all(value.get(key) == expected for key, expected in ownership['root'].items())
-            and value.get('features', {}).get('enable_request_compression') is False
+            and (ownership.get('compression_policy') == 'native'
+                 or value.get('features', {}).get('enable_request_compression') is False)
             and value.get('model_providers', {}).get('codex-model-adapter') == ownership.get('provider'))
 
 

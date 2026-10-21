@@ -12,6 +12,7 @@ import copy
 import http.server
 import io
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import shutil
@@ -20,12 +21,14 @@ import sys
 import tempfile
 import threading
 import time
+import struct
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import inference_adapter
 from official_client_config import adapt_catalog, prepare_config
-from inference_transport import accept_websocket
+from inference_transport import accept_websocket, zstd_body
 from responses_compat import SEARCH_NAME, ToolAdapter
 import patch
 from scripts.test_context import ResponsesStub, Rpc
@@ -66,7 +69,10 @@ class NativeServicesFixture(http.server.BaseHTTPRequestHandler):
                 'account_routing_override': 'NO_CONSTRAINT'}],
                 'default_account_id': 'synthetic-account', 'account_ordering': ['synthetic-account']})
         elif self.headers.get('Upgrade', '').lower() == 'websocket':
-            ws = accept_websocket(self)
+            if getattr(self.server,'large_history',False):
+                self.send_error(426,'Synthetic HTTP-only upstream')
+                return
+            ws = accept_websocket(self, max_message=None)
             self.server.compressed = bool(ws.deflate)
             try:
                 while (message := ws.recv()) is not None:
@@ -80,7 +86,18 @@ class NativeServicesFixture(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers['Content-Length']))
+        encoding = self.headers.get('Content-Encoding')
+        if encoding == 'zstd':
+            raw = zstd_body(raw, node=self.server.compression_node)
         body = json.loads(raw)
+        if getattr(self.server,'large_history',False):
+            images=[p['image_url'] for i in body.get('input',[]) for p in i.get('content',[])
+                    if isinstance(p,dict) and p.get('type')=='input_image']
+            self.server.large_requests.append({'encoding':encoding,'bytes':len(raw),
+                'images':[hashlib.sha256(v.encode()).hexdigest() for v in images],
+                'auth':self.headers.get('Authorization')=='Bearer '+self.server.token,
+                'compact':self.path.endswith('/compact') or inference_adapter._is_compaction(body)})
+            return self.respond(body)
         if self.path.startswith('/rejected/'):
             value = json.dumps({'error': {'message': 'Synthetic request rejected'}}).encode()
             self.send_response(400)
@@ -126,6 +143,8 @@ class NativeServicesFixture(http.server.BaseHTTPRequestHandler):
         else:
             item = {'id': 'services_done', 'type': 'message', 'role': 'assistant', 'status': 'completed',
                     'content': [{'type': 'output_text', 'text': 'NATIVE_SERVICES_OK', 'annotations': []}]}
+        if getattr(self.server,'large_history',False) and (self.path.endswith('/compact') or inference_adapter._is_compaction(body)):
+            item={'id':'cmp_large_fixture','type':'compaction','encrypted_content':'synthetic-large-compaction'}
         response = {'id': 'service_response_' + str(index), 'object': 'response',
                     'created_at': int(time.time()), 'status': 'completed', 'model': body['model'],
                     'output': [] if warmup else [item],
@@ -135,6 +154,8 @@ class NativeServicesFixture(http.server.BaseHTTPRequestHandler):
             events += [{'type': 'response.output_item.added', 'output_index': 0, 'item': item},
                        {'type': 'response.output_item.done', 'output_index': 0, 'item': item}]
         events += [{'type': 'response.completed', 'response': response}]
+        if self.path.endswith('/compact'):
+            return self.json_reply(response)
         if ws:
             for i, event in enumerate(events):
                 ws.send(json.dumps({**event, 'sequence_number': i}))
@@ -200,6 +221,8 @@ def native_image_contract(app, reportdir, edition):
         upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), NativeServicesFixture)
         upstream.turns, upstream.images, upstream.token, upstream.heartbeats = 0, [], token, 0
         upstream.compressed = False
+        from official_client import compression_node
+        upstream.compression_node = compression_node(app)
         upstream.reference = work / 'reference.png'
         upstream.reference.write_bytes(base64.b64decode(IMAGE_FIXTURE))
         start(upstream)
@@ -210,6 +233,7 @@ def native_image_contract(app, reportdir, edition):
         env.update(SSL_CERT_FILE=str(ca), CODEX_CA_CERTIFICATE=str(ca), HTTP_PROXY=base_url, HTTPS_PROXY=base_url,
                    ALL_PROXY=base_url, NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
         adapter = start(inference_adapter.create_server({'format': 1, 'edition': edition,
+            'compression_node':upstream.compression_node,
             'identity': 'native-services-fixture', 'token': 'synthetic-' + 'x' * 40, 'port': 0,
             'gpt': {'chatgpt_base_url': base_url + '/backend-api/codex', 'api_base_url': base_url + '/v1'}, 'routes': {}},
             credential_reader=lambda _: 'synthetic-external-key'))
@@ -275,11 +299,42 @@ def native_image_contract(app, reportdir, edition):
         else:
             raise AssertionError('Native rejection did not finish as a failed turn')
         patch.require(time.monotonic() - started < 15, 'Native error waited for an idle deadline')
+        # A fresh native HTTP session uses the vendor's default zstd setting.
+        # Supply a valid PNG with a large inert text chunk, without user media.
+        stop_probe(process)
+        entry['prefer_websockets']=False
+        patch.save_json(catalog,{'models':[entry]})
+        adapter.profile['routes'].clear()
+        upstream.large_history,upstream.large_requests=True,[]
+        png=base64.b64decode(IMAGE_FIXTURE)
+        chunk=b'tEXt'+b'fixture\x00'+b'x'*48_100_000
+        png=png[:-12]+struct.pack('!I',len(chunk)-4)+chunk+struct.pack('!I',zlib.crc32(chunk))+png[-12:]
+        image='data:image/png;base64,'+base64.b64encode(png).decode()
+        expected=hashlib.sha256(image.encode()).hexdigest()
+        del png,chunk
+        process=subprocess.Popen(probe_command(app),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,
+            text=True,encoding='utf-8',env=env,cwd=work,**launch_options())
+        owned.callback(stop_probe,process)
+        rpc=Rpc(process)
+        rpc.request('initialize',{'clientInfo':{'name':'large_native_history','version':'1'},'capabilities':{'experimentalApi':True}})
+        rpc.request('account/login/start',{'type':'chatgptAuthTokens','accessToken':token,'chatgptAccountId':'synthetic-account'})
+        tid=rpc.request('thread/start',{'model':GPT,'modelProvider':'openai','cwd':str(work),
+            'approvalPolicy':'never','sandbox':'danger-full-access' if sys.platform=='win32' else 'workspace-write'})['thread']['id']
+        turn=rpc.request('turn/start',{'threadId':tid,'input':[{'type':'text','text':'Synthetic history fixture.'},
+                                                             {'type':'image','url':image}]})
+        finish_services(rpc,tid,turn,timeout=60)
+        _compact(rpc,tid)
+        large=upstream.large_requests
+        patch.require(len(large)>=2 and any(v['compact'] for v in large), 'Native large history did not compact')
+        patch.require(all(v['bytes']>64_000_000 and v['images']==[expected] and v['auth'] for v in large),
+                      'Native large image history was reduced, altered or lost authentication')
+        patch.require(large[0]['encoding']=='zstd','Native HTTP request compression was not preserved')
     return {'native_image_generation': 'passed', 'native_image_edit': 'passed',
             'native_image_auth_and_saved_files': 'passed', 'native_image_websocket_roundtrip': 'passed',
             'native_websocket_compression': 'passed',
             'native_close_retries_without_idle_wait': 'passed',
-            'native_adapter_errors_finish_without_idle_wait': 'passed'}
+            'native_adapter_errors_finish_without_idle_wait': 'passed',
+            'native_large_image_history_and_compaction':'passed','native_http_request_compression':'passed'}
 
 
 def mcp_runtime(executable=None):

@@ -16,6 +16,25 @@ class NativeConfigTest(unittest.TestCase):
     endpoint = "http://127.0.0.1:53991/private-fixture-token/backend-api/codex"
     catalog = str(Path(__file__).resolve().parent / "fixture-catalog.json")
 
+    def test_native_compression_preserves_defaults_and_user_choices_across_updates(self):
+        from official_client_config import rollback_config
+        for setting in (None,True,False):
+            text = '' if setting is None else '[features]\nenable_request_compression='+str(setting).lower()+'\n'
+            with self.subTest(setting=setting):
+                fresh, owned = prepare_config(text,self.catalog,self.endpoint)
+                self.assertEqual(tomllib.loads(fresh).get('features',{}).get('enable_request_compression'),setting)
+                # Recreate ownership from the released adapter, which forced false.
+                old=dict(owned);old.pop('compression_policy');old.pop('compression_after')
+                from official_client_config import _replace_section
+                legacy=_replace_section(fresh,('features',),{'enable_request_compression':False})
+                updated, next_owned=prepare_config(legacy,self.catalog,self.endpoint,previous=old)
+                self.assertEqual(tomllib.loads(updated)['features'].get('enable_request_compression'),setting)
+                self.assertEqual(tomllib.loads(rollback_config(updated,next_owned,legacy)),tomllib.loads(legacy))
+                changed=_replace_section(updated,('features',),{'enable_request_compression':True})
+                again, final_owned=prepare_config(changed,self.catalog,self.endpoint,previous=next_owned)
+                self.assertTrue(tomllib.loads(again)['features']['enable_request_compression'])
+                self.assertTrue(tomllib.loads(restore_config(again,final_owned))['features']['enable_request_compression'])
+
     def test_changes_only_owned_settings_and_can_restore(self):
         text = ('# user comment\nmodel="gpt-6-astra"\nmodel_context_window=512000\n'
                 'model_auto_compact_token_limit=448000\n'
@@ -176,7 +195,8 @@ class NativeStagePreferencesTest(unittest.TestCase):
             p.save_json(state/'model-preferences.json',{'hidden':['deepseek-flash']})
             snapshot=model_sync.synchronize({'edition':'ds','app':'unused','codex_home':str(home)},state,baseline,
                 fetch_native=lambda *_:native,fetch_provider=lambda *_:{'deepseek-flash':{'context_window':1048576}})
-            with mock('official_client_update.verify_official',return_value={}),mock.object(p,'app_layout',return_value=layout):
+            with mock('official_client.compression_node',return_value=None), \
+                 mock('official_client_update.verify_official',return_value={}),mock.object(p,'app_layout',return_value=layout):
                 result=official_client.stage(app=app,codex_home=home,output=root/'next',baseline=baseline,
                                              edition='ds',model_snapshot=snapshot)
             self.assertEqual(result['model_routes'],{})
@@ -191,7 +211,8 @@ class NativeStagePreferencesTest(unittest.TestCase):
             path=baseline/'desktop-models.json';catalog=json.loads(path.read_text(encoding='utf-8'))
             next(row for row in catalog['models'] if row['slug']=='gpt-6.1-sol').update(context_window=128000,auto_compact_token_limit=100000)
             p.save_json(path,catalog)
-            with mock('official_client_update.verify_official',return_value={}),mock.object(p,'app_layout',return_value=layout):
+            with mock('official_client.compression_node',return_value=None), \
+                 mock('official_client_update.verify_official',return_value={}),mock.object(p,'app_layout',return_value=layout):
                 official_client.stage(app=app,codex_home=home,output=root/'next',baseline=baseline,edition='ds')
             gpt=next(row for row in json.loads((root/'next/desktop-models.json').read_text(encoding='utf-8'))['models'] if row['slug']=='gpt-6.1-sol')
             self.assertEqual((gpt['context_window'],gpt['auto_compact_token_limit']),(128000,100000))

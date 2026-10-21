@@ -49,9 +49,11 @@ class Stub(http.server.BaseHTTPRequestHandler):
             self.reply({'data': [{'url': 'http://127.0.0.1/private'}]})
             return
         if self.path.startswith('/v1beta/'):
-            self.reply({'candidates': [{'content': {'parts': [
+            result={'candidates': [{'content': {'parts': [
                 {'thought': True, 'inlineData': {'mimeType': 'image/png', 'data': ENCODED}},
-                {'text': 'Synthetic fixture'}, {'inlineData': {'mimeType': 'image/png', 'data': ENCODED}}]}}]})
+                {'text': 'Synthetic fixture'}, {'inlineData': {'mimeType': 'image/png', 'data': ENCODED}}]}}]}
+            if self.server.mode=='large':result['provider_metadata']='x'*64_000_001
+            self.reply(result)
         else:
             self.reply({'data': [{'b64_json': ENCODED, 'revised_prompt': 'Synthetic fixture'}] * (2 if self.server.mode == 'two' else 1)})
 
@@ -88,6 +90,19 @@ class ImagesTests(unittest.TestCase):
     def test_models_filters_chat_models_without_inference(self):
         self.assertEqual([row['model'] for row in self.client.models()], MODELS[:-1])
         self.assertEqual([r[0] for r in self.server.records], ['GET'])
+
+    def test_provider_owns_reference_count_image_and_response_sizes(self):
+        large=self.root/'large.png';large.write_bytes(PNG+b'\x00'*16_000_001)
+        small=self.root/'small.png';small.write_bytes(PNG)
+        self.server.mode='large'
+        self.client.generate(self.args('gemini-3.1-flash-image',prompt='x'*100001,
+            referenced_image_paths=[str(large)]+[str(small)]*5))
+        posts=[row for row in self.server.records if row[0]=='POST']
+        self.assertEqual(len(posts),1)
+        parts=posts[0][2]['contents'][0]['parts']
+        self.assertEqual(len(parts),7)
+        self.assertEqual(len(parts[0]['text']),100001)
+        self.assertEqual(base64.b64decode(parts[1]['inlineData']['data']),large.read_bytes())
 
     def test_grok_generation_saves_and_returns_exact_bytes(self):
         args = self.args(aspect_ratio='16:9', resolution='1k')

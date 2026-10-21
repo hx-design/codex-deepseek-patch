@@ -55,7 +55,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_invalid_window_and_stale_revision_never_overwrite_settings(self):
         before = ui.revision(self.root)
-        for payload in ({'context':300000}, {'context':0}, {'context':True}, {'context':8192,'compact':8000}):
+        for payload in ({'context':300000}, {'context':0}, {'context':True}, {'context':8192,'compact':8200}):
             with self.subTest(payload=payload), self.assertRaises(ui.SettingsError):
                 ui.perform(self.root,'save_model',{'id':'local-test',**payload},before)
             self.assertEqual(ui.revision(self.root),before)

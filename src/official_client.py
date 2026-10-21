@@ -38,6 +38,24 @@ def free_port():
         return listener.getsockname()[1]
 
 
+def compression_node(app):
+    """Resolve the vendor's codec; never install another runtime or change flags."""
+    try:
+        from compression import zstd
+        return None
+    except ImportError:
+        pass
+    app = Path(app)
+    node = app / ('Contents/Resources/cua_node/bin/node' if sys.platform == 'darwin'
+                  else 'resources/cua_node/bin/node.exe')
+    p.require(node.is_file(), 'The official app request compression runtime is unavailable')
+    from inference_transport import zstd_body
+    sample = b'native-request-codec\x00'
+    p.require(zstd_body(zstd_body(sample, decompress=False, node=node), node=node) == sample,
+              'The official app request compression runtime failed validation')
+    return str(node)
+
+
 def inspect(app):
     from official_client_update import verify_official
     app = Path(app).resolve()
@@ -158,6 +176,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
     identity = hashlib.sha256(json.dumps([edition, catalog, routes, mapped, code_identity],
                                          sort_keys=True).encode()).hexdigest()
     profile = {"format":1, "edition":edition, "identity":identity, "token":token, "port":port,
+               "compression_node":compression_node(app),
                "gpt":{"chatgpt_base_url":"https://chatgpt.com/backend-api/codex",
                       "api_base_url":"https://api.openai.com/v1"}, "routes":mapped,
                "official_models":[row['slug'] for row in catalog['models'] if row['slug'] not in routes],
