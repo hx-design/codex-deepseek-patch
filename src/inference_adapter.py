@@ -318,6 +318,33 @@ def _adapt_events(adapter, event):
         yield value
 
 
+def _summary_terminal_error(event):
+    """Report protocol causes without copying upstream prompts or error text."""
+    response = event.get('response')
+    response = response if isinstance(response, dict) else {}
+    details = response.get('incomplete_details') or {}
+    reason = details.get('reason') if isinstance(details, dict) else None
+    if reason == 'max_output_tokens':
+        return LegacyHistoryError('local_summary_output_limit',
+            'The selected model exhausted its history-summary output budget')
+    if reason == 'content_filter':
+        return LegacyHistoryError('local_summary_content_filter',
+            'The selected model filtered the history summary', 422)
+    error = response.get('error') or event.get('error') or event
+    code = error.get('code') if isinstance(error, dict) else None
+    causes = {
+        'rate_limit_exceeded': ('rate_limit', 'rate-limited history summarization', 429),
+        'insufficient_quota': ('quota', 'has insufficient quota for history summarization', 429),
+        'invalid_api_key': ('authentication', 'rejected the history-summary credential', 401),
+        'context_length_exceeded': ('context', 'rejected the history-summary input length', 400),
+    }
+    if isinstance(code, str) and code in causes:
+        name, message, status = causes[code]
+        return LegacyHistoryError('local_summary_' + name, 'The selected model ' + message, status)
+    return LegacyHistoryError('local_summary_failed',
+        'The selected model returned an unsuccessful history-summary stream')
+
+
 def _selected_task_summary(handler, original, route, transcript, output_tokens, output_bytes, level, part, total, operation, *, purpose='recovery'):
     """Summarize readable history through the already selected provider only."""
     progress=getattr(operation,'progress',None)
@@ -353,14 +380,16 @@ def _selected_task_summary(handler, original, route, transcript, output_tokens, 
                 if isinstance(text, str):
                     size += len(text.encode())
                     if size > output_bytes:
-                        raise LegacyHistoryError('local_summary_invalid', 'The selected model summary exceeds its size limit')
+                        raise LegacyHistoryError('local_summary_output_limit', 'The selected model summary exceeds its recovery storage budget')
                     fragments.append(text)
             if event.get('type') == 'response.completed':
                 completed = event.get('response', {})
                 break
             if event.get('type') in TERMINAL:
-                raise LegacyHistoryError('local_summary_failed', 'The selected model could not complete history summarization')
-        if completed is None or completed.get('status', 'completed') != 'completed':
+                raise _summary_terminal_error(event)
+        if completed is not None and completed.get('status', 'completed') != 'completed':
+            raise _summary_terminal_error({'response':completed})
+        if completed is None:
             raise LegacyHistoryError('local_summary_failed', 'The selected model summary did not complete')
         output = completed.get('output', [])
         if any(not isinstance(item, dict) or item.get('type') not in ('message', 'reasoning') for item in output):
@@ -368,7 +397,10 @@ def _selected_task_summary(handler, original, route, transcript, output_tokens, 
         text = '\n'.join(part.get('text', '') for item in output
             if item.get('type') == 'message' for part in item.get('content', [])
             if isinstance(part, dict) and part.get('type') == 'output_text')
-        return text or ''.join(fragments)
+        text = text or ''.join(fragments)
+        if len(text.encode()) > output_bytes:
+            raise LegacyHistoryError('local_summary_output_limit', 'The selected model summary exceeds its recovery storage budget')
+        return text
     except (OSError, TimeoutError):
         raise LegacyHistoryError('local_summary_unavailable', 'The selected model summary connection is unavailable', 503) from None
     finally:
