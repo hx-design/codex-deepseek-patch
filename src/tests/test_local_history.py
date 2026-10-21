@@ -119,5 +119,52 @@ class LocalHistoryTests(unittest.TestCase):
             with self.subTest(result_type=type(result).__name__),self.assertRaises(LegacyHistoryError):
                 summarize_records([{'x':'data'}],32768,lambda *a:result,cancelled=self.cancelled)
 
+    def test_output_exhaustion_splits_only_failing_input_without_losing_utf8(self):
+        records = [{'content':''.join(f'事实{i}🙂ABCD|' for i in range(1500))}]
+        expected = json.dumps(records[0],ensure_ascii=False,separators=(',',':'))
+        accepted, attempts = [], []
+        def summarize(text,tokens,size,level,index,total):
+            attempts.append((text,level))
+            if level == 0:
+                if len(text.encode()) > 3000:
+                    raise LegacyHistoryError('local_summary_output_limit','Synthetic output exhaustion')
+                accepted.append(text)
+            return 'Complete recovered facts.'
+        self.assertEqual(summarize_records(records,1048576,summarize,cancelled=self.cancelled),
+                         'Complete recovered facts.')
+        self.assertEqual(''.join(accepted),expected)
+        self.assertEqual(len(attempts),len(set(attempts)))
+        self.assertTrue(any(level > 0 for _,level in attempts))
+
+    def test_other_provider_failures_are_not_resubmitted_as_smaller_requests(self):
+        for code in ('local_summary_quota','local_summary_authentication','local_summary_content_filter',
+                     'local_summary_unavailable','local_summary_failed'):
+            calls = []
+            def fail(*args):
+                calls.append(args)
+                raise LegacyHistoryError(code,'Synthetic provider failure')
+            with self.subTest(code=code),self.assertRaises(LegacyHistoryError) as caught:
+                summarize_records([{'content':'x'*10000}],1048576,fail,cancelled=self.cancelled)
+            self.assertEqual(caught.exception.code,code)
+            self.assertEqual(len(calls),1)
+
+    def test_output_exhaustion_stops_at_small_input_and_respects_cancellation(self):
+        calls = []
+        def fail(*args):
+            calls.append(args)
+            raise LegacyHistoryError('local_summary_output_limit','No complete summary')
+        with self.assertRaises(LegacyHistoryError) as caught:
+            summarize_records([{'content':'x'*10000}],1048576,fail,cancelled=self.cancelled)
+        self.assertEqual(caught.exception.code,'local_summary_output_limit')
+        self.assertLessEqual(len(calls),9)
+        calls.clear()
+        def cancelled(*args):
+            self.cancelled.set()
+            return fail(*args)
+        with self.assertRaises(LegacyHistoryError) as caught:
+            summarize_records([{'content':'x'*10000}],1048576,cancelled,cancelled=self.cancelled)
+        self.assertEqual(caught.exception.code,'request_cancelled')
+        self.assertEqual(len(calls),1)
+
 
 if __name__=='__main__':unittest.main()

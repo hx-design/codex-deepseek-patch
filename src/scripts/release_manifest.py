@@ -55,6 +55,11 @@ REQUIRED_REGRESSIONS = frozenset((
     'test_native_widgets_complete_private_snapshot_and_close_headlessly',
     'test_native_update_card_badge_and_completion_share_the_settings_host',
     'test_native_window_loop_refreshes_and_closes_without_hiding_windows_gui',
+    'test_summary_terminal_reasons_are_specific_and_do_not_leak_upstream_text',
+    'test_truncated_summary_is_split_then_cached_only_after_full_recovery',
+    'test_output_exhaustion_splits_only_failing_input_without_losing_utf8',
+    'test_other_provider_failures_are_not_resubmitted_as_smaller_requests',
+    'test_output_exhaustion_stops_at_small_input_and_respects_cancellation',
 ))
 PLATFORM_REGRESSIONS = {
     'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler',

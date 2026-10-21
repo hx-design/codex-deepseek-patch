@@ -275,8 +275,13 @@ class SummaryFixture(http.server.BaseHTTPRequestHandler):
         text = 'Task goal MARKER_FACT; preserve constraints; pending verification.' if summary else 'TARGET_OK'
         response = {'id': 'resp_fixture', 'status': 'completed', 'model': body['model'],
             'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}]}
+        terminal = getattr(self.server,'summary_terminal',None) if summary else None
+        if summary and getattr(self.server,'summary_input_limit',0):
+            if len(body['input'][0]['content'][0]['text'].encode()) > self.server.summary_input_limit:
+                terminal = {'type':'response.incomplete','response':{'status':'incomplete',
+                    'incomplete_details':{'reason':'max_output_tokens'},'output':[]}}
         if body.get('stream'):
-            raw = ('data: ' + json.dumps({'type': 'response.completed', 'response': response}) + '\n\n').encode()
+            raw = ('data: ' + json.dumps(terminal or {'type': 'response.completed', 'response': response}) + '\n\n').encode()
             content_type = 'text/event-stream'
         else:
             raw, content_type = json.dumps(response).encode(), 'application/json'
@@ -358,6 +363,59 @@ class AdapterConversionTests(unittest.TestCase):
         self.assertEqual(json.loads(raw)['error']['code'], 'local_summary_http_429')
         self.assertEqual(len(self.upstream.records), 1)
         self.assertFalse(list(Path(self.profile['legacy_history_dir']).glob('*.json')))
+
+    def test_summary_terminal_reasons_are_specific_and_do_not_leak_upstream_text(self):
+        cases = [
+            ({'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'}},'local_summary_output_limit',502),
+            ({'status':'incomplete','incomplete_details':{'reason':'content_filter'}},'local_summary_content_filter',422),
+            ({'status':'failed','error':{'code':'insufficient_quota'}},'local_summary_quota',429),
+            ({'status':'failed','error':{'code':'rate_limit_exceeded'}},'local_summary_rate_limit',429),
+            ({'status':'failed','error':{'code':'invalid_api_key'}},'local_summary_authentication',401),
+            ({'status':'failed','error':{'code':'context_length_exceeded'}},'local_summary_context',400),
+            ({'status':'failed','error':{'code':'unknown-secret-code'}},'local_summary_failed',502),
+            ({'status':'completed','output':[{'type':'message','content':[
+                {'type':'output_text','text':'x'*24001}]}]},'local_summary_output_limit',502),
+        ]
+        for edition in ('ds','proxy'):
+            self.adapter.profile['edition'] = edition
+            for response,code,status in cases:
+                response = copy.deepcopy(response)
+                response.setdefault('error',{})['message'] = 'private-upstream-prompt-and-key'
+                self.upstream.summary_terminal = {'type':'response.'+response['status'],'response':response}
+                before = len(self.upstream.records)
+                with self.subTest(edition=edition,code=code):
+                    actual,raw = self.request()
+                    self.assertEqual(actual,status,raw)
+                    self.assertEqual(json.loads(raw)['error']['code'],code)
+                    self.assertNotIn(b'private-upstream',raw)
+                    self.assertNotIn(b'unknown-secret-code',raw)
+                    self.assertEqual(len(self.upstream.records)-before,1)
+                    self.assertFalse(list(Path(self.profile['legacy_history_dir']).glob('*.json')))
+
+    def test_truncated_summary_is_split_then_cached_only_after_full_recovery(self):
+        self.upstream.summary_input_limit = 1024
+        rows = self.rollout.read_text(encoding='utf-8')
+        rows = rows.replace('Task goal MARKER_FACT','Task goal MARKER_FACT ' + '事实🙂 '*1200)
+        self.rollout.write_text(rows,encoding='utf-8')
+        original = self.rollout.read_bytes()
+        for edition in ('ds','proxy'):
+            self.adapter.profile['edition'] = edition
+            self.upstream.records.clear()
+            for path in Path(self.profile['legacy_history_dir']).glob('*.json'):
+                path.unlink()
+            with self.subTest(edition=edition):
+                status,raw = self.request()
+                self.assertEqual(status,200,raw)
+                requests = [body for _,_,_,body in self.upstream.records]
+                summaries = [body for body in requests if body.get('tools') == []]
+                self.assertGreater(len(summaries),2)
+                self.assertLess(len(summaries),128)
+                self.assertEqual(self.rollout.read_bytes(),original)
+                self.assertTrue(all(body['model']=='deepseek-fixture' for body in requests))
+                self.assertTrue(list(Path(self.profile['legacy_history_dir']).glob('*.json')))
+                self.upstream.records.clear()
+                self.assertEqual(self.request()[0],200)
+                self.assertEqual(len(self.upstream.records),1)
 
     def test_exhausted_gpt_quota_does_not_block_uncached_opaque_history(self):
         self.upstream.fail_summary = True
