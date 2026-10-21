@@ -15,7 +15,9 @@ import re
 import socket
 import ssl
 import struct
+import subprocess
 import threading
+import time
 import zlib
 from urllib.parse import unquote, urlsplit
 
@@ -24,6 +26,54 @@ _GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
         'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length'}
+
+
+def zstd_body(data, *, decompress=True, node=None, cancelled=None):
+    """Use stdlib zstd, or the untouched Codex-bundled Node codec on older Python.
+
+    The short-lived codec has no network, credentials, files or model policy.
+    Bytes travel over pipes; Windows never creates a console. No pip dependency.
+    """
+    try:
+        from compression import zstd
+    except ImportError:
+        zstd = None
+    if cancelled and cancelled.is_set():
+        raise OSError('Request cancelled')
+    if zstd is not None:
+        try:
+            return zstd.decompress(data) if decompress else zstd.compress(data, level=3)
+        except zstd.ZstdError:
+            raise ValueError('Invalid native compressed request') from None
+    if not node:
+        raise ValueError('The native request compression codec is unavailable')
+    script = ('const fs=require("node:fs"),z=require("node:zlib");'
+              'try{const b=fs.readFileSync(0);process.stdout.write(z.' +
+              ('zstdDecompressSync' if decompress else 'zstdCompressSync') +
+              '(b));}catch(e){process.exitCode=1;}')
+    env = {k:v for k,v in os.environ.items() if k not in ('NODE_OPTIONS', 'NODE_PATH')}
+    process = subprocess.Popen([str(node), '-e', script], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+        **({'creationflags':0x08000000} if os.name == 'nt' else {}))
+    until = time.monotonic() + 120
+    try:
+        pending = data
+        while True:
+            if cancelled and cancelled.is_set():
+                raise OSError('Request cancelled')
+            if time.monotonic() >= until:
+                raise TimeoutError('Native request compression timed out')
+            try:
+                output, _ = process.communicate(pending, timeout=.1)
+                if process.returncode:
+                    raise ValueError('Invalid native compressed request or unavailable codec')
+                return output
+            except subprocess.TimeoutExpired:
+                pending = None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
 
 
 class WebSocketError(ConnectionError):
@@ -128,13 +178,15 @@ def _accept_deflate(value):
 
 
 class WebSocket:
-    def __init__(self, sock, reader=None, *, is_client=False, max_message=64_000_000, deflate=None):
-        if not isinstance(max_message, int) or max_message < 1:
+    def __init__(self, sock, reader=None, *, is_client=False, max_message=64_000_000, deflate=None,
+                 unbounded_send=False):
+        if max_message is not None and (not isinstance(max_message, int) or max_message < 1):
             raise ValueError('max_message must be positive')
         self.sock = sock
         self.reader = reader if reader is not None else sock.makefile('rb')
         self.is_client = is_client
         self.max_message = max_message
+        self.unbounded_send = unbounded_send
         self._write_lock = threading.Lock()
         self._message_lock = threading.Lock()
         self._closed = False
@@ -179,7 +231,7 @@ class WebSocket:
         if opcode >= 8:
             if not final or length > 125:
                 raise WebSocketError('Invalid WebSocket control frame')
-        elif length > (self.max_message + self.max_message // 1000 + 64
+        elif self.max_message is not None and length > (self.max_message + self.max_message // 1000 + 64
                        if compressed or compressed_message else remaining):
             raise _MessageTooLarge('WebSocket message exceeds limit')
         key = self._read(4) if masked else None
@@ -215,7 +267,7 @@ class WebSocket:
             payload = payload.encode('utf-8')
         else:
             payload = bytes(payload)
-        if len(payload) > self.max_message:
+        if not self.unbounded_send and self.max_message is not None and len(payload) > self.max_message:
             raise _MessageTooLarge('WebSocket message exceeds limit')
         if opcode == 1:
             payload.decode('utf-8')
@@ -254,7 +306,8 @@ class WebSocket:
         compressed_message = False
         try:
             while True:
-                frame = self._frame(self.max_message - len(chunks), compressed_message)
+                frame = self._frame(self.max_message - len(chunks) if self.max_message is not None else None,
+                                    compressed_message)
                 if frame is None:
                     if opcode is not None:
                         raise WebSocketError('Truncated fragmented WebSocket message')
@@ -292,8 +345,8 @@ class WebSocket:
                         self._decompressor = zlib.decompressobj(-self.deflate['incoming_bits'])
                 if compressed_message:
                     payload = self._decompressor.decompress(payload + (b'\x00\x00\xff\xff' if final else b''),
-                                                           self.max_message - len(chunks) + 1)
-                    if (len(payload) > self.max_message - len(chunks)
+                        self.max_message - len(chunks) + 1 if self.max_message is not None else 0)
+                    if (self.max_message is not None and len(payload) > self.max_message - len(chunks)
                             or self._decompressor.unconsumed_tail or self._decompressor.unused_data):
                         raise _MessageTooLarge('WebSocket decompressed message exceeds limit')
                 chunks.extend(payload)
@@ -411,7 +464,8 @@ def create_http_connection(url, *, timeout=60, proxy_url=None, ssl_context=None)
     return connection
 
 
-def connect_websocket(url, headers=None, *, timeout=60, max_message=64_000_000, ssl_context=None, proxy_url=None):
+def connect_websocket(url, headers=None, *, timeout=60, max_message=64_000_000, ssl_context=None, proxy_url=None,
+                      unbounded_send=False):
     """Connect directly to WS/WSS; return (WebSocket, response header pairs).
 
     TLS verifies hostname and trust by default. A custom context is useful for
@@ -452,7 +506,7 @@ def connect_websocket(url, headers=None, *, timeout=60, max_message=64_000_000, 
         deflate = (_deflate_configuration(_deflate_parameters(extension), is_client=True)
                    if extension else None)
         ws = WebSocket(connection.sock, response.fp, is_client=True,
-                       max_message=max_message, deflate=deflate)
+                       max_message=max_message, deflate=deflate, unbounded_send=unbounded_send)
         # Ownership moves to WebSocket. HTTPResponse.close() otherwise flushes
         # this reader again during GC after WS shutdown (an error on Python 3.13).
         response.fp = None

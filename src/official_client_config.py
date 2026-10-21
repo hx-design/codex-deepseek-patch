@@ -55,6 +55,8 @@ def _replace_section(text, table, updates):
         value = value.get(key, {})
         if not isinstance(value, dict):
             raise ValueError("Managed table is not a table")
+    if all(value.get(key) == replacement for key, replacement in updates.items()):
+        return text
     expected = copy.deepcopy(current)
     cursor = expected
     for key in table:
@@ -144,7 +146,7 @@ def adapt_catalog(catalog, routes, current_config, *, apply_root_preferences=Tru
             if window is not None and model.get("context_window"):
                 model["context_window"] = min(window, model.get("max_context_window") or model["context_window"])
             if compact is not None and model.get("context_window"):
-                model["auto_compact_token_limit"] = min(compact, model["context_window"] * 9 // 10)
+                model["auto_compact_token_limit"] = min(compact, model["context_window"])
     if not set(routes).issubset(seen):
         raise ValueError("Routing metadata refers to a model absent from the native catalog")
     return result
@@ -165,14 +167,14 @@ def migrate_legacy_routes(routes, current_config, preferences):
         if model in explicit:
             route["context_window"] = min(explicit[model], maximum) if explicit[model] is not None else maximum
             cap = route["context_window"] * 9 // 10
-            route["compact_limit"] = min(compact, cap) if compact is not None else cap
+            route["compact_limit"] = min(compact, route["context_window"]) if compact is not None else cap
         elif (route["provider"] == "deepseek-desktop"
               and current_config.get("model_provider", "openai") == "openai"
               and current_config.get("model_context_window") == route["context_window"]
               and route["context_window"] < maximum):
             route["context_window"] = maximum
             cap = maximum * 9 // 10
-            route["compact_limit"] = min(compact, cap) if compact is not None else cap
+            route["compact_limit"] = min(compact, maximum) if compact is not None else cap
     return result
 
 
@@ -206,8 +208,6 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
         for key, value in previous["root"].items():
             if before.get(key) != value:
                 raise ValueError("A managed setting was changed: " + key)
-        if before.get("features", {}).get("enable_request_compression") is not False:
-            raise ValueError("The managed request compression setting was changed")
     elif before.get("openai_base_url"):
         raise ValueError("An existing OpenAI endpoint needs an explicit migration source")
     prior_provider = before.get("model_providers", {}).get(PROVIDER)
@@ -222,7 +222,12 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
             raise ValueError("Keep the user's chosen provider until migration is verified")
         root['model_provider'] = 'openai'
     result = _replace_section(current, (), root)
-    result = _replace_section(result, ("features",), {"enable_request_compression": False})
+    # Older adapters disabled native compression. Undo that owned override once;
+    # subsequent user choices belong to Codex and are not managed by the patch.
+    if (previous and previous.get('compression_policy') != 'native'
+            and before.get('features', {}).get('enable_request_compression') is False):
+        result = _replace_section(result, ('features',),
+                                  {'enable_request_compression':previous['original_compression']})
     provider = None
     if mode == "native-summary":
         provider = {"name": "OpenAI", "base_url": base_url, "wire_api": "responses",
@@ -233,6 +238,8 @@ def prepare_config(current, catalog_path, base_url, *, mode="builtin", previous=
         provider = {**provider, "capabilities": {"remote_compaction": "unsupported"}}
     after = tomllib.loads(result)
     ownership = {"format": 1, "root": {key: after.get(key) for key in root}, "provider": provider,
+                 "compression_policy":"native",
+                 "compression_after":after.get('features', {}).get('enable_request_compression'),
                  "original_root": previous["original_root"] if previous else {key: before.get(key) for key in root},
                  "original_compression": previous["original_compression"] if previous else
                      before.get("features", {}).get("enable_request_compression")}
@@ -247,11 +254,13 @@ def restore_config(current, ownership):
     for key, value in ownership["root"].items():
         if before.get(key) != value:
             raise ValueError("A managed setting changed; review before restoring: " + key)
-    if before.get("features", {}).get("enable_request_compression") is not False:
+    legacy_compression = ownership.get('compression_policy') != 'native'
+    if legacy_compression and before.get("features", {}).get("enable_request_compression") is not False:
         raise ValueError("Managed compression setting changed; review before restoring")
     result = _replace_section(current, (), ownership["original_root"])
-    result = _replace_section(result, ("features",),
-                              {"enable_request_compression": ownership["original_compression"]})
+    if legacy_compression:
+        result = _replace_section(result, ("features",),
+                                  {"enable_request_compression": ownership["original_compression"]})
     provider = ownership.get("provider")
     if provider is not None:
         parsed = tomllib.loads(result)
@@ -300,6 +309,11 @@ def rollback_config(current, activated_ownership, previous_text):
     scoped["original_root"] = {key: previous.get(key) for key in keys}
     scoped["original_compression"] = previous.get("features", {}).get("enable_request_compression")
     result = restore_config(current, scoped)
+    restore_compression = (activated_ownership.get('compression_policy') != 'native'
+        or before.get('features', {}).get('enable_request_compression') == activated_ownership.get('compression_after'))
+    if restore_compression and activated_ownership.get('compression_policy') == 'native':
+        result = _replace_section(result, ('features',),
+            {'enable_request_compression':previous.get('features', {}).get('enable_request_compression')})
     prior_provider = previous.get("model_providers", {}).get(PROVIDER)
     if prior_provider is not None:
         # Restore the previous managed table verbatim, including its subtables.
@@ -320,7 +334,7 @@ def rollback_config(current, activated_ownership, previous_text):
             expected[key] = previous[key]
         else:
             expected.pop(key, None)
-    compression = previous.get("features", {}).get("enable_request_compression")
+    compression = (previous if restore_compression else before).get("features", {}).get("enable_request_compression")
     if compression is None:
         expected.setdefault("features", {}).pop("enable_request_compression", None)
     else:

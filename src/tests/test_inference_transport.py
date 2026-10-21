@@ -23,6 +23,21 @@ from inference_transport import (WebSocket, WebSocketError, accept_websocket,
                                  _accept_deflate, _deflate_configuration, _deflate_parameters)
 
 
+class NativeCompressionTests(unittest.TestCase):
+    def test_native_zstd_roundtrip_invalid_data_and_cancellation(self):
+        from inference_transport import zstd_body
+        node=os.environ.get('CODEX_TEST_COMPRESSION_NODE') or shutil.which('node')
+        if not node:self.skipTest('A zstd-capable vendor/test runtime is unavailable')
+        value=b'Native compression preserves images, tools and bytes.\x00\xff'*100000
+        wire=zstd_body(value,decompress=False,node=node)
+        self.assertLess(len(wire),len(value))
+        self.assertEqual(zstd_body(wire,node=node),value)
+        with self.assertRaises(ValueError):zstd_body(b'not-zstd-private-fixture',node=node)
+        cancelled=threading.Event();cancelled.set()
+        with self.assertRaisesRegex(OSError,'cancelled'):
+            zstd_body(wire,node=node,cancelled=cancelled)
+
+
 def frame(payload=b'', opcode=1, *, final=True, masked=True, rsv=0):
     key = b'abcd'
     prefix = bytes([(128 if final else 0) | rsv | opcode])
@@ -222,6 +237,24 @@ class FramesTests(unittest.TestCase):
             with self.assertRaisesRegex(WebSocketError, 'limit'):
                 ws.recv()
             self.assertEqual(bytes(sock.output), frame(struct.pack('!H', 1009), opcode=8, masked=False))
+
+    def test_native_requests_can_exceed_message_limit_without_unbounding_upstream_replies(self):
+        raw=b'native-image-history-' * 3_100_000
+        self.assertGreater(len(raw),64_000_000)
+        compressed=zlib.compressobj(wbits=-15)
+        payload=(compressed.compress(raw)+compressed.flush(zlib.Z_SYNC_FLUSH))[:-4]
+        sock=RecordingSocket()
+        receiver=WebSocket(sock,io.BytesIO(frame(payload,rsv=64)),max_message=None,
+                           deflate=_deflate_configuration({},is_client=False))
+        self.assertEqual(receiver.recv(),(1,raw))
+        receiver.close()
+        sock=RecordingSocket()
+        upstream=WebSocket(sock,io.BytesIO(frame(b'reply-too-large',masked=False)),is_client=True,
+            max_message=8,unbounded_send=True,deflate=_deflate_configuration({},is_client=True))
+        upstream.send(raw)
+        self.assertTrue(sock.output)
+        with self.assertRaisesRegex(WebSocketError,'limit'):
+            upstream.recv()
 
     def test_empty_close_is_echoed_and_eof_closes(self):
         for payload in (b'', struct.pack('!H', 1000) + b'bye'):

@@ -340,6 +340,19 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(transmitted,encoded(body))
                     self.assertEqual(headers['Authorization'],'Bearer native-fixture')
 
+    def test_external_slow_reasoning_uses_native_deadline_and_separate_auth(self):
+        factory=relay.create_http_connection
+        def short_connect(*args,**kwargs):
+            kwargs['timeout']=.03
+            return factory(*args,**kwargs)
+        for edition in ('ds','proxy'):
+            self.server.profile['edition']=edition
+            with self.subTest(edition=edition),patch.object(relay,'create_http_connection',side_effect=short_connect):
+                status,_,raw=self.request({'model':'deepseek-fixture','input':[],
+                    'metadata':{'fixture_delay':True}},headers={'Authorization':'Bearer native-fixture'})
+                self.assertEqual(status,200,raw)
+                self.assertEqual(self.upstream.seen[-1][1]['Authorization'],'Bearer independent-ds-fixture-key')
+
     def test_native_silent_websocket_wait_is_owned_by_client_for_early_and_late_connect(self):
         factory=relay.connect_websocket
         sockets=[]
@@ -374,7 +387,7 @@ class AdapterTests(unittest.TestCase):
         for path, headers, expected in [('/wrong/health', {}, 401),
             (self.path, {'Host': 'evil.invalid'}, 403),
             (self.path, {'Origin': 'https://evil.invalid'}, 403),
-            (self.path, {'Content-Encoding': 'zstd'}, 415),
+            (self.path, {'Content-Encoding': 'br'}, 415),
             (self.path + '/compact', {}, 501)]:
             with self.subTest(path=path, headers=headers):
                 actual, _, _ = self.request({'model': 'deepseek-fixture'}, path=path, headers=headers)
@@ -391,7 +404,7 @@ class AdapterTests(unittest.TestCase):
             drained.set()
         # Send headers separately: the client can read the error before sending
         # its remaining body, and the server must consume it before closing.
-        for header, expected in (("Host: evil.invalid",403),("Content-Encoding: zstd",415)):
+        for header, expected in (("Host: evil.invalid",403),("Content-Encoding: br",415)):
             with self.subTest(header=header):
                 drained.clear()
                 wire = socket.create_connection(('127.0.0.1',self.server.server_port),timeout=2)
@@ -412,6 +425,41 @@ class AdapterTests(unittest.TestCase):
                     self.assertTrue(drained.wait(1))
                 self.assertTrue(drains[-1])
         self.assertFalse(self.upstream.seen)
+
+    def test_native_large_image_requests_and_compaction_keep_bytes_and_auth(self):
+        # A legitimate image history can exceed 64 MB with few text tokens.
+        raw = encoded({'model':'gpt-fixture','input':[{'role':'user','content':[
+            {'type':'input_image','image_url':'data:image/png;base64,' + 'A' * 64_000_001}]}]})
+        for edition in ('ds', 'proxy'):
+            self.server.profile['edition'] = edition
+            for suffix in ('', '/compact'):
+                with self.subTest(edition=edition, suffix=suffix):
+                    conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=30)
+                    conn.request('POST', self.path + suffix, body=raw,
+                        headers={'Authorization':'Bearer native-fixture','ChatGPT-Account-ID':'fixture-account'})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status,200,response.read()[:200])
+                    response.read();conn.close()
+                    path, headers, received, _ = self.upstream.seen[-1]
+                    self.assertEqual(path,'/chatgpt/responses'+suffix)
+                    self.assertEqual(received,raw)
+                    self.assertEqual(headers['Authorization'],'Bearer native-fixture')
+                    self.upstream.seen.clear()
+
+    def test_upstream_payload_rejection_is_returned_without_local_retries(self):
+        original = self.upstream.RequestHandlerClass.do_POST
+        def reject(handler):
+            handler.rfile.read(int(handler.headers['Content-Length']))
+            handler.server.seen.append('rejected')
+            body=b'{"error":{"code":"provider_limit","message":"Provider payload limit"}}'
+            handler.send_response(413)
+            handler.send_header('Content-Length',str(len(body)))
+            handler.end_headers();handler.wfile.write(body)
+        with patch.object(self.upstream.RequestHandlerClass,'do_POST',reject):
+            status,_,raw=self.request({'model':'gpt-fixture','input':[]})
+        self.assertEqual(status,413)
+        self.assertEqual(json.loads(raw)['error']['code'],'provider_limit')
+        self.assertEqual(self.upstream.seen,['rejected'])
 
     def test_explicit_catalog_rejects_unknown_http_ws_and_hint_without_any_upstream(self):
         # Names are arbitrary: membership, rather than vendor-looking prefixes,

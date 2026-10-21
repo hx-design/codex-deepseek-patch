@@ -105,7 +105,7 @@ class Images:
             headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
         try:
             with self.opener.open(request, timeout=600) as response:
-                raw = response.read(64_000_001)
+                raw = response.read()
         except urllib.error.HTTPError as error:
             try:
                 raw_error = error.read(8193)
@@ -115,8 +115,6 @@ class Images:
             raise ImageError('CPA HTTP ' + str(error.code) + detail + '; request not retried') from None
         except (urllib.error.URLError, TimeoutError):
             raise ImageError('CPA connection failed; request not retried. Check original request before retrying.') from None
-        if len(raw) > 64_000_000:
-            raise ImageError('CPA response exceeds 64 MB')
         try:
             result = json.loads(raw)
         except (ValueError, UnicodeError):
@@ -137,8 +135,8 @@ class Images:
         if set(args) - allowed:
             raise ImageError('Unknown image arguments')
         model, prompt = args.get('model'), args.get('prompt')
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 100000:
-            raise ImageError('A nonempty prompt of at most 100000 characters is required')
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ImageError('A nonempty prompt is required')
         if not image_model(model) or model not in {row['model'] for row in self.models()}:
             raise ImageError('Choose an image model returned by list_image_models')
         for field in ('output_dir', 'aspect_ratio', 'resolution', 'size', 'background'):
@@ -155,16 +153,14 @@ class Images:
         os.close(probe_fd)
         Path(probe_path).unlink()
         refs = args.get('referenced_image_paths', [])
-        if not isinstance(refs, list) or len(refs) > 5:
-            raise ImageError('Provide at most 5 reference image paths')
+        if not isinstance(refs, list):
+            raise ImageError('Reference image paths must be a list')
         reference_parts = []
         for name in refs:
             if not isinstance(name, str) or not Path(name).is_absolute():
                 raise ImageError('Reference paths must be absolute')
             with Path(name).open('rb') as reference:
-                data = reference.read(16_000_001)
-            if len(data) > 16_000_000:
-                raise ImageError('Reference image exceeds 16 MB')
+                data = reference.read()
             mime, _ = image_type(data)
             reference_parts.append({'mimeType': mime, 'data': base64.b64encode(data).decode()})
         if model.startswith('gemini-'):

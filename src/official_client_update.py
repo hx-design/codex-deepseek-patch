@@ -48,8 +48,8 @@ def managed_configuration(directory, manifest, home):
     current = p.tomllib.loads(p.read_config(Path(home) / "config.toml"))
     for key, expected in owned["root"].items():
         p.require(current.get(key) == expected, "A managed native setting changed: " + key)
-    p.require(current.get("features", {}).get("enable_request_compression") is False,
-              "The managed native request compression setting changed")
+    # Compression belongs to the native client/user. Legacy false overrides
+    # are migrated at staging; independent user changes must not block updates.
     if owned.get("provider") is not None:
         p.require(current.get("model_providers", {}).get(PROVIDER) == owned["provider"],
                   "The managed native provider changed")
