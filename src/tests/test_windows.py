@@ -39,16 +39,22 @@ class BackgroundProcessTests(unittest.TestCase):
         import subprocess
         import time
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);app=root/'app';outside=root/'other'
+            root=Path(temp);app=root/'isolated application directory';outside=root/'other'
             (app/'resources').mkdir(parents=True);outside.mkdir()
             (app/'resources/app.asar').write_bytes(b'isolated fixture')
             source=Path(os.environ['SystemRoot'])/'System32/ping.exe'
+            import ctypes
+            from ctypes import wintypes
+            kernel=ctypes.WinDLL('kernel32');kernel.GetShortPathNameW.argtypes=[wintypes.LPCWSTR,wintypes.LPWSTR,wintypes.DWORD]
             paths=[app/'backend.exe',app/'resources/codex-windows-sandbox-service.exe',outside/'backend.exe']
             children=[]
             try:
                 for path in paths:
                     shutil.copy2(source,path)
-                    children.append(subprocess.Popen([str(path),'-n','60','127.0.0.1'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**win.background_options()))
+                    short=ctypes.create_unicode_buffer(32768)
+                    length=kernel.GetShortPathNameW(str(path),short,len(short))
+                    executable=short.value if 0<length<len(short) else str(path)
+                    children.append(subprocess.Popen([executable,'-n','60','127.0.0.1'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**win.background_options()))
                 time.sleep(.2)
                 self.assertTrue(all(p.poll() is None for p in children))
                 win.close_app_handles([app])

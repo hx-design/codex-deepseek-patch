@@ -79,10 +79,13 @@ def close_app_handles(targets):
             handle=kernel.OpenProcess(0x1000|0x100000|0x0001,False,pid)
             if not handle:continue
             path=ctypes.create_unicode_buffer(32768);size=w.DWORD(len(path));session=w.DWORD()
-            valid=(kernel.QueryFullProcessImageNameW(handle,0,path,ctypes.byref(size))
-                   and kernel.ProcessIdToSessionId(pid,ctypes.byref(session)) and session.value==current.value
-                   and any(ntpath.normcase(path.value).startswith(root) for root in roots)
-                   and ntpath.basename(path.value).casefold()!='codex-windows-sandbox-service.exe')
+            queried=kernel.QueryFullProcessImageNameW(handle,0,path,ctypes.byref(size))
+            # Windows may return the 8.3 spelling used at launch. Compare the
+            # resolved path on both sides (also follows junctions consistently).
+            executable=ntpath.normcase(str(Path(path.value).resolve())) if queried else ''
+            valid=(queried and kernel.ProcessIdToSessionId(pid,ctypes.byref(session)) and session.value==current.value
+                   and any(executable.startswith(root) for root in roots)
+                   and ntpath.basename(executable).casefold()!='codex-windows-sandbox-service.exe')
             if valid:handles[pid]=handle
             else:kernel.CloseHandle(handle)
         user=ctypes.WinDLL('user32',use_last_error=True)
