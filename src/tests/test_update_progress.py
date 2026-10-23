@@ -48,7 +48,7 @@ class ProgressTest(unittest.TestCase):
     def test_only_sanitized_fixed_ui_fields(self):
         self.progress.publish('failed')
         value=self.progress.read()
-        self.assertEqual(set(value),{'format','id','edition','version','phase','title','detail','completed','total','can_start','can_launch','phase_started_at'})
+        self.assertEqual(set(value),{'format','id','edition','version','phase','title','detail','completed','total','can_start','can_launch','can_cancel','unit','percent','display','phase_started_at'})
         self.assertNotIn(str(self.root),json.dumps(value))
         self.assertFalse(value['can_start']);self.assertFalse(value['can_launch'])
 
@@ -79,6 +79,7 @@ class ProgressTest(unittest.TestCase):
         for phase in ('available','checking','failed','completed','waiting_for_exit',
                       'installing','verifying'):
             with self.subTest(phase=phase):
+                self.identity=self.progress.begin('proxy','0.5.0-proxy.1','case-'+phase)
                 self.progress.publish(phase)
                 with mock.patch.object(u,'worker_progress',return_value=self.progress), \
                      mock.patch.object(update_worker,'execute',return_value={'identity':'same'}):
@@ -98,7 +99,7 @@ class ProgressTest(unittest.TestCase):
         self.assertFalse(self.progress.requested());self.spawn_mock.assert_not_called()
 
     def test_start_during_verification_is_durable_and_not_close(self):
-        self.settings();self.build();self.progress.publish('verifying')
+        self.settings();self.progress.publish('verifying')
         with mock.patch.object(u,'graceful_close') as close:
             u.action(self.root,self.identity,'start')
         close.assert_not_called();self.assertTrue(self.progress.requested())
@@ -106,6 +107,9 @@ class ProgressTest(unittest.TestCase):
         self.assertIn('run-once',self.spawn_mock.call_args.args[0])
 
     def test_native_worker_after_verification_consumes_start(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}).start()
+        mock.patch('official_client_host.activity_status',return_value={'known':True,'acquired':True}).start()
         self.settings();directory,manifest=self.build()
         monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
         with mock.patch('official_client_install.validate_build') as validate, \
@@ -129,6 +133,9 @@ class ProgressTest(unittest.TestCase):
         close.assert_not_called()
 
     def test_legacy_deployment_also_quits_on_migration(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}).start()
+        mock.patch('official_client_host.activity_status',return_value={'known':True,'acquired':True}).start()
         directory,manifest=self.build();prior=self.root/'legacy';prior.mkdir()
         manifest['legacy_baseline']=str(prior)
         monitor.atomic_json(prior/'manifest.json',{'deployment_target':str(self.root/'legacy-app')})
@@ -335,6 +342,26 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(command[:3],['/usr/bin/arch','-'+machine,'/usr/bin/osascript'])
             self.assertEqual(command[-1],'/private/state with spaces')
 
+    def test_same_candidate_recheck_preserves_start_and_verified_build(self):
+        settings=self.settings()
+        for phase in ('available','checking','waiting_for_exit','failed','completed'):
+            with self.subTest(phase=phase),mock.patch('updater.runtime_digest',return_value='stable-'+phase), \
+                 mock.patch('updater.edition',return_value={'version':'1.0'}), \
+                 mock.patch('patch.app_layout',side_effect=ValueError('fixture')):
+                progress=u.for_settings(settings,force=True)
+                progress.publish(phase,build=self.root/'prepared')
+                monitor.atomic_json(self.root/'progress.request.json',{'id':progress.read()['id'],'action':'start'})
+                identity=progress.read()['id']
+                again=u.for_settings(settings,force=True)
+                self.assertEqual(again.read()['id'],identity);self.assertTrue(again.requested())
+                self.assertEqual(again.read()['phase'],phase)
+                self.assertEqual(monitor.load_json(self.root/'progress.context.json')['build'],str(self.root/'prepared'))
+
+    def test_new_monitor_identity_probe_does_not_raise_or_rebind_progress(self):
+        with mock.patch.object(u,'for_settings') as make:
+            self.assertIsNone(u.worker_progress('identity',{'quiet_progress':True},self.root/'identity/worker-identity.json'))
+        make.assert_not_called()
+
     def test_mac_normal_close_exact_paths_no_kill(self):
         with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u.subprocess,'run') as run:
             u.graceful_close(['/Applications/Codex.app'])
@@ -347,7 +374,10 @@ class ProgressTest(unittest.TestCase):
         manifest={'status':'installed','target':str(self.root/'app')}
         entry={'target':'C:/Windows/explorer.exe','app_user_model_id':'OpenAI.Codex_abc123!App'}
         with mock.patch.object(u.sys,'platform','win32'),mock.patch('official_client_update.verify_official'), \
-             mock.patch('official_client_shortcut.official_entry',return_value=entry):
+             mock.patch('official_client_shortcut.official_entry',return_value=entry), \
+             mock.patch.object(patch,'app_layout',return_value={'exe':self.root/'app'/'Codex.exe'}), \
+             mock.patch.object(patch,'active_app_processes',return_value=[{'exe':str(self.root/'app'/'Codex.exe')}]), \
+             mock.patch('official_client_host.healthy',return_value=True):
             u.launch_official(self.root,manifest)
         self.assertEqual(self.spawn_mock.call_args.args[0],['C:/Windows/explorer.exe','shell:AppsFolder\\OpenAI.Codex_abc123!App'])
         self.spawn_mock.reset_mock()
@@ -356,7 +386,27 @@ class ProgressTest(unittest.TestCase):
             with self.assertRaises(ValueError):u.launch_official(self.root,manifest)
         self.spawn_mock.assert_not_called()
 
+    def test_ready_start_uses_local_install_path_and_no_second_check(self):
+        self.settings();self.build();self.progress.publish('waiting_for_exit')
+        with mock.patch.object(u,'validated_close',return_value=True):
+            u.action(self.root,self.identity,'start')
+        self.assertIn('--install-ready',self.spawn_mock.call_args.args[0])
+
+    def test_exit_failure_keeps_prepared_update_actionable(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}).start()
+        mock.patch('official_client_host.activity_status',return_value={'known':True,'acquired':True}).start()
+        self.settings();self.build();self.progress.publish('waiting_for_exit')
+        monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'graceful_close',side_effect=OSError('fixture denied')):
+            self.assertFalse(u.validated_close(self.progress))
+        self.assertEqual(self.progress.read()['phase'],'close_failed');self.assertTrue(self.progress.read()['can_start'])
+
     def test_quit_timeout_offers_manual_exit_or_retry(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}).start()
+        mock.patch('official_client_host.activity_status',return_value={'known':True,'acquired':True}).start()
         self.build()
         monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
         with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
@@ -364,7 +414,7 @@ class ProgressTest(unittest.TestCase):
              mock.patch.object(u.time,'sleep'):
             self.assertFalse(u.validated_close(self.progress))
         value=self.progress.read()
-        self.assertEqual(value['phase'],'waiting_for_exit');self.assertTrue(value['can_start'])
+        self.assertEqual(value['phase'],'close_failed');self.assertTrue(value['can_start'])
         self.assertIn('手动退出',value['detail']);self.assertTrue(self.progress.requested())
 
     def test_corrupted_view_state_is_optional_and_actions_fail_closed(self):
@@ -422,8 +472,10 @@ class ProgressTest(unittest.TestCase):
         with mock.patch.object(updater.subprocess,'run',return_value=mock.Mock(returncode=0,stderr='')):
             updater.source_package(release,self.root,lambda url:contents[url.split('/'+release['commit']+'/',1)[1]],progress)
         counts=[v.args[1:] for v in progress.publish.call_args_list if v.args[0]=='downloading']
-        self.assertEqual(counts,[(i,len(contents)) for i in range(len(contents)+1)])
-        self.assertEqual(progress.publish.call_args_list[-1].args,('verifying',))
+        self.assertTrue(counts)
+        self.assertTrue(all(total is None for _,total in counts))
+        self.assertTrue(all(call.kwargs.get('unit')=='bytes' for call in progress.publish.call_args_list if call.args[0]=='downloading'))
+        self.assertEqual(progress.publish.call_args_list[-1].args,('checking_package',len(contents)+1,len(contents)+1))
 
     def test_corrupted_progress_does_not_block_committed_runtime_activation(self):
         directory,manifest=self.build(status='installed')
@@ -477,7 +529,7 @@ class ProgressTest(unittest.TestCase):
         with mock.patch.object(patch,'ARCHITECTURE','official-client-v1'),mock.patch('official_client.stage') as stage, \
              mock.patch.object(update_worker,'verify_build') as verify,mock.patch.object(u,'validated_close') as close:
             result=update_worker.execute('build',job,progress)
-        verify.assert_called_once_with(output);close.assert_called_once_with(progress)
+        verify.assert_called_once_with(output,progress);close.assert_called_once_with(progress)
         self.assertEqual(stage.call_args.kwargs['update_metadata']['progress_id'],'test')
         self.assertEqual([v.args[0] for v in progress.publish.call_args_list],['building','verifying','waiting_for_exit'])
         self.assertEqual(result['status'],'prepared')
@@ -573,3 +625,70 @@ class NativeActivationRecoveryTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class TransactionProgressTests(unittest.TestCase):
+    setUp=ProgressTest.setUp
+    settings=ProgressTest.settings
+    build=ProgressTest.build
+    def test_order_fence_and_actual_counts_survive_old_writer(self):
+        self.progress.publish('downloading',80,100,unit='bytes')
+        self.progress.publish('downloading',30,100,unit='bytes')
+        self.assertEqual(self.progress.read()['percent'],80)
+        self.progress.publish('verifying',4,16,unit='checks')
+        outer=monitor.load_json(self.root/'progress.json');outer.update(phase='available',title='stale')
+        monitor.atomic_json(self.root/'progress.json',outer)
+        self.assertEqual(self.progress.read()['phase'],'verifying')
+        self.progress.publish('building');self.assertEqual(self.progress.read()['percent'],25)
+        old=u.Progress(self.root);self.progress.begin('ds','2.0','different')
+        old.publish('failed');self.assertEqual(self.progress.read()['phase'],'available')
+
+    def test_one_click_wait_cancel_and_restart_keep_prepared_package(self):
+        self.settings();directory,_=self.build()
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}), \
+             mock.patch('official_client_host.activity_status',return_value={'known':True,'requests':1,'tools':1,'acquired':False}), \
+             mock.patch.object(u,'graceful_close') as close:
+            u.action(self.root,self.identity,'start')
+            self.assertEqual(self.progress.read()['phase'],'waiting_for_idle')
+            self.assertTrue(self.progress.read()['can_cancel']);self.assertTrue(self.progress.requested())
+            self.assertEqual(monitor.load_json(self.root/'progress.request.json')['action'],'wait_idle')
+            close.assert_not_called()
+            u.action(self.root,self.identity,'cancel')
+            self.assertTrue(self.progress.paused());self.assertTrue(directory.exists())
+            with self.assertRaises(patch.AppRunningError):update_worker.execute('install',{'directory':str(directory)},self.progress)
+            u.action(self.root,self.identity,'start');self.assertFalse(self.progress.paused())
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'previous_host_settings',return_value={'fixture':True}), \
+             mock.patch('official_client_host.activity_status',return_value={'known':True,'acquired':True}), \
+             mock.patch.object(u,'graceful_close') as close,mock.patch.object(patch,'require_stopped'):
+            self.assertTrue(u.validated_close(self.progress));close.assert_called_once()
+        self.assertFalse(self.progress.read()['can_cancel'])
+        with self.assertRaises(ValueError):u.action(self.root,self.identity,'cancel')
+
+    def test_unknown_activity_waits_for_exit_and_timeout_retains_build(self):
+        self.settings();directory,_=self.build()
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'graceful_close') as close:
+            u.action(self.root,self.identity,'start');close.assert_not_called()
+        request=monitor.load_json(self.root/'progress.request.json')
+        self.assertTrue(u.wait_expired(self.progress,request['at']+3601))
+        self.assertTrue(self.progress.paused());self.assertTrue(directory.exists())
+        self.assertTrue(self.progress.read()['can_start'])
+
+    def test_rollback_phase_is_terminal_until_explicit_retry(self):
+        self.progress.publish('installing');self.progress.publish('recovering');self.progress.publish('rolled_back')
+        for phase in ('completed','available','building','failed'):self.progress.publish(phase)
+        self.assertEqual(self.progress.read()['phase'],'rolled_back')
+        self.progress.retry();self.assertEqual(self.progress.read()['phase'],'available')
+
+    def test_old_close_guard_is_fenced_and_new_controller_defers_unknown_activity(self):
+        self.settings();directory,manifest=self.build()
+        manifest['status']='prepared_idle';monitor.atomic_json(directory/'manifest.json',manifest)
+        # Published old controllers check this state before any exit request.
+        self.assertNotEqual(manifest['status'],'prepared')
+        monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'graceful_close') as close:
+            self.assertFalse(u.validated_close(self.progress));close.assert_not_called()
+        self.assertEqual(self.progress.read()['phase'],'waiting_for_idle')
+        self.assertEqual(monitor.load_json(self.root/'progress.request.json')['action'],'wait_idle')

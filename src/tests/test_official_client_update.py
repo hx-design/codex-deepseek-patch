@@ -159,7 +159,7 @@ class WorkerTests(unittest.TestCase):
         for status in ('passed','failed'):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp);record={'architecture':native.ARCHITECTURE,'edition':'ds','source_target':'/official',
-                    'native_probe':'passed','native_probe_report':'previous-run'}
+                    'native_probe':'passed','native_probe_report':'previous-run','status':'prepared','update':{'monitor_state_dir':str(root)}}
                 from official_client import ADAPTER_FILES
                 record['runtime_sha256']={}
                 for name in ADAPTER_FILES:
@@ -176,6 +176,7 @@ class WorkerTests(unittest.TestCase):
                 run.assert_called_once_with(Path('/official'),root/'native-probe','ds');old.assert_not_called()
                 self.assertEqual(json.loads((root/'manifest.json').read_text()).get('native_probe'),
                                  'passed' if status=='passed' else None)
+                if status=='passed':self.assertEqual(json.loads((root/'manifest.json').read_text())['status'],'prepared_idle')
 
     def test_native_install_does_not_call_legacy_bundle_installer(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -253,7 +254,7 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
                'official_client_config.py','official_client_host.py','inference_adapter.py',
                'inference_transport.py','legacy_history.py','reasoning_origin.py','chat_completions_compat.py',
                'official_client_migration.py','scripts/test_official_client.py',
-               'update_progress.py','update_progress_macos.js','update_progress.ps1'}
+               'update_progress.py','update_progress_macos.js','update_progress.ps1','tests/test_official_client_update.py'}
         names.update(name.replace('.','/')+'.py' for name in updater.NATIVE_PREFLIGHT_MODULES)
         contents.update({name:b'fixture\n' for name in names})
         value['files']={name:hashlib.sha256(raw).hexdigest() for name,raw in contents.items()}
@@ -261,10 +262,14 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, mock.object(updater.shutil,'which',return_value=None), \
              mock.object(updater.subprocess,'run',return_value=Mock(returncode=0,stderr='')) as runner:
             updater.source_package(value,temp,lambda url:contents[url.split('/'+value['commit']+'/',1)[1]])
-        self.assertEqual(runner.call_count,1)
+        self.assertEqual(runner.call_count,2)
+        self.assertEqual(runner.call_args_list[0].args[0][:2],[sys.executable,'-c'])
+        self.assertIn('ast.parse',runner.call_args_list[0].args[0][2])
         command=runner.call_args.args[0]
         self.assertEqual(command[:3],[sys.executable,'-m','unittest'])
-        self.assertIn('tests.test_official_client_update',command)
+        self.assertIn('tests.test_official_client_config',command)
+        self.assertNotIn('tests.test_management',command)
+        self.assertNotIn('tests.test_official_client_install',command)
         self.assertNotIn('tests/route.test.cjs',command)
 
     def test_native_baseline_refuses_a_legacy_candidate_even_without_update_metadata(self):
@@ -293,7 +298,7 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
 class DiscoveryOrderingTests(unittest.TestCase):
     def test_store_package_is_rediscovered_before_model_refresh(self):
         obj=object.__new__(updater.UpdateBackend)
-        obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
+        obj.package=p.ROOT;obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
         obj.base=Mock(spec=['app','baseline','snapshot'],app=Path('/Store/removed-old'),baseline=None)
         def discover():
@@ -310,7 +315,7 @@ class DiscoveryOrderingTests(unittest.TestCase):
 
     def test_native_discovery_does_not_repeat_full_signature_and_hash_check(self):
         obj=object.__new__(updater.UpdateBackend)
-        obj.prepared=False;obj.settings={'app':'/Store/old'}
+        obj.package=p.ROOT;obj.prepared=False;obj.settings={'app':'/Store/old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
         obj.base=Mock(app=Path('/Store/old'),baseline=None)
         def discover():obj.base.app=Path('/Store/current')

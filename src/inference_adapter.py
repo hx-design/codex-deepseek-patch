@@ -519,6 +519,102 @@ def _route_compaction(handler, body, route, operation):
         raise RelayError(exc.status, exc.code, exc.message) from None
 
 
+class Activity:
+    """Metadata-only idle/drain protocol on the existing authenticated listener."""
+    def __init__(self, clock=time.monotonic):
+        self.lock=threading.RLock();self.clock=clock;self.active=set();self.tools={};self.unknown=set()
+        self.last=clock();self.lease=None;self.until=0
+
+    def begin(self, owner):
+        with self.lock:
+            if self.lease and self.clock()<self.until:
+                raise RelayError(503,'patch_update_pending','The model patch is restarting; retry shortly')
+            self.active.add(owner);self.last=self.clock()
+
+    def end(self, owner):
+        with self.lock:
+            if owner in self.active:self.active.remove(owner);self.last=self.clock()
+
+    def consume(self, body):
+        values=body.get('input',[])
+        if not isinstance(values,list):return
+        with self.lock:
+            for value in values:
+                if isinstance(value,dict) and value.get('type','').endswith('_output'):
+                    self.tools.pop(value.get('call_id'),None)
+
+    def observe(self, owner, value):
+        if not isinstance(value,dict):return
+        with self.lock:
+            if value.get('type') in ('response.failed','response.incomplete','error'):
+                self.cancel(owner);return
+            response=value.get('response',value)
+            items=response.get('output',[]) if isinstance(response,dict) else []
+            item=value.get('item')
+            if isinstance(item,dict):items=[item]
+            if not isinstance(items,list):return
+            for item in items:
+                if isinstance(item,dict) and item.get('type') in ('function_call','custom_tool_call','tool_search_call','computer_call','local_shell_call'):
+                    call=item.get('call_id')
+                    if isinstance(call,str):self.tools[call]=owner
+            if value.get('type')=='response.completed':self.unknown.discard(owner)
+
+    def cancel(self, owner):
+        with self.lock:
+            self.tools={k:v for k,v in self.tools.items() if v!=owner};self.unknown.discard(owner)
+
+    def status(self):
+        with self.lock:
+            return {'requests':len(self.active),'tools':len(self.tools),'unknown':len(self.unknown),
+                'idle_for':max(0,self.clock()-self.last),'draining':bool(self.lease and self.clock()<self.until)}
+
+    def drain(self, lease, release=False):
+        with self.lock:
+            if release:
+                if self.lease==lease:self.lease=None;self.until=0
+                return True
+            if self.active or self.tools or self.unknown or self.clock()-self.last<10:return False
+            if self.lease and self.clock()<self.until and self.lease!=lease:return False
+            self.lease=lease;self.until=self.clock()+120
+            return True
+
+
+class ActivityStream:
+    """Observe SSE/JSON metadata without altering bytes, framing or inference limits."""
+    def __init__(self, activity, owner, sse=True):
+        self.activity,self.owner,self.sse=activity,owner,sse
+        self.buffer=b'';self.discard=False
+
+    def feed(self, chunk):
+        # This bound applies only to optional observation. An uninspectable
+        # response holds automatic installation; the original bytes still flow.
+        if not self.sse:
+            if len(self.buffer)+len(chunk)<=262144:self.buffer+=chunk
+            else:self.buffer=b'';self.discard=True
+            return
+        for part in chunk.splitlines(keepends=True):
+            if not self.discard:
+                if len(self.buffer)+len(part)<=262144:self.buffer+=part
+                else:
+                    self.buffer=b'';self.discard=True
+                    with self.activity.lock:self.activity.unknown.add(self.owner)
+            if part.endswith(b'\n'):
+                if not self.discard:
+                    line=self.buffer.strip()
+                    if line.startswith(b'data:'):self.parse(line[5:].strip())
+                self.buffer=b'';self.discard=False
+
+    def parse(self, raw):
+        try:self.activity.observe(self.owner,json.loads(raw))
+        except (ValueError,TypeError):pass
+
+    def finish(self):
+        if not self.sse:
+            if self.discard:
+                with self.activity.lock:self.activity.unknown.add(self.owner)
+            else:self.parse(self.buffer)
+
+
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -535,6 +631,7 @@ def create_server(profile, *, credential_reader=read_credential, session_factory
     server.session_factory = session_factory or WebSocketSession
     server.legacy_origin_index = LegacyOriginIndex(profile['legacy_origins_file']) if profile.get('legacy_origins_file') else None
     server.active, server.last_activity = 0, time.monotonic()
+    server.activity=Activity()
     return server
 
 
@@ -616,7 +713,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             endpoint = self.boundary()
             if endpoint == '/health':
                 p = self.server.profile
-                self.reply(200, {'ok': True, 'identity': p['identity'], 'edition': p['edition']})
+                self.reply(200, {'ok': True, 'identity': p['identity'], 'edition': p['edition'],
+                    'pid':__import__('os').getpid(),'update_control':1,'activity':self.server.activity.status()})
             elif endpoint == '/backend-api/codex/responses' and self.headers.get('Upgrade', '').lower() == 'websocket':
                 self.server.active += 1
                 upstream = None
@@ -668,16 +766,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         started = False
+        owner=object()
+        observed=False
         forwarded = False
         sent = False
         operation = Operation()
         stop = threading.Event()
         try:
             endpoint = self.boundary()
+            if endpoint=='/maintenance':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=1024:raise RelayError(400,'invalid_control','Invalid update control')
+                value=json.loads(self.rfile.read(length));self.body_bytes_read=length
+                lease=value.get('lease','')
+                if not re.fullmatch('[a-f0-9]{32}',lease) or value.get('action') not in ('drain','release'):
+                    raise RelayError(400,'invalid_control','Invalid update control')
+                acquired=self.server.activity.drain(lease,value['action']=='release')
+                self.reply(200,{'ok':True,'identity':self.server.profile['identity'],'edition':self.server.profile['edition'],
+                    'acquired':acquired,'update_control':1,'activity':self.server.activity.status()});return
             standalone_compaction = endpoint == '/backend-api/codex/responses/compact'
             if endpoint != '/backend-api/codex/responses' and not standalone_compaction:
                 self.forward_official(endpoint)
                 return
+            self.server.activity.begin(owner);observed=True
             encoding = self.headers.get('Content-Encoding', 'identity').lower()
             if encoding not in ('identity', 'zstd'):
                 raise RelayError(415, 'unsupported_encoding', 'Unsupported native request encoding')
@@ -702,6 +813,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = json.loads(decoded)
             del decoded
             _check_body(body)
+            self.server.activity.consume(body)
             _check_model(self.server.profile, body['model'])
             route = self.server.profile['routes'].get(body['model'])
             if standalone_compaction and route:
@@ -754,7 +866,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     value = json.loads(data)
                     value = protocol.response(value) if protocol else value
                     value = adapter.response(value) if adapter else value
-                    payload = _json(stamp_response(value, body['model']))
+                    value=stamp_response(value,body['model']);self.server.activity.observe(owner,value)
+                    payload = _json(value)
                 self.send_response(response.status)
                 for name, value in response_headers:
                     self.send_header(name, value)
@@ -776,12 +889,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     for event in _wire_events(response, protocol):
                         for converted in _adapt_events(adapter, event):
                             converted = stamp_event(converted, body['model'])
+                            self.server.activity.observe(owner,converted)
                             self.wfile.write(b'event: ' + converted['type'].encode() + b'\ndata: ' + _json(converted) + b'\n\n')
                             self.wfile.flush()
                 else:
+                    observer=ActivityStream(self.server.activity,owner,'text/event-stream' in content_type)
                     while chunk := response.read1(16384):
+                        if not standalone_compaction:observer.feed(chunk)
                         self.wfile.write(chunk)
                         self.wfile.flush()
+                    if not standalone_compaction:observer.finish()
         except RelayError as exc:
             if not sent:
                 self.reply(exc.status, _error(exc.code, exc.message))
@@ -795,6 +912,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             stop.set()
             operation.cancel()
+            if observed:self.server.activity.end(owner)
             if started:
                 self.server.active -= 1
                 self.server.last_activity = time.monotonic()
@@ -864,6 +982,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if length:
             headers.append(('Content-Length', str(length)))
         operation, stop = Operation(), threading.Event()
+        owner=object();self.server.activity.begin(owner)
         self.server.active += 1
         sent = False
         try:
@@ -887,6 +1006,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             stop.set()
             operation.cancel()
+            self.server.activity.end(owner)
             self.server.active -= 1
             self.server.last_activity = time.monotonic()
 
@@ -921,11 +1041,21 @@ class WebSocketSession:
         self.upstream = upstream
         self.upstream_lock = threading.Lock()
         self.request_id = 0
-        self.active = False
+        self._active = False
+        self.activity_owner=object()
         self.mode = None
         self.history = None
         self.pending_input = None
         self.client.on_control = self.client_control
+
+    @property
+    def active(self):return self._active
+
+    @active.setter
+    def active(self, value):
+        if value and not self._active:self.handler.server.activity.begin(self.activity_owner)
+        elif not value and self._active:self.handler.server.activity.end(self.activity_owner)
+        self._active=value
 
     def client_control(self, opcode, payload):
         upstream = self.upstream
@@ -990,6 +1120,7 @@ class WebSocketSession:
                                 continue
                             if not isinstance(value, dict):
                                 continue
+                            self.handler.server.activity.observe(self.activity_owner,value)
                             if value.get('type') in TERMINAL:
                                 self.active = False
                                 if request_id != 'gpt' and value['type'] == 'response.completed':
@@ -1000,13 +1131,16 @@ class WebSocketSession:
                     _, request_id, code, message, *status = event
                     if request_id == self.request_id or request_id == 'gpt' and self.active and self.mode == 'gpt':
                         self.fail(code, message, status[0] if status else 502)
+                        self.handler.server.activity.cancel(self.activity_owner)
                         self.active = False
                 elif event[0] == 'finished' and event[1] == self.request_id and self.active:
                     self.fail('truncated_stream', 'Upstream stream ended before a terminal response')
+                    self.handler.server.activity.cancel(self.activity_owner)
                     self.active = False
         except (OSError, WebSocketError):
             pass
         finally:
+            self.active=False
             self.closed.set()
             if self.operation:
                 self.operation.cancel()
@@ -1027,6 +1161,7 @@ class WebSocketSession:
             if not isinstance(body, dict):
                 raise ValueError()
             if body.get('type') in ('response.cancel', 'response.steer', 'response.interrupt'):
+                if body['type']=='response.cancel':self.handler.server.activity.cancel(self.activity_owner)
                 if self.mode == 'gpt' and self.upstream:
                     self.upstream.send(payload)
                 elif body['type'] == 'response.cancel':
@@ -1044,6 +1179,7 @@ class WebSocketSession:
                 raise RelayError(409, 'response_in_progress', 'A response is already in progress')
             _check_body(body)
             _check_model(self.handler.server.profile, body['model'])
+            self.handler.server.activity.consume(body)
             route = self.handler.server.profile['routes'].get(body['model'])
             if route:
                 previous = body.get('previous_response_id')

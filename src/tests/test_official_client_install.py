@@ -673,3 +673,30 @@ class WindowsServiceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RuntimeCommitTests(unittest.TestCase):
+    def test_runtime_failure_before_commit_restores_service_and_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture=Fixture(Path(temp),update=True)
+            state=fixture.root/'monitor';state.mkdir();p.save_json(state/'settings.json',{'edition':'ds'})
+            fixture.manifest['update']={'package':str(fixture.root/'package'),'monitor_state_dir':str(state)}
+            def fail(package,directory,edition,checkpoint):
+                checkpoint({'fixture':'runtime-recovery'})
+                raise RuntimeError('runtime failed startup')
+            with fixture.boundaries(),mock('updater.activate_runtime',side_effect=fail), \
+                 mock('updater.rollback_runtime') as rollback:
+                with self.assertRaisesRegex(RuntimeError,'runtime failed startup'):
+                    installer.install(fixture.directory,fixture.manifest)
+                rollback.assert_called_once_with({'fixture':'runtime-recovery'})
+            fixture.assert_baseline(self)
+            tx=json.loads((fixture.directory/'native-install-transaction.json').read_text())
+            self.assertEqual(tx['phase'],'rolled_back');self.assertTrue(tx['recovered']['runtime'])
+
+    def test_new_installer_commits_idle_prepared_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture=Fixture(Path(temp),update=True)
+            fixture.manifest['status']='prepared_idle'
+            p.save_json(fixture.directory/'manifest.json',fixture.manifest)
+            with fixture.boundaries():installer.install(fixture.directory,fixture.manifest)
+            self.assertEqual(fixture.manifest['status'],'installed')
+            self.assertEqual((fixture.target/'app.asar').read_text(),'official')

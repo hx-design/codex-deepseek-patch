@@ -4,7 +4,10 @@
 
 **Your models, in the original Codex.** Add existing cloud endpoints and local models to the native picker. Keep your login, history and tools, switch within one chat, and manage connections and patch updates in one settings window.
 
-Extension **0.7.5-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.7.6-proxy.1**, update branch `codex/existing-proxy-models`.
+
+Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
+
 
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)

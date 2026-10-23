@@ -34,6 +34,37 @@ class BackgroundProcessTests(unittest.TestCase):
                     missing.append(f'{path.name}:{call.lineno}')
         self.assertEqual(missing, [], 'Update preflight can flash child consoles: ' + ', '.join(missing))
 
+    @unittest.skipUnless(os.name == 'nt', 'Real Windows scoped backend exit')
+    def test_explicit_exit_closes_owned_headless_backend_and_keeps_other_processes(self):
+        import subprocess
+        import time
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);app=root/'isolated application directory';outside=root/'other'
+            (app/'resources').mkdir(parents=True);outside.mkdir()
+            (app/'resources/app.asar').write_bytes(b'isolated fixture')
+            source=Path(os.environ['SystemRoot'])/'System32/ping.exe'
+            import ctypes
+            from ctypes import wintypes
+            kernel=ctypes.WinDLL('kernel32');kernel.GetShortPathNameW.argtypes=[wintypes.LPCWSTR,wintypes.LPWSTR,wintypes.DWORD]
+            paths=[app/'backend.exe',app/'resources/codex-windows-sandbox-service.exe',outside/'backend.exe']
+            children=[]
+            try:
+                for path in paths:
+                    shutil.copy2(source,path)
+                    short=ctypes.create_unicode_buffer(32768)
+                    length=kernel.GetShortPathNameW(str(path),short,len(short))
+                    executable=short.value if 0<length<len(short) else str(path)
+                    children.append(subprocess.Popen([executable,'-n','60','127.0.0.1'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**win.background_options()))
+                time.sleep(.2)
+                self.assertTrue(all(p.poll() is None for p in children))
+                win.close_app_handles([app])
+                self.assertIsNotNone(children[0].poll())
+                self.assertIsNone(children[1].poll());self.assertIsNone(children[2].poll())
+            finally:
+                for child in children:
+                    if child.poll() is None:child.kill()
+                    child.wait(timeout=5)
+
     @unittest.skipUnless(os.name == 'nt', 'Real Windows console and redirected handles')
     def test_console_program_retains_utf8_pipes_without_allocating_a_console(self):
         executable = str(Path(sys.executable).with_name('python.exe'))

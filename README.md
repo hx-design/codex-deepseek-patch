@@ -6,7 +6,10 @@
 
 把已有云端接口和本地模型加入 Codex 的模型菜单。保留原登录、聊天记录与原生工具，在同一个聊天里切换模型，用一个设置窗口管理连接和自动更新。
 
-扩展版 **0.7.5-proxy.1** · 更新分支 `codex/existing-proxy-models`
+扩展版 **0.7.6-proxy.1** · 更新分支 `codex/existing-proxy-models`
+
+更新会提前下载并校验。点击一次“开始更新”后，准备完成并等待任务空闲再安装；等待可取消，超过一小时保留更新包。旧版服务首次升级若无法报告任务状态，请正常退出 Codex，随后自动继续。进度按当前阶段的实际字节或完成项显示，新服务启动失败会恢复上一版；完成后可点击“启动 Codex”。
+
 
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
