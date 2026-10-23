@@ -600,11 +600,13 @@ def install(directory, manifest):
             if _manifest_committed(directory, transaction):
                 _record(directory, transaction, 'committed')
             else:
-                from update_progress import from_manifest
+                from update_progress import from_manifest,release_idle
                 progress=from_manifest(manifest)
                 if progress:progress.publish('recovering')
                 _recover_locked(directory, transaction)
-                if progress:progress.publish('rolled_back',present=True)
+                if progress:
+                    release_idle(progress)
+                    progress.publish('rolled_back',present=True)
                 manifest.clear()
                 manifest.update(transaction['previous_manifest'])
                 raise

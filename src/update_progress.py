@@ -414,6 +414,7 @@ def pending_activity(progress):
     return activity_status(settings) if settings else {'known':False,'reason':'older_adapter'}
 
 
+@optional_view
 def release_idle(progress):
     from official_client_host import activity_status
     settings=previous_host_settings(progress)
@@ -506,6 +507,7 @@ def close_incomplete(progress):
     progress.publish('close_failed')
     with control_lock(progress.directory):
         value=progress.read()
+        if value.get('id')!=progress.identity:return False
         value.update(detail='Codex 尚未完全退出，补丁已准备好。可手动退出，或点击重试关闭。',can_start=True)
         write_progress(progress.directory,value)
     return False
