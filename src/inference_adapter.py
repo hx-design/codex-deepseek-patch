@@ -632,7 +632,47 @@ def create_server(profile, *, credential_reader=read_credential, session_factory
     server.legacy_origin_index = LegacyOriginIndex(profile['legacy_origins_file']) if profile.get('legacy_origins_file') else None
     server.active, server.last_activity = 0, time.monotonic()
     server.activity=Activity()
+    server.trace=RequestTrace()
     return server
+
+
+class RequestTrace:
+    """Bounded memory-only metadata. No bodies, credentials, URLs or exceptions."""
+    def __init__(self, clock=time.monotonic):
+        self.clock=clock;self.lock=threading.Lock();self.rows={};self.serial=0
+
+    def begin(self, model, external, protocol, compact=False, endpoint=None):
+        with self.lock:
+            self.serial+=1;identifier=self.serial
+            host=urlsplit(endpoint or '').hostname or ''
+            port=urlsplit(endpoint or '').port
+            service=(host+(':'+str(port) if port else ''))[:200] if external else 'OpenAI'
+            self.rows[identifier]={'service':service,'id':identifier,'model':str(model)[:160],
+                'target':'external' if external else 'official','protocol':protocol,
+                'phase':'compacting' if compact else 'preparing','start':self.clock()}
+            while len(self.rows)>64:self.rows.pop(next(iter(self.rows)))
+            return identifier
+
+    def update(self, identifier, phase, status=None):
+        with self.lock:
+            row=self.rows.get(identifier)
+            if row is None or 'end' in row:return
+            row['phase']=phase
+            if type(status) is int:row['status']=status
+            if phase=='streaming' and 'first_byte' not in row:row['first_byte']=self.clock()
+            if phase in ('completed','transferred','failed','cancelled'):
+                row['end']=self.clock()
+                if phase=='failed':
+                    row['error_source']='upstream' if type(status) is int else 'adapter'
+                    row['error_kind']=({401:'authentication',403:'permission',404:'endpoint',413:'payload',429:'rate_limit'}.get(status,'upstream_error') if type(status) is int else 'adapter_error')
+
+    def recent(self):
+        now=self.clock()
+        with self.lock:
+            return [{**{k:v for k,v in row.items() if k not in ('start','end','first_byte')},
+                     'elapsed_ms':round(1000*(row.get('end',now)-row['start'])),
+                     'first_byte_ms':round(1000*(row['first_byte']-row['start'])) if 'first_byte' in row else None}
+                    for row in reversed(list(self.rows.values())) if now-row.get('end',now)<1800]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -715,6 +755,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 p = self.server.profile
                 self.reply(200, {'ok': True, 'identity': p['identity'], 'edition': p['edition'],
                     'pid':__import__('os').getpid(),'update_control':1,'activity':self.server.activity.status()})
+            elif endpoint == '/diagnostics':
+                self.reply(200,{'identity':self.server.profile['identity'],'edition':self.server.profile['edition'],'requests':self.server.trace.recent()})
             elif endpoint == '/backend-api/codex/responses' and self.headers.get('Upgrade', '').lower() == 'websocket':
                 self.server.active += 1
                 upstream = None
@@ -765,6 +807,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return models[0] if models and len(set(models)) == 1 else None
 
     def do_POST(self):
+        trace_id=None
         started = False
         owner=object()
         observed=False
@@ -816,6 +859,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.activity.consume(body)
             _check_model(self.server.profile, body['model'])
             route = self.server.profile['routes'].get(body['model'])
+            trace_id=self.server.trace.begin(body['model'],bool(route),'http',standalone_compaction or _is_compaction(body),(route or {}).get('base_url'))
             if standalone_compaction and route:
                 raise RelayError(501, 'remote_compaction_unsupported', 'Standalone compaction is unavailable for this model route')
             adapter = None
@@ -837,6 +881,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     else:
                         self.reply(200, response)
                         sent = True
+                    self.server.trace.update(trace_id,'completed')
                     return
                 body = _legacy_request(self, body, operation)
                 body, adapter = prepare_request(body, route)
@@ -854,13 +899,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 url = self.gpt_url('responses/compact' if standalone_compaction else 'responses')
                 headers = sanitize_headers(self.headers)
             forwarded = True
+            self.server.trace.update(trace_id,'waiting_upstream')
             response = _open(url, raw, headers, operation, self.server.profile, official=not route)
+            self.server.trace.update(trace_id,'failed' if response.status>=400 else 'receiving',response.status if response.status>=400 else None)
             response_headers = sanitize_headers(response.getheaders(), request=False)
             content_type = response.getheader('Content-Type', '')
             if route and 'text/event-stream' not in content_type:
                 data = response.read(MAX_BODY + 1)
                 if len(data) > MAX_BODY:
                     raise RelayError(502, 'response_too_large', 'Upstream response exceeds the size limit')
+                self.server.trace.update(trace_id,'streaming')
                 payload = data
                 if response.status < 400:
                     value = json.loads(data)
@@ -887,26 +935,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.close_connection = True
                 if route and response.status < 400:
                     for event in _wire_events(response, protocol):
+                        self.server.trace.update(trace_id,'streaming')
                         for converted in _adapt_events(adapter, event):
                             converted = stamp_event(converted, body['model'])
                             self.server.activity.observe(owner,converted)
+                            if converted.get('type') in TERMINAL:self.server.trace.update(trace_id,'completed' if converted['type']=='response.completed' else 'failed',None if converted['type']=='response.completed' else 200)
                             self.wfile.write(b'event: ' + converted['type'].encode() + b'\ndata: ' + _json(converted) + b'\n\n')
                             self.wfile.flush()
                 else:
                     observer=ActivityStream(self.server.activity,owner,'text/event-stream' in content_type)
                     while chunk := response.read1(16384):
+                        self.server.trace.update(trace_id,'streaming')
                         if not standalone_compaction:observer.feed(chunk)
                         self.wfile.write(chunk)
                         self.wfile.flush()
                     if not standalone_compaction:observer.finish()
+            self.server.trace.update(trace_id,'transferred')
         except RelayError as exc:
+            self.server.trace.update(trace_id,'failed')
             if not sent:
                 self.reply(exc.status, _error(exc.code, exc.message))
         except (ValueError, TypeError, KeyError):
+            self.server.trace.update(trace_id,'failed')
             if not sent:
                 self.reply(502 if forwarded else 400, _error('invalid_upstream_response' if forwarded else 'invalid_request',
                     'Invalid upstream response' if forwarded else 'Invalid model request'))
         except Exception:
+            self.server.trace.update(trace_id,'cancelled' if operation.cancelled.is_set() else 'failed')
             if not sent:
                 self.reply(502, _error('upstream_unavailable', 'The configured model service is unavailable'))
         finally:
@@ -985,12 +1040,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         owner=object();self.server.activity.begin(owner)
         self.server.active += 1
         sent = False
+        trace_id=self.server.trace.begin('Codex native service',False,'http')
+        self.server.trace.update(trace_id,'waiting_upstream')
         try:
             if not length:
                 self.watch_disconnect(operation, stop)
             response = _open(self.gpt_url(endpoint[len(prefix):]), raw, headers,
                              operation, self.server.profile, official=True, method=self.command,
                              reject_redirect=False)
+            self.server.trace.update(trace_id,'failed' if response.status>=400 else 'receiving',response.status if response.status>=400 else None)
             self.send_response(response.status)
             for name, value in sanitize_headers(response.getheaders(), request=False):
                 self.send_header(name, value)
@@ -998,9 +1056,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             sent = self.close_connection = True
             while chunk := response.read1(16384):
+                self.server.trace.update(trace_id,'streaming')
                 self.wfile.write(chunk)
                 self.wfile.flush()
+            self.server.trace.update(trace_id,'transferred')
         except OSError:
+            self.server.trace.update(trace_id,'cancelled' if operation.cancelled.is_set() else 'failed')
             if not sent:
                 raise RelayError(502, 'upstream_unavailable', 'The official service is unavailable') from None
         finally:
@@ -1046,6 +1107,7 @@ class WebSocketSession:
         self.mode = None
         self.history = None
         self.pending_input = None
+        self.trace_id=None
         self.client.on_control = self.client_control
 
     @property
@@ -1091,6 +1153,7 @@ class WebSocketSession:
             self.put(('client', None))
 
     def fail(self, code, message, status=502):
+        if code!='response_in_progress':self.handler.server.trace.update(self.trace_id,'cancelled' if code=='request_cancelled' else 'failed',status if code.startswith('upstream_http_') else None)
         # Native Responses recognizes generic errors only with an HTTP status.
         # Omitting it turns an immediate failure into a full idle-timeout wait.
         self.client.send(_json({**_error(code, message), 'status': status}))
@@ -1121,6 +1184,8 @@ class WebSocketSession:
                             if not isinstance(value, dict):
                                 continue
                             self.handler.server.activity.observe(self.activity_owner,value)
+                            self.handler.server.trace.update(self.trace_id,'streaming')
+                            if value.get('type') in TERMINAL:self.handler.server.trace.update(self.trace_id,'completed' if value['type']=='response.completed' else 'failed',None if value['type']=='response.completed' else 200)
                             if value.get('type') in TERMINAL:
                                 self.active = False
                                 if request_id != 'gpt' and value['type'] == 'response.completed':
@@ -1140,6 +1205,7 @@ class WebSocketSession:
         except (OSError, WebSocketError):
             pass
         finally:
+            self.handler.server.trace.update(self.trace_id,'cancelled')
             self.active=False
             self.closed.set()
             if self.operation:
@@ -1181,6 +1247,7 @@ class WebSocketSession:
             _check_model(self.handler.server.profile, body['model'])
             self.handler.server.activity.consume(body)
             route = self.handler.server.profile['routes'].get(body['model'])
+            self.trace_id=self.handler.server.trace.begin(body['model'],bool(route),'websocket',_is_compaction(body),(route or {}).get('base_url'))
             if route:
                 previous = body.get('previous_response_id')
                 if previous:
@@ -1196,6 +1263,7 @@ class WebSocketSession:
                     response = {'id': 'local_warmup_' + str(self.request_id), 'object': 'response', 'status': 'completed',
                                 'model': body['model'], 'output': [], 'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}}
                     self.history = {'model': body['model'], 'id': response['id'], 'input': body.get('input', []), 'output': []}
+                    self.handler.server.trace.update(self.trace_id,'completed')
                     self.client.send(_json({'type': 'response.completed', 'response': response}))
                     return
                 self.pending_input = copy.deepcopy(body)
@@ -1203,7 +1271,7 @@ class WebSocketSession:
                 self.operation = Operation()
                 self.request_id += 1
                 self.active = True
-                threading.Thread(target=self.route_worker, args=(self.request_id, body, route, self.operation), daemon=True).start()
+                threading.Thread(target=self.route_worker, args=(self.request_id, body, route, self.operation, self.trace_id), daemon=True).start()
             else:
                 body, _, changed = _resolve_origin(self.handler.server, body)
                 if changed:
@@ -1216,7 +1284,7 @@ class WebSocketSession:
         except (ValueError, TypeError, KeyError):
             self.fail('invalid_request', 'Invalid response.create event')
 
-    def route_worker(self, request_id, body, route, operation):
+    def route_worker(self, request_id, body, route, operation, trace_id=None):
         try:
             if _is_compaction(body):
                 _, events = _route_compaction(self.handler, body, route, operation)
@@ -1228,6 +1296,7 @@ class WebSocketSession:
             body['stream'] = True
             wire_body, protocol = _protocol_request(body, route)
             headers = _route_headers(self.handler.server, route, stream=True)
+            self.handler.server.trace.update(trace_id,'waiting_upstream')
             response = _open(_route_url(route), _json(wire_body), headers, operation, self.handler.server.profile)
             if response.status >= 400:
                 raise RelayError(response.status, 'upstream_http_' + str(response.status), 'The model service rejected the request')
@@ -1251,6 +1320,7 @@ class WebSocketSession:
             operation.cancel()
 
     def gpt_send(self, payload):
+        self.handler.server.trace.update(self.trace_id,'waiting_upstream')
         try:
             with self.upstream_lock:
                 if not self.upstream:

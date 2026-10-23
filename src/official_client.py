@@ -220,7 +220,8 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                 "host_settings_sha256":p.file_sha(output / "host-settings.json"), "model_routes":routes,
                 "keychain_account":effective.get("keychain_account"), "keychain_service":effective.get("keychain_service"),
                 "deepseek_enabled":effective.get("deepseek_enabled", edition == "ds"),
-                "locals":effective.get("locals", []), "probe_required":True}
+                "locals":effective.get("locals", []), "probe_required":True,
+                "model_specifications":(model_snapshot or {}).get("specs",effective.get("model_specifications",{}))}
     if effective.get("proxy"):
         manifest["proxy"] = effective["proxy"]
     if update_metadata:
@@ -272,6 +273,7 @@ def initial_models(app, args):
         for connection in manifest['locals']:
             specs, warnings = local.discover(connection)
             p.require(specs, 'No usable model specifications: ' + connection['id'])
+            manifest.setdefault('model_specifications',{}).update(specs)
             connection['chat_only_models'] = [model for model,spec in specs.items() if not spec.get('supports_tools', True)]
             connection['normalize_instructions_models'] = [model for model,spec in specs.items() if spec.get('normalize_instructions')]
             connection['tool_adapter_models'] = [model for model,spec in specs.items() if local.needs_tool_adapter(spec)]

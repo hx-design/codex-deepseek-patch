@@ -127,11 +127,19 @@ def discover(connection, fetch=request):
                     tools=info['capabilities'].get('trained_for_tool_use',info['capabilities'].get('tools',True))
                 if 'gpt-oss' in model:levels=['low','medium','high']
             # Explicit metadata supplied by an operator is used when an API omits it.
-            info.update(connection['model_specs'].get(model,{}))
+            declared=connection['model_specs'].get(model,{})
+            reported=info.get('max_context_window') or info.get('max_context_length') or info.get('context_window')
+            sources={key:('user' if key in declared else 'service' if key in info else 'inferred')
+                     for key in ('context_window','input_modalities','reasoning_levels','supports_tools')}
+            info.update(declared)
             maximum=info.get('max_context_window') or info.get('max_context_length') or info.get('context_window')
             if type(maximum) is not int or not 1024<=maximum<=100_000_000:
                 raise ValueError('Model maximum context is missing')
-            result[model]={'context_window':maximum,'display_name':info.get('display_name',model),
+            maximum_key=next(k for k in ('max_context_window','max_context_length','context_window') if info.get(k))
+            sources['context_window']='user' if maximum_key in declared else 'service'
+            result[model]={'spec_sources':sources,'reported_context_window':reported,
+                           'context_conflict':bool(declared.get('context_window') and reported and declared['context_window']!=reported),
+                           'context_window':maximum,'display_name':info.get('display_name',model),
                            'input_modalities':info.get('input_modalities',modalities),
                            'reasoning_levels':info.get('reasoning_levels',levels),
                            'supports_tools':info.get('supports_tools',tools),

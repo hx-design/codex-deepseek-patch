@@ -53,6 +53,188 @@ def find_directory(explicit=None):
     return default
 
 
+# First installation uses the same native cards and the existing installer.
+def needs_setup(directory):
+    return not (Path(directory)/'settings.json').exists()
+
+
+def setup_read(directory):
+    value=monitor.load_json(Path(directory)/'setup/draft.json',{})
+    require(not value or value.get('edition')==p.EDITION,'首次安装草稿属于另一版本。','edition_mismatch')
+    return value
+
+
+def setup_revision(directory):
+    path=Path(directory)/'setup/draft.json'
+    return hashlib.sha256(path.read_bytes() if path.exists() else b'').hexdigest()
+
+
+def setup_app():
+    if sys.platform=='win32':
+        try:return str(__import__('windows_support').discover_app())
+        except (OSError,ValueError,RuntimeError):return ''
+    return next((str(v) for v in (Path('/Applications/ChatGPT.app'),Path('/Applications/Codex.app')) if v.is_dir()),'')
+
+
+def setup_view(directory, notice=''):
+    draft=setup_read(directory);phase=draft.get('phase','draft')
+    rows=[hub_field('app','Codex 应用位置',draft.get('app') or setup_app()),
+          hub_field('home','Codex 配置目录',draft.get('home') or str(Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))))]
+    if p.EDITION=='ds':
+        rows += [hub_field('key','DeepSeek API Key','','secret',hint='只保存于本机；无需重新登录 GPT。')]
+    else:
+        connection=draft.get('connection',{})
+        rows += [hub_field('name','连接名称',connection.get('name','我的模型')),
+                 hub_field('url','接口地址',connection.get('base_url','')),
+                 hub_field('kind','服务类型',connection.get('kind','openai'),'choice',choices=[['openai','兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
+                 hub_field('wire','接口协议',connection.get('wire_api','chat_completions'),'choice',choices=[['chat_completions','Chat Completions'],['responses','Responses']]),
+                 hub_field('key','API Key','','secret',hint='本地服务可留空；留空保留已保存密钥。'),
+                 hub_field('models','型号',', '.join(connection.get('models',[])),hint='填写检测到的型号，多个用逗号分隔。'),
+                 hub_field('maximum','最大上下文',draft.get('maximum'),kind='number',hint='仅在服务未提供规格时填写实际最大值。'),
+                 hub_field('respect','保留本地服务加载窗口',connection.get('respect_server_context',True),'toggle')]
+    if p.EDITION=='proxy' and draft.get('available'):
+        rows.append({'type':'note','text':'勾选接入型号，再保存选择。'})
+        rows += [hub_field('model_'+str(i),model,model in draft.get('connection',{}).get('models',[]),'toggle') for i,model in enumerate(draft['available'])]
+    rows += [hub_field('maintenance','安装后自动检查补丁和模型更新',draft.get('maintenance',True),'toggle')]
+    buttons=[hub_button('保存并检测','setup_save')]
+    if phase=='draft' and draft:buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
+    if phase=='prepared':
+        rows.append({'type':'note','text':'准备和隔离验证通过。请先正常退出 Codex，再点击安装。'})
+        buttons.append(hub_button('安装','setup_install',style='primary'))
+    if phase=='installed':
+        rows.append({'type':'note','text':'适配层已安装，继续完成设置入口与自动维护。'})
+        buttons=[hub_button('完成设置','setup_install',style='primary')]
+    return {'route':'setup','title':'首次设置 · '+('DS 版' if p.EDITION=='ds' else '扩展版'),
+            'subtitle':'发现应用 → 检测模型 → 验证 → 安装','rows':rows,'buttons':buttons,
+            'revision':setup_revision(directory),'edition':p.EDITION,'notice':notice,
+            'options':hub_options(directory),'footer':footer_layout(buttons),'back':None}
+
+
+def setup_command(arguments, cancelled=None):
+    """One hidden child, cancellable, with no inherited credential logging."""
+    command=[str(__import__('official_client_host').windowless_python(sys.executable)),str(ROOT/'patch.py'),*map(str,arguments)]
+    with tempfile.TemporaryFile() as log:
+        child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log,
+            **(__import__('windows_support').background_options() if os.name=='nt' else {'start_new_session':True}))
+        try:
+            while child.poll() is None:
+                if cancelled and cancelled():raise SettingsError('cancelled','操作已取消，正式配置未改变。')
+                time.sleep(.1)
+            require(child.returncode==0,'准备或验证未通过；正式配置未改变，请检查应用版本、接口和模型规格。','setup_validation_failed')
+        finally:
+            if child.poll() is None:
+                if os.name=='nt':subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],capture_output=True,**p.background_options())
+                else:__import__('signal');os.killpg(child.pid,__import__('signal').SIGTERM)
+                child.wait(timeout=15)
+
+
+def setup_guard(draft):
+    home=Path(draft['home']);current=p.read_config(home/'config.toml')
+    require(hashlib.sha256(current.encode()).hexdigest()==draft['config_digest'],
+            'Codex 配置已变化，请重新保存并准备。','stale_revision')
+    value=p.tomllib.loads(current)
+    require(not value.get('openai_base_url') and value.get('model_provider','openai')=='openai'
+            and not value.get('model_providers',{}).get('openai',{}).get('base_url'),
+            '检测到其他模型管理器正在接管 Codex。请先在原管理器中断开 Codex，再进行首次安装。','configuration_conflict')
+
+
+def setup_dispatch(directory, payload, expected=None, cancelled=None):
+    directory=Path(directory);intent=payload.get('intent','refresh');values=payload.get('values') or {}
+    require(isinstance(values,dict),'无效的首次安装表单。')
+    if intent in ('navigate','refresh'):return setup_view(directory)
+    require(intent in ('setup_save','setup_prepare','setup_install'),'请先完成首次设置。','not_installed')
+    root=monitor.private_directory(directory/'setup')
+    with monitor.state_lock(root) as locked:
+        require(locked,'首次设置正在处理中。','busy')
+        require(expected==setup_revision(directory),'草稿已改变，请刷新后重试。','stale_revision')
+        draft=setup_read(directory)
+        if cancelled and cancelled():raise SettingsError('cancelled','操作已取消。')
+        if intent=='setup_save':
+            require(draft.get('phase')!='installed','安装已完成，请继续完成设置。')
+            app=Path(str(values.get('app',''))).expanduser();home=Path(str(values.get('home',''))).expanduser()
+            require(app.is_absolute() and app.is_dir() and home.is_absolute(),'请指定有效的应用和配置目录。')
+            app,home=app.resolve(),home.resolve()
+            require(not root.resolve().is_relative_to(home) and not root.resolve().is_relative_to(app),'安装材料不能放在应用或 Codex 配置目录内。')
+            secret=values.get('key','');require(isinstance(secret,str) and len(secret)<=2560 and not any(ord(c)<33 for c in secret),'API Key 格式不正确。')
+            new={'edition':p.EDITION,'phase':'draft','app':str(app),'home':str(home),
+                 'maintenance':values.get('maintenance') is True,
+                 'config_digest':hashlib.sha256(p.read_config(home/'config.toml').encode()).hexdigest()}
+            setup_guard(new)
+            __import__('official_client').inspect(app)  # Signed source, no launch or login access.
+            key_path=root/'credential.key';old_key=key_path.read_bytes() if key_path.exists() else None
+            try:
+                if secret:private_write(key_path,secret.encode())
+                if p.EDITION=='ds':
+                    require(key_path.is_file(),'请填写 DeepSeek API Key。')
+                    new['key_service']=draft.get('key_service') or ('Codex DeepSeek API Key '+uuid.uuid4().hex[:12])
+                    notice='官方应用检查通过，密钥已私密保存。'
+                else:
+                    models=([model for i,model in enumerate(draft.get('available',[])) if values.get('model_'+str(i)) is True]
+                            if any(k.startswith('model_') for k in values) else hub_list(values.get('models')))
+                    maximum=hub_number(values.get('maximum'))
+                    require(maximum is None or 1024<=maximum<=100_000_000,'请填写模型实际支持的最大上下文。')
+                    connection=_validate_connection({'id':'local-setup','name':str(values.get('name','我的模型')),
+                        'kind':values.get('kind','openai'),'base_url':str(values.get('url','')).strip(),
+                        'wire_api':values.get('wire','chat_completions'),'models':models,
+                        'respect_server_context':values.get('respect') is True,
+                        'model_specs':{},
+                        **({'key_file':str(key_path)} if key_path.exists() else {})})
+                    result=probe_connection(connection,cancelled)
+                    require(result['available'],'接口没有返回可用型号。')
+                    require(all(m in result['available'] for m in models),'所选型号不在接口返回的模型列表中。')
+                    if maximum:connection['model_specs']={model:{'context_window':maximum} for model in models if model not in result['specs']}
+                    new.update(connection=connection,maximum=maximum,available=result['available'])
+                    notice='发现 '+str(len(result['available']))+' 个型号，可在下方勾选。'
+                if cancelled and cancelled():raise SettingsError('cancelled','检测已取消。')
+                monitor.atomic_json(root/'draft.json',new)
+            except BaseException:
+                if secret:
+                    if old_key is None:key_path.unlink(missing_ok=True)
+                    else:private_write(key_path,old_key)
+                raise
+            return setup_view(directory,notice)
+        require(draft,'请先保存并检测连接。')
+        if intent=='setup_prepare':
+            require(draft['phase'] in ('draft','prepared'),'已有安装事务，请先完成设置。')
+            setup_guard(draft)
+            output=directory/'builds'/('setup-'+uuid.uuid4().hex)
+            args=['build','--app',draft['app'],'--codex-home',draft['home'],'--output',str(output),'--bundled-catalog','--verify']
+            if p.EDITION=='ds':args+=['--with-deepseek','--keychain-service',draft['key_service']]
+            else:
+                require(draft['connection']['models'],'请先选择要接入的型号。')
+                monitor.atomic_json(root/'connections.json',{'locals':[draft['connection']]})
+                args+=['--without-deepseek','--connections',str(root/'connections.json')]
+            setup_command(args,cancelled)
+            setup_guard(draft)
+            draft.update(phase='prepared',build=str(output),manifest_digest=p.file_sha(output/'manifest.json'))
+            monitor.atomic_json(root/'draft.json',draft)
+            return setup_view(directory,'验证通过，可在退出 Codex 后安装。')
+        require(draft['phase'] in ('prepared','installed'),'请先准备并完成验证。')
+        build=Path(draft['build']);manifest=monitor.load_json(build/'manifest.json',{})
+        require(manifest.get('edition')==p.EDITION and manifest.get('codex_home')==draft['home'],'候选安装身份不一致。')
+        if draft['phase']=='prepared' and manifest.get('status')=='installed':
+            from official_client_install import recover
+            result=recover(build)
+            require(result.get('status')=='committed','请先恢复中断的安装事务。')
+            draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
+            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+        if draft['phase']=='prepared':
+            setup_guard(draft)
+            require(p.file_sha(build/'manifest.json')==draft['manifest_digest'],'候选已改变，请重新准备。')
+            p.require_stopped(Path(draft['app']),read_only_source=True)
+            if p.EDITION=='ds':
+                save_deepseek_key({'keychain_service':draft['key_service'],'keychain_account':__import__('getpass').getuser()},manifest,(root/'credential.key').read_text(encoding='utf-8'))
+            p.install(SimpleNamespace(directory=build))
+            draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
+            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+        # A failed monitor registration is resumable without another install.
+        monitor.enable(SimpleNamespace(state_dir=directory,baseline=build,app=Path(draft['app']),codex_home=Path(draft['home']),
+            interval=300,no_code_updates=not draft['maintenance'],no_model_sync=not draft['maintenance'],
+            keychain_service=draft.get('key_service'),keychain_account=__import__('getpass').getuser()))
+        ensure_launcher(directory)
+        return hub_view(directory,'models',notice='安装完成，可启动 Codex 使用新增模型。')
+
+
 def records(directory):
     directory = Path(directory)
     settings = monitor.load_json(directory/'settings.json', {})
@@ -94,7 +276,7 @@ def _models(directory, build, manifest):
     installed = monitor.load_json(build/'desktop-models.json', {'models': []})['models']
     entries = {row['slug']: row for row in cache.get('catalog', {}).get('models', [])}
     entries.update({row['slug']: row for row in installed})
-    specs = cache.get('specs', {})
+    specs = {**manifest.get('model_specifications',{}),**cache.get('specs', {})}
     routes = {**cache.get('routes', {}), **manifest.get('model_routes', {})}
     for model in preferences.get('hidden', []):
         if model not in entries:
@@ -121,12 +303,17 @@ def _models(directory, build, manifest):
             'tools': routes.get(model, {}).get('supports_tools', spec.get('supports_tools', item.get('shell_type') != 'disabled')),
             'images': 'image' in item.get('input_modalities', []),
             'reasoning': [v['effort'] for v in item.get('supported_reasoning_levels', [])],
-            'source': spec.get('source', 'official-catalog')})
+            'source': spec.get('source', 'official-catalog'),
+            'spec_sources':spec.get('spec_sources',{}), 'context_conflict':spec.get('context_conflict',False),
+            'reported_context_window':spec.get('reported_context_window')})
     return sorted(rows, key=lambda row: (row['provider'] != 'GPT', row['provider'], row['name'].casefold()))
 
 
 def snapshot(directory):
     directory = Path(directory)
+    if needs_setup(directory):
+        setup_read(directory)
+        return {'format':1,'edition':p.EDITION,'revision':setup_revision(directory),'models':[],'connections':[],'progress':{},'recovery':[]}
     settings, build, manifest = records(directory)
     state = monitor.load_json(directory/'state.json', {})
     document = connection_document(directory, manifest)
@@ -290,6 +477,9 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
     directory = Path(directory)
     payload = payload or {}
     require(action in ACTIONS and isinstance(payload,dict), '未知操作。')
+    if needs_setup(directory):
+        if action=='hub':return setup_dispatch(directory,payload,expected,cancelled)
+        if action=='snapshot':return snapshot(directory)
     records(directory)  # Every action remains bound to the installed edition.
     if action == 'hub':
         return hub_dispatch(directory, payload, expected, cancelled)
@@ -561,7 +751,7 @@ def _show_locked(directory, *, self_test=False, loop_test=False, page=None, noti
     from official_client_host import windowless_python
     ui=Path(directory)/'settings-ui'
     initial=snapshot(directory)
-    initial.update(hub=hub_shell(directory),view=hub_view(directory,page or 'models'),entry={'page':page,'notify':notify})
+    initial.update(hub=hub_shell(directory),view=hub_view(directory,page or 'models'),entry={'page':('setup' if needs_setup(directory) else page),'notify':notify})
     brand_assets(ui)
     bubble_assets(ui)
     monitor.atomic_json(ui/'view.json',initial)
@@ -949,6 +1139,7 @@ def hub_button(title, intent, *, style='secondary', **values):
 def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
     """Build one small card from the current authority, not a second settings store."""
     from management import snapshot, require
+    if needs_setup(directory):return setup_view(directory,notice or '')
     state=snapshot(directory); opts=hub_options(directory)
     base=route.split('/')[0]
     require(base in {c[0] for c in CATEGORIES}, '未知设置分类。')
@@ -976,6 +1167,11 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                  hub_field('compact','压缩阈值',model['compact_override'],'number',
                            hint='留空沿用 Codex 原生设置' if model['provider']=='GPT' else '留空默认使用窗口的 90%'),
                  hub_field('visible','在模型菜单中显示',model['visible'],'toggle')]
+        labels={'user':'用户声明','service':'服务声明','official':'官方规格','inferred':'兼容性推定'}
+        sources=model['spec_sources']
+        rows.append(hub_item('规格来源',' · '.join(label+'：'+labels.get(sources.get(key),'原生目录' if model['provider']=='GPT' else '未记录') for key,label in [('context_window','窗口'),('input_modalities','图片'),('reasoning_levels','思考'),('supports_tools','工具')])))
+        if model['context_override']:rows.append(hub_item('实际窗口','保留用户主动调小的设置'))
+        if model['context_conflict']:rows.append({'type':'note','text':'用户声明与服务窗口不同，请核对。当前值和手动设置均已保留。'})
         if model['server_window']:rows.insert(1,hub_item('本地服务窗口',f"{model['server_window']:,} tokens"))
         buttons += [hub_button('恢复默认','reset_model'),hub_button('保存','save_model',style='primary')]
     elif route=='connections':
@@ -1082,6 +1278,12 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         data['subtitle']=state['edition_label']+' · '+str(state['version'])
         rows += [hub_item('补丁状态',state['status']),hub_item('可用模型',str(len(state['models']))+' 个'),hub_item('Codex 版本',str(state['app_version'] or '未记录')),
                  {'type':'note','text':'报告不包含密钥、聊天内容和私人文件路径。'}]
+        from official_client_host import request_diagnostics
+        _,build,_=records(directory)
+        recent=request_diagnostics(monitor.load_json(build/'host-settings.json',{}))
+        phases={'preparing':'准备输入','compacting':'恢复或压缩历史','waiting_upstream':'等待服务','receiving':'已连接服务','streaming':'正在接收','completed':'模型已完成','transferred':'传输结束','failed':'失败','cancelled':'已取消'}
+        for request in recent[:12]:
+            rows.append(hub_item(str(request.get('model','未知型号')),('官方服务' if request.get('target')=='official' else str(request.get('service') or '所选外部服务'))+' · '+phases.get(request.get('phase'),'未知阶段')+' · '+str(request.get('elapsed_ms',0))+' ms'+(' · HTTP '+str(request['status']) if request.get('status') else '')))
         if extra:rows.append({'type':'report','text':extra.get('text','')})
         buttons += [hub_button('运行诊断','diagnose',style='primary')]
         if extra:buttons.append(hub_button('复制报告','copy',text=extra.get('text','')))

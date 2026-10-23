@@ -1,3 +1,11 @@
+## First setup, request diagnostics and specification sources
+
+The next candidate must pass first-install native cards on both systems and editions, manager-conflict rejection before credentials/network, failed discovery secret rollback, revision conflicts, cancellation, unverified install refusal, and resuming monitor registration after installation. Use disposable homes and mocked activation; never install into the developer's current model manager.
+
+Recent request diagnostics must exercise the existing HTTP/WebSocket inference paths with synthetic bodies, authenticate their local endpoint, omit bodies/credentials/full URLs, bound retained records, and distinguish upstream HTTP errors. Native GPT forwarding, cancellation and payload fidelity gates remain mandatory. Local-only request metadata is not added to exported diagnostic reports.
+
+Specification provenance is descriptive: test service metadata, explicit declarations, inferred capabilities and conflicts without changing context precedence or user reductions. Check first-install and synchronized catalogs separately.
+
 ## 后续版本的强制发布检查
 
 ### 预下载、空闲安装与事务回退

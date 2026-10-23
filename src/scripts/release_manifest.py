@@ -33,6 +33,18 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_both_editions_share_first_setup_without_touching_native_config',
+    'test_manager_conflict_rejected_before_credentials_or_network',
+    'test_failed_discovery_restores_previous_private_key_and_draft',
+    'test_failed_or_cancelled_prepare_cannot_enable_install',
+    'test_prepare_rechecks_config_and_install_is_resumable',
+    'test_first_setup_native_card_opens_and_closes_without_installed_state',
+    'test_first_setup_recovers_commit_before_ui_draft_was_updated',
+    'test_setup_uses_secret_controls_and_keeps_service_windows_when_filling_missing_specs',
+    'test_private_request_diagnostics',
+    'test_memory_bound_expiry_terminal_states_and_no_payload_fields',
+    'test_user_service_and_inferred_metadata_are_distinguished_without_policy_changes',
+
     'test_codec_slow_pipe_writes_finish_and_midflight_cancel_reaps_child',
     'test_old_close_guard_is_fenced_and_new_controller_defers_unknown_activity',
     'test_new_installer_commits_idle_prepared_build',

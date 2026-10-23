@@ -197,3 +197,17 @@ class LocalTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class SpecificationSourceTests(unittest.TestCase):
+    def test_user_service_and_inferred_metadata_are_distinguished_without_policy_changes(self):
+        connection={'id':'local-probe','kind':'openai','base_url':'http://127.0.0.1:1234/v1',
+                    'models':['m'],'model_specs':{'m':{'context_window':65536,'supports_tools':False}}}
+        rows=[{'id':'m','context_window':32768,'input_modalities':['text','image']}]
+        result,warnings=local.discover(connection,fetch=lambda *a:{'data':rows})
+        self.assertFalse(warnings);model=result['m'];self.assertEqual(model['context_window'],65536)
+        self.assertEqual(model['reported_context_window'],32768);self.assertTrue(model['context_conflict'])
+        self.assertEqual(model['spec_sources'],{'context_window':'user','supports_tools':'user','input_modalities':'service','reasoning_levels':'inferred'})
+        connection['model_specs']={}
+        result,_=local.discover(connection,fetch=lambda *a:{'data':rows})
+        self.assertEqual(result['m']['context_window'],32768);self.assertFalse(result['m']['context_conflict'])

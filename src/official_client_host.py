@@ -153,6 +153,24 @@ def activity_status(settings, *, lease=None, release=False, timeout=1.5):
         return {'known':False,'reason':'unavailable'}
 
 
+def request_diagnostics(settings, timeout=1):
+    """Read recent metadata from the exact owned service, without persisting it."""
+    try:
+        url=settings['health_url']
+        if not url.endswith('/health'):return []
+        request=urllib.request.Request(url[:-len('health')]+'diagnostics')
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}),_NoRedirect()).open(request,timeout=timeout) as response:
+            raw=response.read(65537)
+        if len(raw)>65536:return []
+        value=json.loads(raw)
+        if value.get('identity')!=settings['health_identity'] or value.get('edition')!=settings.get('edition'):return []
+        rows=value.get('requests',[])
+        if not isinstance(rows,list):return []
+        return [{k:r[k] for k in ('id','model','target','service','protocol','phase','elapsed_ms','first_byte_ms','status','error_kind','error_source') if k in r}
+                for r in rows[:64] if isinstance(r,dict)]
+    except Exception:return []
+
+
 def healthy(settings, timeout=0.4):
     """Check the installation identity, never accept an unrelated local listener."""
     return health_status(settings, timeout)['ready']
