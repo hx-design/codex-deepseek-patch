@@ -2,7 +2,7 @@
 
 ToolAdapter must flatten namespace/custom/discovery tools before this adapter;
 apply its response/events transforms afterwards. No tools run here. This is
-not an Anthropic Messages adapter and never guesses capabilities from a model.
+a protocol adapter and never guesses capabilities from a model.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def _content(value, role):
     return ''.join(v['text'] for v in result) if all(v['type']=='text' for v in result) else result
 
 
-def _messages(body):
+def _messages(body, *, reasoning_decoder=None):
     result, pending, completed = [], set(), set()
     instructions = body.get('instructions')
     if instructions:
@@ -71,6 +71,10 @@ def _messages(body):
         kind = item.get('type', 'message' if item.get('role') else None)
         if kind in ('message', 'reasoning'):
             if kind == 'reasoning':
+                if reasoning_decoder and item.get('encrypted_content'):
+                    _require(not pending,'Reasoning cannot interrupt tool results')
+                    result.append({'role':'assistant','content':None,'anthropic_thinking':reasoning_decoder(item['encrypted_content'])})
+                    continue
                 _require(not item.get('encrypted_content'), 'Private reasoning must be resolved by its original-provider adapter')
                 parts = item.get('summary', [])
                 _require(isinstance(parts, list), 'Invalid public reasoning summary')
@@ -368,3 +372,195 @@ class _Completion:
         response=self.response(status)
         if status=='incomplete':response['incomplete_details']={'reason':'max_output_tokens' if self.finish=='length' else 'content_filter'}
         yield {'type':'response.incomplete' if status=='incomplete' else 'response.completed','response':response}
+
+
+ANTHROPIC_THINKING = 'codex-anthropic-thinking:v1:'
+
+
+def _thinking_blocks(value):
+    import base64
+    _require(isinstance(value,str) and value.startswith(ANTHROPIC_THINKING),
+             'Private reasoning belongs to a different protocol')
+    try:blocks=json.loads(base64.b64decode(value[len(ANTHROPIC_THINKING):],validate=True))
+    except (ValueError,TypeError):raise ChatCompatibilityError('invalid_reasoning','Invalid Anthropic thinking record') from None
+    _require(isinstance(blocks,list) and all(isinstance(b,dict) and
+        (set(b)=={'type','thinking','signature'} and b['type']=='thinking' and isinstance(b['thinking'],str) and isinstance(b['signature'],str)
+         or set(b)=={'type','data'} and b['type']=='redacted_thinking' and isinstance(b['data'],str)) for b in blocks),
+        'Invalid Anthropic thinking blocks')
+    return blocks
+
+
+def _anthropic_content(content):
+    import re
+    if content is None:return []
+    if isinstance(content,str):return [{'type':'text','text':content}] if content else []
+    result=[]
+    for part in content:
+        if part['type']=='text':result.append(copy.deepcopy(part))
+        else:
+            url=part['image_url']['url']
+            if url.startswith('data:'):
+                match=re.fullmatch(r'data:(image/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/=\s]+)',url)
+                _require(match,'Anthropic images require a supported base64 image or HTTP(S) URL')
+                source={'type':'base64','media_type':match[1],'data':match[2]}
+            else:
+                _require(url.startswith(('https://','http://')),'Unsupported Anthropic image URL')
+                source={'type':'url','url':url}
+            result.append({'type':'image','source':source})
+    return result
+
+
+class ResponsesToAnthropic:
+    """Messages protocol, explicit capabilities, preserving same-model thinking."""
+    def __init__(self,body,*,max_output_tokens=None,reasoning_levels=(),thinking_mode=None):
+        _require(isinstance(body,dict) and isinstance(body.get('model'),str),'A model is required')
+        _require(not body.get('previous_response_id'),'Messages requires complete history')
+        maximum=body.get('max_output_tokens',max_output_tokens)
+        _require(type(maximum) is int and maximum>0,
+                 'Anthropic requires max_output_tokens from service metadata or an explicit model specification','missing_model_spec')
+        if max_output_tokens is not None:
+            _require(type(max_output_tokens) is int and max_output_tokens>0 and maximum<=max_output_tokens,'Output exceeds the declared model maximum')
+        self.model=body['model'];self.reasoning_source={'protocol':'anthropic_messages','model':self.model}
+        result={'model':self.model,'stream':bool(body.get('stream',False)),'max_tokens':maximum,'messages':[]}
+        system=[]
+        for row in _messages(body,reasoning_decoder=_thinking_blocks):
+            blocks=copy.deepcopy(row.get('anthropic_thinking',[]))+_anthropic_content(row.get('content'))
+            role=row['role']
+            if role in ('system','developer'):
+                system.extend(blocks);continue
+            if role=='tool':
+                role='user';blocks=[{'type':'tool_result','tool_use_id':row['tool_call_id'],'content':blocks}]
+            for call in row.get('tool_calls',[]):
+                try:arguments=json.loads(call['function']['arguments'])
+                except ValueError:raise ChatCompatibilityError('invalid_tool_arguments','Historical tool arguments must be JSON') from None
+                _require(isinstance(arguments,dict),'Historical tool arguments must be an object')
+                blocks.append({'type':'tool_use','id':call['id'],'name':call['function']['name'],'input':arguments})
+            if result['messages'] and result['messages'][-1]['role']==role:result['messages'][-1]['content'].extend(blocks)
+            elif blocks:result['messages'].append({'role':role,'content':blocks})
+        if system:result['system']=system
+        _require(result['messages'],'Messages history must not be empty')
+        for field in ('temperature','top_p'):
+            if field in body:result[field]=copy.deepcopy(body[field])
+        # Reuse the function/choice validation, not the Chat wire body.
+        plain=copy.deepcopy(body);plain['input']='validation';plain.pop('instructions',None)
+        chat=ResponsesToChat(plain).body
+        if 'tools' in chat:
+            result['tools']=[{'name':t['function']['name'],'input_schema':t['function'].get('parameters',{'type':'object','properties':{}}),
+                **({'description':t['function']['description']} if 'description' in t['function'] else {})} for t in chat['tools']]
+        choice=chat.get('tool_choice')
+        if choice is not None:
+            result['tool_choice']=({'type':{'required':'any','auto':'auto','none':'none'}[choice]} if isinstance(choice,str)
+                                   else {'type':'tool','name':choice['function']['name']})
+        if 'parallel_tool_calls' in body:
+            result.setdefault('tool_choice',{'type':'auto'})['disable_parallel_tool_use']=not body['parallel_tool_calls']
+        form=body.get('text',{}).get('format',{})
+        if form.get('type') not in (None,'text'):
+            _require(form.get('type')=='json_schema','Anthropic requires a JSON schema for structured output')
+            result['output_config']={'format':{'type':'json_schema','schema':copy.deepcopy(form['schema'])}}
+        effort=body.get('reasoning',{}).get('effort')
+        if effort is not None and reasoning_levels:
+            _require(effort in reasoning_levels,'Unsupported effort for this Anthropic model')
+            result.setdefault('output_config',{})['effort']=effort
+        if thinking_mode is not None:
+            _require(thinking_mode in ('adaptive','disabled'),'Unsupported Anthropic thinking configuration')
+            result['thinking']={'type':thinking_mode}
+        self.body=result
+
+    def response(self,value):
+        _require(isinstance(value,dict) and value.get('type')=='message','Invalid Anthropic message','invalid_upstream_response',502)
+        records=[{'type':'message_start','message':{**value,'content':[],'stop_reason':None}}]
+        for index,block in enumerate(value.get('content',[])):
+            records.extend([{'type':'content_block_start','index':index,'content_block':block},
+                            {'type':'content_block_stop','index':index}])
+        records.extend([{'type':'message_delta','delta':{'stop_reason':value.get('stop_reason')},'usage':value.get('usage',{})},
+                        {'type':'message_stop'}])
+        return list(self.events(records))[-1]['response']
+
+    def events(self,upstream):
+        import base64
+        state=_Completion(self.model);blocks={};stopped=set();usage={};finish=None;ended=False;thinking=[];tool_count=0
+        sequence=0;thinking_payload=None
+        def event(value):
+            nonlocal sequence
+            value=copy.deepcopy(value)
+            cipher=thinking_payload
+            candidates=[value.get('item',{})]+value.get('response',{}).get('output',[])
+            for item in candidates:
+                if item.get('type')=='reasoning' and cipher:item['encrypted_content']=cipher
+            value['sequence_number']=sequence;sequence+=1
+            return value
+        def chunk(delta=None,reason=None):
+            return {'model':self.model,'choices':[{'index':0,'delta':delta or {},'finish_reason':reason}]}
+        try:
+            for record in _records(upstream):
+                _require(record is not DONE,'Unexpected Messages terminator','invalid_upstream_response',502)
+                kind=record.get('type')
+                _require(not ended,'Messages data after message_stop','invalid_upstream_response',502)
+                if kind=='error':
+                    error=record.get('error',{})
+                    raise ChatCompatibilityError(str(error.get('type','upstream_error')),str(error.get('message','Messages error')),502)
+                if kind=='ping':continue
+                if kind=='message_start':
+                    _require(not state.started,'Duplicate Messages start','invalid_upstream_response',502)
+                    message=record['message'];usage.update(message.get('usage',{}))
+                    for e in state.consume(chunk()):yield event(e)
+                    continue
+                _require(state.started,'Messages event before start','invalid_upstream_response',502)
+                delta={}
+                if kind=='content_block_start':
+                    index=record['index'];block=copy.deepcopy(record['content_block'])
+                    _require(type(index) is int and index==len(blocks) and not (set(blocks)-stopped),'Invalid Messages block order','invalid_upstream_response',502)
+                    blocks[index]=block
+                    if block['type']=='text':delta={'content':block['text']}
+                    elif block['type'] in ('thinking','redacted_thinking'):
+                        thinking.append(block)
+                        if state.reasoning is None:
+                            for e in state.add_text('', 'reasoning'):yield event(e)
+                        if block['type']=='thinking':delta={'reasoning_content':block.get('thinking','')}
+                    elif block['type']=='tool_use':
+                        block['_tool_index']=tool_count;tool_count+=1
+                        block['_arguments']='';block['_input']=block.get('input',{})
+                        delta={'tool_calls':[{'index':block['_tool_index'],'id':block['id'],'type':'function','function':{'name':block['name'],'arguments':''}}]}
+                    else:raise ChatCompatibilityError('unsupported_anthropic_output','Unsupported Messages block: '+str(block['type']),502)
+                elif kind=='content_block_delta':
+                    index=record['index'];_require(index in blocks and index not in stopped,'Delta outside an open block','invalid_upstream_response',502)
+                    block=blocks[index];part=record['delta'];typ=part['type']
+                    if typ=='text_delta' and block['type']=='text':delta={'content':part['text']}
+                    elif typ=='thinking_delta' and block['type']=='thinking':
+                        block['thinking']=block.get('thinking','')+part['thinking'];delta={'reasoning_content':part['thinking']}
+                    elif typ=='signature_delta' and block['type']=='thinking':block['signature']=block.get('signature','')+part['signature']
+                    elif typ=='input_json_delta' and block['type']=='tool_use':block['_arguments']+=part['partial_json']
+                    else:raise ChatCompatibilityError('unsupported_anthropic_output','Unsupported Messages delta',502)
+                elif kind=='content_block_stop':
+                    index=record['index'];_require(index in blocks and index not in stopped,'Invalid Messages block stop','invalid_upstream_response',502)
+                    stopped.add(index);block=blocks[index]
+                    if block['type']=='tool_use':
+                        arguments=block['_arguments'] or json.dumps(block['_input'],separators=(',',':'))
+                        _require(isinstance(json.loads(arguments),dict),'Invalid Messages tool arguments','invalid_upstream_response',502)
+                        delta={'tool_calls':[{'index':block['_tool_index'],'function':{'arguments':arguments}}]}
+                elif kind=='message_delta':
+                    _require(set(blocks)==stopped,'Message ended before blocks closed','truncated_stream',502)
+                    usage.update(record.get('usage',{}));reason=record.get('delta',{}).get('stop_reason')
+                    if reason is not None:
+                        _require(finish is None,'Duplicate Messages stop reason','invalid_upstream_response',502)
+                        finish={'end_turn':'stop','stop_sequence':'stop','tool_use':'tool_calls','max_tokens':'length','model_context_window_exceeded':'length','refusal':'content_filter'}.get(reason)
+                        _require(finish is not None,'Unsupported Messages stop reason','unsupported_anthropic_output',502)
+                elif kind=='message_stop':
+                    _require(finish is not None and set(blocks)==stopped,'Messages stream is incomplete','truncated_stream',502)
+                    ended=True
+                else:raise ChatCompatibilityError('unsupported_anthropic_output','Unsupported Messages event',502)
+                for e in state.consume(chunk(delta)):yield event(e)
+            _require(ended,'Messages stream ended without message_stop','truncated_stream',502)
+            for block in thinking:_thinking_blocks(ANTHROPIC_THINKING+base64.b64encode(json.dumps([block]).encode()).decode())
+            if thinking:thinking_payload=ANTHROPIC_THINKING+base64.b64encode(json.dumps(thinking,separators=(',',':')).encode()).decode()
+            for key in ('input_tokens','output_tokens','cache_creation_input_tokens','cache_read_input_tokens'):
+                _require(type(usage.get(key,0)) is int and usage.get(key,0)>=0,'Invalid Messages usage','invalid_upstream_response',502)
+            total_input=sum(usage.get(key,0) for key in ('input_tokens','cache_creation_input_tokens','cache_read_input_tokens'))
+            raw=chunk(reason=finish);raw['usage']={'prompt_tokens':total_input,'completion_tokens':usage.get('output_tokens',0),
+                'prompt_tokens_details':{'cached_tokens':usage.get('cache_read_input_tokens',0)}}
+            for e in state.consume(raw):yield event(e)
+            for e in state.complete():yield event(e)
+        except (ChatCompatibilityError,ValueError,TypeError,KeyError,UnicodeDecodeError) as error:
+            response=state.response('failed');response['error']={'code':getattr(error,'code','invalid_upstream_response'),
+                'message':str(error) if isinstance(error,ChatCompatibilityError) else 'Invalid Messages stream'}
+            yield event({'type':'response.failed','response':response})

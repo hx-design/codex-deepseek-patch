@@ -712,3 +712,41 @@ class FirstSetupTests(unittest.TestCase):
                 self.assertEqual(draft['connection']['model_specs'],{'missing':{'context_window':262144}})
                 self.call('setup_save',{**self.values,'model_0':True,'model_1':False})
                 self.assertEqual(ui.setup_read(self.state)['connection']['models'],['fixture-model'])
+
+
+class SetupProgressTests(unittest.TestCase):
+    def test_setup_worker_progress_is_visible_and_does_not_claim_installation(self):
+        from update_worker import SetupProgress
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);jobs=root/'settings-ui/jobs';jobs.mkdir(parents=True);identifier='a'*32
+            ui.monitor.atomic_json(jobs/(identifier+'.request.json'),{'action':'hub','payload':{}})
+            observed=[]
+            def operation(directory,action,payload,revision,cancelled):
+                progress=SetupProgress(root/'stage.json')
+                for phase,done,total in [('building',None,None),('verifying',2,8),('ready',None,None)]:
+                    progress.publish(phase,done,total)
+                    cancelled.progress(ui.monitor.load_json(root/'stage.json'))
+                    observed.append(ui.monitor.load_json(jobs/(identifier+'.result.json')))
+                return {'route':'setup'}
+            with patch.object(ui,'perform',side_effect=operation):result=ui.run_request(root,identifier)
+            self.assertEqual(result['status'],'completed')
+            self.assertIn('2/8',observed[1]['message'])
+            self.assertTrue(all(v['status']=='running' for v in observed))
+            self.assertFalse((root/'settings.json').exists());self.assertFalse((jobs/(identifier+'.request.json')).exists())
+
+    def test_setup_cancel_reaps_real_owned_child_during_verification(self):
+        import update_worker,os,time
+        from update_progress import _alive
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'setup').mkdir();(root/'builds').mkdir()
+            script=root/'patch.py'
+            script.write_text("import sys,json,time,os\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index('--progress-file')+1]);Path(__file__).with_suffix('.pid').write_text(str(os.getpid()))\np.write_text(json.dumps({'phase':'verifying','message':'fixture','completed':1,'total':4}))\ntime.sleep(30)\n",encoding='utf-8')
+            observed=[]
+            cancelled=lambda:bool(observed)
+            cancelled.progress=lambda value: observed.append(value) if value.get('phase')=='verifying' else None
+            with patch.object(update_worker.p,'ROOT',root),self.assertRaises(ui.SettingsError) as caught:
+                update_worker.setup_command(['build','--output',str(root/'builds/sample'),'--verify'],cancelled)
+            self.assertEqual(caught.exception.code,'cancelled')
+            self.assertFalse(_alive(int(script.with_suffix('.pid').read_text())))
+            self.assertEqual(observed[0]['completed'],1)
+            self.assertFalse((root/'settings.json').exists())

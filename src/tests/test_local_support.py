@@ -207,7 +207,28 @@ class SpecificationSourceTests(unittest.TestCase):
         result,warnings=local.discover(connection,fetch=lambda *a:{'data':rows})
         self.assertFalse(warnings);model=result['m'];self.assertEqual(model['context_window'],65536)
         self.assertEqual(model['reported_context_window'],32768);self.assertTrue(model['context_conflict'])
-        self.assertEqual(model['spec_sources'],{'context_window':'user','supports_tools':'user','input_modalities':'service','reasoning_levels':'inferred'})
+        self.assertEqual(model['spec_sources'],{'context_window':'user','max_output_tokens':'inferred','supports_tools':'user','input_modalities':'service','reasoning_levels':'inferred'})
         connection['model_specs']={}
         result,_=local.discover(connection,fetch=lambda *a:{'data':rows})
         self.assertEqual(result['m']['context_window'],32768);self.assertFalse(result['m']['context_conflict'])
+
+
+class AnthropicDiscoveryTests(__import__('unittest').TestCase):
+    def test_anthropic_pagination_and_declared_maximum_effort_are_preserved(self):
+        import local_support as local
+        connection={'id':'local-messages','kind':'openai','base_url':'https://example.invalid/v1','wire_api':'anthropic_messages'}
+        row={'id':'unknown-name','max_input_tokens':1000000,'max_tokens':128000,'capabilities':{
+            'effort':{'supported':True,'low':{'supported':True},'max':{'supported':True}},
+            'thinking':{'types':{'adaptive':{'supported':True}}},'image_input':{'supported':True}}}
+        paths=[]
+        def fetch(c,path):
+            paths.append(path)
+            return {'data':[row],'has_more':True,'last_id':'a/b'} if path=='/models' else {'data':[{**row,'id':'second'}],'has_more':False}
+        specs,warnings=local.discover(connection,fetch)
+        self.assertFalse(warnings);self.assertEqual(set(specs),{'unknown-name','second'})
+        self.assertEqual(paths,['/models','/models?after_id=a%2Fb'])
+        self.assertEqual(specs['unknown-name']['context_window'],1000000)
+        self.assertEqual(specs['unknown-name']['max_output_tokens'],128000)
+        self.assertEqual(specs['unknown-name']['reasoning_levels'],['low','max'])
+        self.assertEqual(specs['unknown-name']['thinking_mode'],'adaptive')
+        with self.assertRaisesRegex(ValueError,'cursor'):local.discover(connection,lambda c,path:{'data':[],'has_more':True,'last_id':'repeated'})

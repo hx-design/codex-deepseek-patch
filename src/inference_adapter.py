@@ -31,7 +31,7 @@ from responses_compat import ToolAdapter
 from legacy_history import LegacyHistory, LegacyHistoryError, RecoveryProgress, visible_reasoning, handoff_item, expand_handoffs
 from reasoning_origin import (LegacyOriginIndex, LegacyOriginIndexError, ReasoningOriginError,
                                resolve_request, stamp_event, stamp_response)
-from chat_completions_compat import ChatCompatibilityError, ResponsesToChat
+from chat_completions_compat import ChatCompatibilityError, ResponsesToChat, ResponsesToAnthropic
 
 # Bound untrusted upstream events, not the authenticated native client's history.
 MAX_BODY = 64_000_000
@@ -103,7 +103,7 @@ def validate_profile(profile):
         if not isinstance(model, str) or not model or not isinstance(route, dict):
             raise ValueError('Invalid model route')
         _endpoint(route['base_url'], allow_remote_http=True)
-        if route.get('wire_api', 'responses') not in ('responses', 'chat_completions'):
+        if route.get('wire_api', 'responses') not in ('responses', 'chat_completions', 'anthropic_messages'):
             raise ValueError('Unsupported model wire protocol')
         if 'supports_reasoning_effort' in route and type(route['supports_reasoning_effort']) is not bool:
             raise ValueError('Reasoning effort support must be an explicit boolean')
@@ -153,7 +153,9 @@ def _route_headers(server, route, *, stream):
                ('Accept', 'text/event-stream' if stream else 'application/json')]
     reference = route.get('credential')
     if reference is not None and reference.get('kind') != 'none':
-        headers.append(('Authorization', 'Bearer ' + server.credential_reader(reference)))
+        key=server.credential_reader(reference)
+        headers.append(('x-api-key',key) if route.get('wire_api')=='anthropic_messages' else ('Authorization','Bearer '+key))
+    if route.get('wire_api')=='anthropic_messages':headers.append(('anthropic-version','2023-06-01'))
     return headers
 
 
@@ -181,7 +183,7 @@ def prepare_request(body, route):
             else:
                 messages.append(item)
         body['instructions'], body['input'] = '\n\n'.join(instructions), messages
-    chat = route.get('wire_api') == 'chat_completions'
+    chat = route.get('wire_api') in ('chat_completions','anthropic_messages')
     adapter = ToolAdapter(body, flatten_namespaces=chat or bool(route.get('flatten_namespaces'))) if chat or route.get('tool_adapter') else None
     return adapter.body if adapter else body, adapter
 
@@ -189,14 +191,17 @@ def prepare_request(body, route):
 def _protocol_request(body, route):
     try:
         protocol = (ResponsesToChat(body, supports_reasoning_effort=route.get('supports_reasoning_effort', False))
-                    if route.get('wire_api') == 'chat_completions' else None)
+                    if route.get('wire_api') == 'chat_completions' else
+                    ResponsesToAnthropic(body,max_output_tokens=route.get('max_output_tokens'),
+                        reasoning_levels=route.get('reasoning_levels',[]),thinking_mode=route.get('thinking_mode'))
+                    if route.get('wire_api')=='anthropic_messages' else None)
         return protocol.body if protocol else body, protocol
     except ChatCompatibilityError as exc:
         raise RelayError(exc.status, exc.code, str(exc)) from None
 
 
 def _route_url(route):
-    suffix = 'chat/completions' if route.get('wire_api') == 'chat_completions' else 'responses'
+    suffix = {'chat_completions':'chat/completions','anthropic_messages':'messages'}.get(route.get('wire_api'),'responses')
     return _endpoint(route['base_url'], suffix, allow_remote_http=True)
 
 

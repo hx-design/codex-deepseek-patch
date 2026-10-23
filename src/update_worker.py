@@ -8,6 +8,83 @@ import patch as p
 import backend
 
 
+class SetupProgress:
+    """Private, fixed-vocabulary progress for the first-install child."""
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def publish(self, phase, completed=None, total=None, **ignored):
+        from monitor import atomic_json
+        labels = {'building':'正在准备适配文件', 'verifying':'正在验证原生兼容性', 'ready':'准备和验证完成'}
+        if phase not in labels:raise ValueError('Unknown setup phase')
+        value = {'phase':phase, 'message':labels[phase]}
+        if type(completed) is int and type(total) is int and 0 <= completed <= total and total > 0:
+            value.update(completed=completed, total=total)
+        atomic_json(self.path, value)
+
+
+def setup_command(arguments, cancelled=None):
+    """One cancellable child; only fixed progress metadata crosses the boundary."""
+    import os, signal, subprocess, tempfile, time
+    from management import SettingsError, require
+    from official_client_host import windowless_python
+    from monitor import load_json
+    with tempfile.TemporaryDirectory(prefix='setup-progress-', dir=Path(arguments[arguments.index('--output')+1]).parent.parent/'setup') as temporary:
+        progress_path=Path(temporary)/'progress.json'
+        command=[str(windowless_python(sys.executable)),str(p.ROOT/'patch.py'),*map(str,arguments),'--progress-file',str(progress_path)]
+        with tempfile.TemporaryFile() as log:
+            child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log,
+                **(__import__('windows_support').background_options() if os.name=='nt' else {'start_new_session':True}))
+            try:
+                previous=None
+                while True:
+                    if cancelled and cancelled():raise SettingsError('cancelled','操作已取消，正式配置未改变。')
+                    value=load_json(progress_path,{})
+                    if value!=previous and getattr(cancelled,'progress',None):cancelled.progress(value)
+                    previous=value
+                    if child.poll() is not None:break
+                    time.sleep(.1)
+                require(child.returncode==0,'准备或验证未通过；正式配置未改变，请检查应用版本、接口和模型规格。','setup_validation_failed')
+            finally:
+                if child.poll() is None:
+                    if os.name=='nt':subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],capture_output=True,**p.background_options())
+                    else:os.killpg(child.pid,signal.SIGTERM)
+                    try:child.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        if os.name=='nt':child.kill()
+                        else:os.killpg(child.pid,signal.SIGKILL)
+                        child.wait(timeout=5)
+
+
+def recovery_target(directory, baseline):
+    """Select only the monitor's owned candidate; never recover another edition."""
+    from monitor import load_json
+    directory,baseline=Path(directory).resolve(),Path(baseline).resolve()
+    settings=load_json(directory/'settings.json',{})
+    pending=load_json(directory/'state.json',{}).get('pending',{}).get('build',{}).get('directory')
+    if not pending:return baseline
+    target=Path(pending).resolve()
+    p.require(target.is_relative_to(directory/'builds'),'Recovery candidate is outside this installation')
+    manifest=load_json(target/'manifest.json',{})
+    p.require(manifest.get('edition')==settings.get('edition') and manifest.get('codex_home')==settings.get('codex_home'),
+              'Recovery candidate identity changed')
+    return target
+
+
+def recovery_summary(directory, baseline):
+    from monitor import load_json
+    try:
+        target=recovery_target(directory,baseline)
+        manifest=load_json(target/'manifest.json',{})
+        install=load_json(target/'native-install-transaction.json',{})
+        uninstall=load_json(target/'native-uninstall-transaction.json',{})
+        interrupted=(uninstall and uninstall.get('phase')!='complete') or (install and install.get('phase') not in ('committed','rolled_back'))
+        return {'candidate_version':manifest.get('tool_version') if target!=Path(baseline).resolve() else None,
+                'interrupted':bool(interrupted),'message':'安装中断，可从这里恢复' if interrupted else '当前安装记录完整'}
+    except (OSError,ValueError,TypeError,p.PatchError):
+        return {'interrupted':False,'message':'安装记录需要核对，请查看诊断'}
+
+
 def verify_build(output, progress=None):
     output=Path(output)
     manifest=json.loads((output/'manifest.json').read_text(encoding='utf-8'))

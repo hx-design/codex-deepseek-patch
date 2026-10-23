@@ -87,10 +87,11 @@ def setup_view(directory, notice=''):
         rows += [hub_field('name','连接名称',connection.get('name','我的模型')),
                  hub_field('url','接口地址',connection.get('base_url','')),
                  hub_field('kind','服务类型',connection.get('kind','openai'),'choice',choices=[['openai','兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
-                 hub_field('wire','接口协议',connection.get('wire_api','chat_completions'),'choice',choices=[['chat_completions','Chat Completions'],['responses','Responses']]),
+                 hub_field('wire','接口协议',connection.get('wire_api','chat_completions'),'choice',choices=[['chat_completions','Chat Completions'],['responses','Responses'],['anthropic_messages','Anthropic Messages']]),
                  hub_field('key','API Key','','secret',hint='本地服务可留空；留空保留已保存密钥。'),
                  hub_field('models','型号',', '.join(connection.get('models',[])),hint='填写检测到的型号，多个用逗号分隔。'),
                  hub_field('maximum','最大上下文',draft.get('maximum'),kind='number',hint='仅在服务未提供规格时填写实际最大值。'),
+                 hub_field('output','最大输出',draft.get('output'),kind='number',hint='Anthropic 缺少规格时填写'),
                  hub_field('respect','保留本地服务加载窗口',connection.get('respect_server_context',True),'toggle')]
     if p.EDITION=='proxy' and draft.get('available'):
         rows.append({'type':'note','text':'勾选接入型号，再保存选择。'})
@@ -110,22 +111,7 @@ def setup_view(directory, notice=''):
             'options':hub_options(directory),'footer':footer_layout(buttons),'back':None}
 
 
-def setup_command(arguments, cancelled=None):
-    """One hidden child, cancellable, with no inherited credential logging."""
-    command=[str(__import__('official_client_host').windowless_python(sys.executable)),str(ROOT/'patch.py'),*map(str,arguments)]
-    with tempfile.TemporaryFile() as log:
-        child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log,
-            **(__import__('windows_support').background_options() if os.name=='nt' else {'start_new_session':True}))
-        try:
-            while child.poll() is None:
-                if cancelled and cancelled():raise SettingsError('cancelled','操作已取消，正式配置未改变。')
-                time.sleep(.1)
-            require(child.returncode==0,'准备或验证未通过；正式配置未改变，请检查应用版本、接口和模型规格。','setup_validation_failed')
-        finally:
-            if child.poll() is None:
-                if os.name=='nt':subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],capture_output=True,**p.background_options())
-                else:__import__('signal');os.killpg(child.pid,__import__('signal').SIGTERM)
-                child.wait(timeout=15)
+from update_worker import setup_command
 
 
 def setup_guard(draft):
@@ -182,8 +168,9 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
                     result=probe_connection(connection,cancelled)
                     require(result['available'],'接口没有返回可用型号。')
                     require(all(m in result['available'] for m in models),'所选型号不在接口返回的模型列表中。')
-                    if maximum:connection['model_specs']={model:{'context_window':maximum} for model in models if model not in result['specs']}
-                    new.update(connection=connection,maximum=maximum,available=result['available'])
+                    output=hub_number(values.get('output'))
+                    connection['model_specs']={model:{**({'context_window':maximum} if maximum else {}),**({'max_output_tokens':output} if output else {})} for model in models if model not in result['specs']}
+                    new.update(connection=connection,maximum=maximum,output=output,available=result['available'])
                     notice='发现 '+str(len(result['available']))+' 个型号，可在下方勾选。'
                 if cancelled and cancelled():raise SettingsError('cancelled','检测已取消。')
                 monitor.atomic_json(root/'draft.json',new)
@@ -378,7 +365,7 @@ def probe_connection(connection, cancelled=None):
     def check():
         if cancelled and cancelled():raise SettingsError('cancelled','操作已取消。')
     check()
-    catalog = local_support.request(connection, '/models')
+    catalog = local_support.model_list(connection,lambda row,path: (check(),local_support.request(row,path))[1])
     check()
     def fetch(row,path,body=None):
         check()
@@ -467,6 +454,7 @@ def _validate_connection(value):
         if 'context_window' in spec:
             require(type(spec['context_window']) is int and 1024 <= spec['context_window'] <= 100_000_000,
                     '请填写模型实际支持的最大上下文。')
+        if 'max_output_tokens' in spec:require(type(spec['max_output_tokens']) is int and spec['max_output_tokens']>0,'最大输出须为正整数。')
         if 'supports_tools' in spec:require(type(spec['supports_tools']) is bool, '工具能力必须为开启或关闭。')
         if 'reasoning_levels' in spec:
             require(isinstance(spec['reasoning_levels'],list) and all(v in ('none','minimal','low','medium','high','xhigh','max','ultra') for v in spec['reasoning_levels']), '思考档位格式不正确。')
@@ -530,7 +518,9 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         else:
             with edit_lock(directory,expected,cancelled):
                 from official_client_install import recover
-                recover(build)
+                from update_worker import recovery_target
+                result=recover(recovery_target(directory,build))
+                if result.get('status')=='no_transaction':return {'message':'没有需要恢复的安装事务。'}
         return {'message':'恢复操作已完成。'}
     changed_models = False
     with edit_lock(directory,expected,cancelled):
@@ -669,7 +659,13 @@ def run_request(directory, identifier):
     jobs=monitor.private_directory(Path(directory)/'settings-ui/jobs')
     request=jobs/(identifier+'.request.json');result=jobs/(identifier+'.result.json')
     cancelled=lambda:(jobs/(identifier+'.cancel')).exists()
-    monitor.atomic_json(result,{'status':'running','message':'正在处理，可继续查看其他设置。'})
+    def progress(value):
+        message=value.get('message','正在处理…')
+        if type(value.get('completed')) is int and type(value.get('total')) is int:
+            message+=f" · {value['completed']}/{value['total']} 项"
+        monitor.atomic_json(result,{'status':'running','message':message})
+    cancelled.progress=progress
+    progress({'message':'正在处理，可继续查看其他设置。'})
     try:
         require(request.is_file() and not request.is_symlink() and request.stat().st_size<=131072,'无效的设置请求。')
         try:value=json.loads(request.read_text(encoding='utf-8'))
@@ -1210,7 +1206,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                      ['openai','通用兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
                  hub_field('url','接口地址',c.get('base_url',''),hint='例如 http://127.0.0.1:11434/v1'),
                  hub_field('wire','接口协议',c.get('wire_api','chat_completions'),'choice',
-                       choices=[['chat_completions','Chat Completions'],['responses','Responses']]),
+                       choices=[['chat_completions','Chat Completions'],['responses','Responses'],['anthropic_messages','Anthropic Messages']]),
                  hub_field('key','API Key','','secret',hint='本地接口可留空；已有密钥保持不变'),
                  hub_field('models','使用型号',', '.join(c.get('models',[])),hint='留空检测所有型号'),
                  hub_field('respect','沿用服务端窗口',c.get('respect_server_context',False),'toggle'),
@@ -1221,7 +1217,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         if connection:buttons.insert(0,hub_button('移除','confirm_remove',style='danger'))
     elif route=='connections/spec':
         data['title']='补充型号规格';data['back']='connections/edit'
-        rows += [hub_field('model','准确型号 ID'),hub_field('maximum','最大窗口','','number'),
+        rows += [hub_field('model','准确型号 ID'),hub_field('maximum','最大窗口','','number'),hub_field('output','最大输出','','number',hint='Anthropic 必填；按服务规格填写'),
                  hub_field('levels','思考档位',hint='例如 low, medium, high'),
                  hub_field('tools','支持工具调用',True,'toggle')]
         buttons.append(hub_button('保存','save_spec',style='primary'))
@@ -1233,13 +1229,18 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
             rows.append(hub_field('model_'+str(index),model,model in extra['selected'],'toggle'))
             if model not in extra['specs']:
                 rows.append(hub_field('window_'+str(index),'最大窗口 · '+model,'','number'))
+                if extra['draft']['connection'].get('wire_api')=='anthropic_messages':rows.append(hub_field('output_'+str(index),'最大输出 · '+model,'','number'))
         data['available']=extra['available'];data['specs']=extra['specs']
         buttons += [hub_button('全选','select_all'),hub_button('清空','clear_all'),hub_button('保存所选','save_discovered',style='primary')]
     elif route=='updates':
         data['subtitle']=state['edition_label']+' · 当前 '+str(state['version'])
+        from update_worker import recovery_summary
+        recovery=recovery_summary(directory,records(directory)[1])
+        if recovery.get('candidate_version'):rows.append(hub_item('待安装版本',recovery['candidate_version']))
         rows += [{'type':'update','progress':state['progress']},
+                 hub_item('安装与恢复',recovery['message'],'updates/maintenance'),
                  hub_item('自动更新与提醒','检查周期、模型同步、水滴提醒','updates/options'),
-                 hub_item('维护与恢复','失败重试、清理缓存与安装恢复','updates/maintenance')]
+                 hub_item('诊断报告','查看失败阶段和近期请求','diagnostics')]
         buttons += [hub_button('同步模型','sync_models'),hub_button('检查更新','check_updates',style='primary')]
     elif route=='updates/options':
         data['title']='更新设置';data['subtitle']='两个版本各自更新，保留手动模型设置。'
@@ -1388,6 +1389,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
                 maximum=hub_number(values.get('window_'+str(i)))
                 m.require(maximum is not None and maximum>=1024,'请补充 '+model+' 的最大窗口。')
                 c['model_specs'][model]={'context_window':maximum,'supports_tools':True}
+                if c.get('wire_api')=='anthropic_messages':c['model_specs'][model]['max_output_tokens']=hub_number(values.get('output_'+str(i)))
         perform('save_connection',{'connection':c,'key':draft.get('key','')})
         route='connections';key=None
     elif intent=='save_spec':
@@ -1396,6 +1398,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         m.require(model,'请填写准确型号。')
         c.setdefault('model_specs',{})[model]={'context_window':hub_number(values.get('maximum')),
             'reasoning_levels':hub_list(values.get('levels')),'supports_tools':values.get('tools') is True}
+        if values.get('output'):c['model_specs'][model]['max_output_tokens']=hub_number(values['output'])
         perform('save_connection',{'connection':c})
     elif intent=='save_options':
         perform(intent,{**{k:values.get(k) is True for k in ('auto_update','model_sync','progress_ui')},

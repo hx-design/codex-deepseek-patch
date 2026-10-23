@@ -392,7 +392,7 @@ class PairedCandidateTests(unittest.TestCase):
         from scripts import release_manifest as release
         for host,channel in release.VARIANTS:
             required=release.REQUIRED_NATIVE | ({'local_flattened_tools','native_chat_completions_lazy_tools',
-                                                'native_chat_custom_tools_return_gpt'} if channel=='proxy' else set())
+                                                'native_chat_custom_tools_return_gpt','native_anthropic_tools_return_gpt'} if channel=='proxy' else set())
             coverage={'format':1,'kind':'native-client-with-synthetic-services','platform':host,
                       'native':{name:'passed' for name in required},
                       'regressions':{name:'passed' for name in release.REQUIRED_REGRESSIONS | release.PLATFORM_REGRESSIONS[host]}}
@@ -487,3 +487,38 @@ class RuntimeTransactionTests(unittest.TestCase):
             self.assertEqual(result,raw);self.assertEqual(counts[-1],(len(raw),len(raw)))
             self.assertTrue(all(d<=len(raw) for d,t in counts))
             self.assertTrue(all(t in (len(raw),None) for d,t in counts))
+
+
+class BootstrapTests(unittest.TestCase):
+    def fixture(self,root,edition):
+        from scripts.release_manifest import bundle_inventory,_json
+        root.mkdir();payload=root/'payload';source=payload/'source';source.mkdir(parents=True)
+        (source/'edition.json').write_text(json.dumps({'edition':edition,'version':'fixture'}),encoding='utf-8')
+        (payload/'python').write_bytes(b'fixture')
+        import platform,sys
+        host='windows' if sys.platform=='win32' else 'macos' if sys.platform=='darwin' else 'unsupported'
+        cpu='arm64' if platform.machine().lower() in ('arm64','aarch64') else 'x64'
+        (root/'bundle.json').write_bytes(_json({'format':1,'edition':edition,'version':'fixture','target':host+'-'+cpu,
+            'python':'python','files':bundle_inventory(payload)}))
+
+    @unittest.skipUnless(__import__('sys').platform in ('darwin','win32'),'Supported installer host')
+    def test_bootstrap_atomic_copy_reuse_edition_isolation_and_tamper_rejection(self):
+        from scripts.release_manifest import bootstrap_install,verify_bootstrap
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);base=root/'private'
+            for edition in ('ds','proxy'):
+                bundle=root/edition;self.fixture(bundle,edition)
+                installed=bootstrap_install(bundle,base=base,launch=False)
+                self.assertTrue(installed.is_relative_to(base.resolve()/'installers'/edition))
+                self.assertEqual(installed,bootstrap_install(bundle,base=base,launch=False))
+                self.assertFalse((base/('monitor-'+edition)).exists())
+                (installed/'payload/python').write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError,'changed'):bootstrap_install(bundle,base=base,launch=False)
+            self.assertFalse((base/'monitor').exists())
+
+    def test_bootstrap_bad_runtime_fails_before_creating_bundle(self):
+        from scripts.release_manifest import build_bootstrap
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);archive=root/'runtime.zip';archive.write_bytes(b'bad')
+            with self.assertRaisesRegex(ValueError,'digest'):build_bootstrap(root,archive,'windows-x64',root/'out')
+            self.assertFalse((root/'out').exists())

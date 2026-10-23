@@ -27,7 +27,7 @@ Native catalog entries record each model's maximum/effective context, compaction
 
 Responses interfaces can preserve native functions. Where required, `responses_compat.py` translates namespace/custom/tool-search items to compatible functions and restores native result shapes. Tool search remains lazy, and Codex performs execution and approval. `additional_tools` declarations are promoted to the applicable current tool definitions, not inserted as chat text.
 
-`chat_completions_compat.py` translates standard messages, images, calls/results, parallel tool chunks, streaming lifecycle and usage. Reasoning effort is forwarded only when explicitly enabled for that interface. Unsupported modalities produce a capability error. This is not an Anthropic Messages client; Claude and GLM can use an existing compatible endpoint.
+`chat_completions_compat.py` translates standard messages, images, calls/results, parallel tool chunks, streaming lifecycle and usage. Reasoning effort is forwarded only when explicitly enabled for that interface. Unsupported modalities produce a capability error. The same module also adapts native Anthropic Messages: system blocks, image sources, tool use/results, SSE block lifecycles, cache-aware usage and same-model thinking signatures. It pins API version 2023-06-01 and uses x-api-key independently of native GPT authentication. Model metadata or explicit operator specs supply max_output_tokens and reasoning capabilities; no guessed output budget is added.
 
 Models with declared tool support retain the original CLI tool capabilities. Chat-only models omit tools. Native services continue to control whether individual tools are available in a particular session.
 
@@ -100,3 +100,9 @@ The shared settings controller opens a first-install card when its own settings 
 The adapter retains at most 64 request metadata records in memory. Completed records disappear from the diagnostic view after 30 minutes and all records disappear on service restart. The authenticated local diagnostics endpoint reports model, service host/port, protocol, phase, elapsed time and status category; bodies, keys, private URL paths and raw exceptions are excluded. The settings card reads this data on demand. Exported reports keep their existing allowlist.
 
 Specifications carry field-level provenance and the originally reported window. Operator/service conflicts are shown alongside the effective value. The metadata does not alter request shaping, context precedence, reductions or hidden-model selection.
+
+## Optional first-install bundles
+
+The release builder can package a verified portable source with a SHA256-pinned Python runtime, independent for each edition and CPU. These are optional release assets, outside the 100-file source update feed. The original Codex application is never bundled. The bootstrap copies verified files atomically to an edition-specific, content-addressed user directory, then opens the existing setup card with that stable interpreter. It installs no system Python and changes no native configuration until the setup transaction is explicitly invoked. macOS public distribution requires signing/notarizing the installer itself; Windows uses a windowless WScript launcher and includes a manual fallback for hosts where WScript is disabled. Runtime licenses remain in the package.
+
+First-setup progress travels through the existing private job files. Build and verification phases are fixed vocabulary; compatibility checks report real completed/total counts. Cancellation terminates only the owned child process group. No extra daemon, HTTP service or web UI is introduced.
