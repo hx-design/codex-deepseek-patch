@@ -5,7 +5,7 @@
 
 **Use DeepSeek in the original Codex.** Add DeepSeek Flash alongside GPT, keep your login and native tools, and switch within one chat. Manage credentials, context limits and patch updates in the settings window.
 
-DS **0.6.6**, update branch `main`.
+DS **0.7.0**, update branch `main`.
 Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
 
 
@@ -29,7 +29,7 @@ The built-in `openai` identity and native prediction request path are retained. 
 
 When switching from older encrypted GPT compactions, the selected external model recovers a readable handoff. Truncated summaries split only the failing input and are cached after complete recovery. Quota, rate-limit, authentication and filtering failures receive distinct errors instead of a generic summary 502.
 
-The adapter supports Responses and Chat Completions protocols. Claude, GLM, Qwen and other models can use existing services exposing these compatible APIs. Raw Anthropic Messages is not implemented. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
+The extension supports Responses, Chat Completions and native Anthropic Messages. Select the protocol exposed by the service. Messages uses independent credentials, declared output limits and same-model thinking-signature round trips. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
 
 Python 3.11+ and the official macOS/Windows Codex app are required. No separate Node.js installation is required: older Python uses the untouched runtime bundled with Codex for native request compression. There is no resident management UI, database or model engine. A per-user system service runs the adapter; a separate scheduled monitor checks code/models and exits. Windows processes are windowless. Legacy code remains for recovery and regression, not new app modification.
 

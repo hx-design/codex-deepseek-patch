@@ -48,7 +48,7 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 ## Native integration changes
 
 1. Verify the original app publisher and bundled CLI before probing. New architecture must not modify ASAR, re-sign the app or copy a Store package.
-2. Keep adapter rules protocol/capability based. Add synthetic coverage for arbitrary model identities, both wire APIs, streaming, tool results, errors, cancellation, reasoning provenance and context transitions.
+2. Keep adapter rules protocol/capability based. Add synthetic coverage for arbitrary model identities, all supported wire APIs, streaming, tool results, errors, cancellation, reasoning provenance and context transitions.
 3. Run the original CLI with isolated state and synthetic endpoints in the background. Do not launch GUI windows or touch the user's keychain during routine validation.
 4. Preserve native login, tool execution, approvals, chat identity, working directory and readable-summary compaction. Test native API metadata migrations and interruption recovery; never write the history database directly.
 5. Stage and validate the same bytes. Recheck source/runtime/profile identity before activation. Test rollback with fault injection and real Windows normal-user service states.
@@ -107,3 +107,13 @@ Candidate preparation uses isolated Git indexes without changing the checkout or
 完整单元、原生 UI 与故障注入测试在发布四组合门禁中执行；用户端下载仅做文件校验、全源码语法检查和轻量协议检查，随后用其原版 CLI 验证兼容性。下载检查不得重复启动整套 GUI/服务生命周期测试。
 
 后台准备的新包使用 `prepared_idle` 状态：旧控制器只能识别 `prepared`，因此不得越过新空闲策略自行关闭应用。新安装器同时接受两种已校验状态，提交后统一为 `installed`。四组合必须验证这条首次升级路径。
+
+### Optional first-install assets
+
+From a verified portable package (including its private `.package.json` receipt), build a disposable installer candidate:
+
+```sh
+PYTHONPATH=src python3 src/scripts/release_manifest.py --bootstrap-source VERIFIED_PORTABLE_DIRECTORY --runtime-archive PINNED_VENDOR_ARCHIVE --target macos-arm64 --output NEW_PRIVATE_DIRECTORY
+```
+
+Targets: macos-arm64, macos-x64, windows-x64, windows-arm64. Runtime pins live in the release builder. Retain vendor license files. Keep generated installers outside source feeds; validate their interpreter, native UI, stable copied path, edition boundaries and source integrity independently. Mac installer signatures/notarization belong to our installer only, never the official Codex app. Source promotion does not implicitly publish installer assets.

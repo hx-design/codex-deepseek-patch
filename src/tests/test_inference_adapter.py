@@ -399,6 +399,21 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(status,200)
         finally:ws.close()
 
+    def test_private_request_diagnostics(self):
+        path='/'+self.profile['token']+'/diagnostics'
+        for edition in ('ds','proxy'):
+            self.server.profile['edition']=edition
+            status,_,_=self.request({'model':'deepseek-fixture','input':'private-prompt-not-logged','stream':True})
+            self.assertEqual(status,200)
+            status,_,_=self.request({'prompt':'private-image-prompt'},path=self.path.removesuffix('responses')+'native-tool')
+            self.assertEqual(status,422)
+            status,_,raw=self.request(path=path,method='GET');self.assertEqual(status,200)
+            value=json.loads(raw);self.assertEqual(value['edition'],edition);self.assertTrue(value['requests'])
+            self.assertEqual(value['requests'][0]['status'],422);self.assertEqual(value['requests'][0]['error_source'],'upstream')
+            self.assertNotIn('private-image-prompt',raw.decode())
+            self.assertNotIn('private-prompt',raw.decode());self.assertNotIn('independent-ds-fixture-key',raw.decode())
+            status,_,_=self.request(path='/wrong/diagnostics',method='GET');self.assertEqual(status,401)
+
     def test_health_path_token_host_origin_and_encoding_boundaries(self):
         status, _, raw = self.request(path='/' + self.profile['token'] + '/health', method='GET')
         self.assertEqual(status, 200)
@@ -844,3 +859,17 @@ class UpdateActivityTests(unittest.TestCase):
         a=relay.Activity();a.observe('r',{'output':[{'type':'image_generation_call','id':'image'},
             {'type':'web_search_call','id':'search'}]})
         self.assertEqual(a.status()['tools'],0)
+
+
+class TraceTests(unittest.TestCase):
+    def test_memory_bound_expiry_terminal_states_and_no_payload_fields(self):
+        now=[0.0];trace=relay.RequestTrace(lambda:now[0])
+        for i in range(80):trace.begin('model-'+str(i),True,'http')
+        self.assertEqual(len(trace.recent()),64)
+        i=trace.begin('selected-model',True,'websocket')
+        now[0]=.2;trace.update(i,'streaming');now[0]=.5;trace.update(i,'failed',429)
+        trace.update(i,'completed')
+        row=trace.recent()[0];self.assertEqual(row['phase'],'failed');self.assertEqual(row['error_source'],'upstream')
+        self.assertEqual(row['error_kind'],'rate_limit');self.assertEqual(row['first_byte_ms'],200);self.assertEqual(row['elapsed_ms'],500)
+        self.assertFalse({'body','prompt','headers','url','error_message','input','output'} & set(row))
+        now[0]=1801;self.assertFalse(any(v['id']==i for v in trace.recent()))

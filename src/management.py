@@ -53,6 +53,145 @@ def find_directory(explicit=None):
     return default
 
 
+# First installation uses the same native cards and the existing installer.
+def needs_setup(directory):
+    return not (Path(directory)/'settings.json').exists()
+
+
+def setup_read(directory):
+    value=monitor.load_json(Path(directory)/'setup/draft.json',{})
+    require(not value or value.get('edition')==p.EDITION,'首次安装草稿属于另一版本。','edition_mismatch')
+    return value
+
+
+def setup_revision(directory):
+    path=Path(directory)/'setup/draft.json'
+    return hashlib.sha256(path.read_bytes() if path.exists() else b'').hexdigest()
+
+
+def setup_app():
+    if sys.platform=='win32':
+        try:return str(__import__('windows_support').discover_app())
+        except (OSError,ValueError,RuntimeError):return ''
+    return next((str(v) for v in (Path('/Applications/ChatGPT.app'),Path('/Applications/Codex.app')) if v.is_dir()),'')
+
+
+def setup_view(directory, notice=''):
+    from update_worker import first_setup_view
+    return first_setup_view(directory, notice)
+
+
+from update_worker import setup_command
+
+
+def setup_guard(draft):
+    home=Path(draft['home']);current=p.read_config(home/'config.toml')
+    require(hashlib.sha256(current.encode()).hexdigest()==draft['config_digest'],
+            'Codex 配置已变化，请重新保存并准备。','stale_revision')
+    value=p.tomllib.loads(current)
+    require(not value.get('openai_base_url') and value.get('model_provider','openai')=='openai'
+            and not value.get('model_providers',{}).get('openai',{}).get('base_url'),
+            '检测到其他模型管理器正在接管 Codex。请先在原管理器中断开 Codex，再进行首次安装。','configuration_conflict')
+
+
+def setup_dispatch(directory, payload, expected=None, cancelled=None):
+    directory=Path(directory);intent=payload.get('intent','refresh');values=payload.get('values') or {}
+    require(isinstance(values,dict),'无效的首次安装表单。')
+    if intent in ('navigate','refresh'):return setup_view(directory)
+    require(intent in ('setup_save','setup_prepare','setup_install'),'请先完成首次设置。','not_installed')
+    root=monitor.private_directory(directory/'setup')
+    with monitor.state_lock(root) as locked:
+        require(locked,'首次设置正在处理中。','busy')
+        require(expected==setup_revision(directory),'草稿已改变，请刷新后重试。','stale_revision')
+        draft=setup_read(directory)
+        if cancelled and cancelled():raise SettingsError('cancelled','操作已取消。')
+        if intent=='setup_save':
+            require(draft.get('phase')!='installed','安装已完成，请继续完成设置。')
+            app=Path(str(values.get('app',''))).expanduser();home=Path(str(values.get('home',''))).expanduser()
+            require(app.is_absolute() and app.is_dir() and home.is_absolute(),'请指定有效的应用和配置目录。')
+            app,home=app.resolve(),home.resolve()
+            require(not root.resolve().is_relative_to(home) and not root.resolve().is_relative_to(app),'安装材料不能放在应用或 Codex 配置目录内。')
+            secret=values.get('key','');require(isinstance(secret,str) and len(secret)<=2560 and not any(ord(c)<33 for c in secret),'API Key 格式不正确。')
+            new={'edition':p.EDITION,'phase':'draft','app':str(app),'home':str(home),
+                 'maintenance':values.get('maintenance') is True,
+                 'config_digest':hashlib.sha256(p.read_config(home/'config.toml').encode()).hexdigest()}
+            setup_guard(new)
+            __import__('official_client').inspect(app)  # Signed source, no launch or login access.
+            key_path=root/'credential.key';old_key=key_path.read_bytes() if key_path.exists() else None
+            try:
+                if secret:private_write(key_path,secret.encode())
+                if p.EDITION=='ds':
+                    require(key_path.is_file(),'请填写 DeepSeek API Key。')
+                    new['key_service']=draft.get('key_service') or ('Codex DeepSeek API Key '+uuid.uuid4().hex[:12])
+                    notice='官方应用检查通过，密钥已私密保存。'
+                else:
+                    models=([model for i,model in enumerate(draft.get('available',[])) if values.get('model_'+str(i)) is True]
+                            if any(k.startswith('model_') for k in values) else hub_list(values.get('models')))
+                    maximum=hub_number(values.get('maximum'))
+                    require(maximum is None or 1024<=maximum<=100_000_000,'请填写模型实际支持的最大上下文。')
+                    connection=_validate_connection({'id':'local-setup','name':str(values.get('name','我的模型')),
+                        'kind':values.get('kind','openai'),'base_url':str(values.get('url','')).strip(),
+                        'wire_api':values.get('wire','chat_completions'),'models':models,
+                        'respect_server_context':values.get('respect') is True,
+                        'model_specs':{},
+                        **({'key_file':str(key_path)} if key_path.exists() else {})})
+                    result=probe_connection(connection,cancelled)
+                    require(result['available'],'接口没有返回可用型号。')
+                    require(all(m in result['available'] for m in models),'所选型号不在接口返回的模型列表中。')
+                    output=hub_number(values.get('output'))
+                    connection['model_specs']={model:{**({'context_window':maximum} if maximum else {}),**({'max_output_tokens':output} if output else {})} for model in models if model not in result['specs']}
+                    new.update(connection=connection,maximum=maximum,output=output,available=result['available'])
+                    notice='发现 '+str(len(result['available']))+' 个型号，可在下方勾选。'
+                if cancelled and cancelled():raise SettingsError('cancelled','检测已取消。')
+                monitor.atomic_json(root/'draft.json',new)
+            except BaseException:
+                if secret:
+                    if old_key is None:key_path.unlink(missing_ok=True)
+                    else:private_write(key_path,old_key)
+                raise
+            return setup_view(directory,notice)
+        require(draft,'请先保存并检测连接。')
+        if intent=='setup_prepare':
+            require(draft['phase'] in ('draft','prepared'),'已有安装事务，请先完成设置。')
+            setup_guard(draft)
+            output=directory/'builds'/('setup-'+uuid.uuid4().hex)
+            args=['build','--app',draft['app'],'--codex-home',draft['home'],'--output',str(output),'--bundled-catalog','--verify']
+            if p.EDITION=='ds':args+=['--with-deepseek','--keychain-service',draft['key_service']]
+            else:
+                require(draft['connection']['models'],'请先选择要接入的型号。')
+                monitor.atomic_json(root/'connections.json',{'locals':[draft['connection']]})
+                args+=['--without-deepseek','--connections',str(root/'connections.json')]
+            setup_command(args,cancelled)
+            setup_guard(draft)
+            draft.update(phase='prepared',build=str(output),manifest_digest=p.file_sha(output/'manifest.json'))
+            monitor.atomic_json(root/'draft.json',draft)
+            return setup_view(directory,'验证通过，可在退出 Codex 后安装。')
+        require(draft['phase'] in ('prepared','installed'),'请先准备并完成验证。')
+        build=Path(draft['build']);manifest=monitor.load_json(build/'manifest.json',{})
+        require(manifest.get('edition')==p.EDITION and manifest.get('codex_home')==draft['home'],'候选安装身份不一致。')
+        if draft['phase']=='prepared' and manifest.get('status')=='installed':
+            from official_client_install import recover
+            result=recover(build)
+            require(result.get('status')=='committed','请先恢复中断的安装事务。')
+            draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
+            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+        if draft['phase']=='prepared':
+            setup_guard(draft)
+            require(p.file_sha(build/'manifest.json')==draft['manifest_digest'],'候选已改变，请重新准备。')
+            p.require_stopped(Path(draft['app']),read_only_source=True)
+            if p.EDITION=='ds':
+                save_deepseek_key({'keychain_service':draft['key_service'],'keychain_account':__import__('getpass').getuser()},manifest,(root/'credential.key').read_text(encoding='utf-8'))
+            p.install(SimpleNamespace(directory=build))
+            draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
+            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+        # A failed monitor registration is resumable without another install.
+        monitor.enable(SimpleNamespace(state_dir=directory,baseline=build,app=Path(draft['app']),codex_home=Path(draft['home']),
+            interval=300,no_code_updates=not draft['maintenance'],no_model_sync=not draft['maintenance'],
+            keychain_service=draft.get('key_service'),keychain_account=__import__('getpass').getuser()))
+        ensure_launcher(directory)
+        return hub_view(directory,'models',notice='安装完成，可启动 Codex 使用新增模型。')
+
+
 def records(directory):
     directory = Path(directory)
     settings = monitor.load_json(directory/'settings.json', {})
@@ -94,7 +233,7 @@ def _models(directory, build, manifest):
     installed = monitor.load_json(build/'desktop-models.json', {'models': []})['models']
     entries = {row['slug']: row for row in cache.get('catalog', {}).get('models', [])}
     entries.update({row['slug']: row for row in installed})
-    specs = cache.get('specs', {})
+    specs = {**manifest.get('model_specifications',{}),**cache.get('specs', {})}
     routes = {**cache.get('routes', {}), **manifest.get('model_routes', {})}
     for model in preferences.get('hidden', []):
         if model not in entries:
@@ -121,12 +260,17 @@ def _models(directory, build, manifest):
             'tools': routes.get(model, {}).get('supports_tools', spec.get('supports_tools', item.get('shell_type') != 'disabled')),
             'images': 'image' in item.get('input_modalities', []),
             'reasoning': [v['effort'] for v in item.get('supported_reasoning_levels', [])],
-            'source': spec.get('source', 'official-catalog')})
+            'source': spec.get('source', 'official-catalog'),
+            'spec_sources':spec.get('spec_sources',{}), 'context_conflict':spec.get('context_conflict',False),
+            'reported_context_window':spec.get('reported_context_window')})
     return sorted(rows, key=lambda row: (row['provider'] != 'GPT', row['provider'], row['name'].casefold()))
 
 
 def snapshot(directory):
     directory = Path(directory)
+    if needs_setup(directory):
+        setup_read(directory)
+        return {'format':1,'edition':p.EDITION,'revision':setup_revision(directory),'models':[],'connections':[],'progress':{},'recovery':[]}
     settings, build, manifest = records(directory)
     state = monitor.load_json(directory/'state.json', {})
     document = connection_document(directory, manifest)
@@ -191,7 +335,7 @@ def probe_connection(connection, cancelled=None):
     def check():
         if cancelled and cancelled():raise SettingsError('cancelled','操作已取消。')
     check()
-    catalog = local_support.request(connection, '/models')
+    catalog = local_support.model_list(connection,lambda row,path: (check(),local_support.request(row,path))[1])
     check()
     def fetch(row,path,body=None):
         check()
@@ -280,6 +424,7 @@ def _validate_connection(value):
         if 'context_window' in spec:
             require(type(spec['context_window']) is int and 1024 <= spec['context_window'] <= 100_000_000,
                     '请填写模型实际支持的最大上下文。')
+        if 'max_output_tokens' in spec:require(type(spec['max_output_tokens']) is int and spec['max_output_tokens']>0,'最大输出须为正整数。')
         if 'supports_tools' in spec:require(type(spec['supports_tools']) is bool, '工具能力必须为开启或关闭。')
         if 'reasoning_levels' in spec:
             require(isinstance(spec['reasoning_levels'],list) and all(v in ('none','minimal','low','medium','high','xhigh','max','ultra') for v in spec['reasoning_levels']), '思考档位格式不正确。')
@@ -290,6 +435,9 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
     directory = Path(directory)
     payload = payload or {}
     require(action in ACTIONS and isinstance(payload,dict), '未知操作。')
+    if needs_setup(directory):
+        if action=='hub':return setup_dispatch(directory,payload,expected,cancelled)
+        if action=='snapshot':return snapshot(directory)
     records(directory)  # Every action remains bound to the installed edition.
     if action == 'hub':
         return hub_dispatch(directory, payload, expected, cancelled)
@@ -340,7 +488,9 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         else:
             with edit_lock(directory,expected,cancelled):
                 from official_client_install import recover
-                recover(build)
+                from update_worker import recovery_target
+                result=recover(recovery_target(directory,build))
+                if result.get('status')=='no_transaction':return {'message':'没有需要恢复的安装事务。'}
         return {'message':'恢复操作已完成。'}
     changed_models = False
     with edit_lock(directory,expected,cancelled):
@@ -479,7 +629,13 @@ def run_request(directory, identifier):
     jobs=monitor.private_directory(Path(directory)/'settings-ui/jobs')
     request=jobs/(identifier+'.request.json');result=jobs/(identifier+'.result.json')
     cancelled=lambda:(jobs/(identifier+'.cancel')).exists()
-    monitor.atomic_json(result,{'status':'running','message':'正在处理，可继续查看其他设置。'})
+    def progress(value):
+        message=value.get('message','正在处理…')
+        if type(value.get('completed')) is int and type(value.get('total')) is int:
+            message+=f" · {value['completed']}/{value['total']} 项"
+        monitor.atomic_json(result,{'status':'running','message':message})
+    cancelled.progress=progress
+    progress({'message':'正在处理，可继续查看其他设置。'})
     try:
         require(request.is_file() and not request.is_symlink() and request.stat().st_size<=131072,'无效的设置请求。')
         try:value=json.loads(request.read_text(encoding='utf-8'))
@@ -561,7 +717,7 @@ def _show_locked(directory, *, self_test=False, loop_test=False, page=None, noti
     from official_client_host import windowless_python
     ui=Path(directory)/'settings-ui'
     initial=snapshot(directory)
-    initial.update(hub=hub_shell(directory),view=hub_view(directory,page or 'models'),entry={'page':page,'notify':notify})
+    initial.update(hub=hub_shell(directory),view=hub_view(directory,page or 'models'),entry={'page':('setup' if needs_setup(directory) else page),'notify':notify})
     brand_assets(ui)
     bubble_assets(ui)
     monitor.atomic_json(ui/'view.json',initial)
@@ -949,6 +1105,7 @@ def hub_button(title, intent, *, style='secondary', **values):
 def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
     """Build one small card from the current authority, not a second settings store."""
     from management import snapshot, require
+    if needs_setup(directory):return setup_view(directory,notice or '')
     state=snapshot(directory); opts=hub_options(directory)
     base=route.split('/')[0]
     require(base in {c[0] for c in CATEGORIES}, '未知设置分类。')
@@ -976,6 +1133,11 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                  hub_field('compact','压缩阈值',model['compact_override'],'number',
                            hint='留空沿用 Codex 原生设置' if model['provider']=='GPT' else '留空默认使用窗口的 90%'),
                  hub_field('visible','在模型菜单中显示',model['visible'],'toggle')]
+        labels={'user':'用户声明','service':'服务声明','official':'官方规格','inferred':'兼容性推定'}
+        sources=model['spec_sources']
+        rows.append(hub_item('规格来源',' · '.join(label+'：'+labels.get(sources.get(key),'原生目录' if model['provider']=='GPT' else '未记录') for key,label in [('context_window','窗口'),('input_modalities','图片'),('reasoning_levels','思考'),('supports_tools','工具')])))
+        if model['context_override']:rows.append(hub_item('实际窗口','保留用户主动调小的设置'))
+        if model['context_conflict']:rows.append({'type':'note','text':'用户声明与服务窗口不同，请核对。当前值和手动设置均已保留。'})
         if model['server_window']:rows.insert(1,hub_item('本地服务窗口',f"{model['server_window']:,} tokens"))
         buttons += [hub_button('恢复默认','reset_model'),hub_button('保存','save_model',style='primary')]
     elif route=='connections':
@@ -1014,7 +1176,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                      ['openai','通用兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
                  hub_field('url','接口地址',c.get('base_url',''),hint='例如 http://127.0.0.1:11434/v1'),
                  hub_field('wire','接口协议',c.get('wire_api','chat_completions'),'choice',
-                       choices=[['chat_completions','Chat Completions'],['responses','Responses']]),
+                       choices=[['chat_completions','Chat Completions'],['responses','Responses'],['anthropic_messages','Anthropic Messages']]),
                  hub_field('key','API Key','','secret',hint='本地接口可留空；已有密钥保持不变'),
                  hub_field('models','使用型号',', '.join(c.get('models',[])),hint='留空检测所有型号'),
                  hub_field('respect','沿用服务端窗口',c.get('respect_server_context',False),'toggle'),
@@ -1025,7 +1187,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         if connection:buttons.insert(0,hub_button('移除','confirm_remove',style='danger'))
     elif route=='connections/spec':
         data['title']='补充型号规格';data['back']='connections/edit'
-        rows += [hub_field('model','准确型号 ID'),hub_field('maximum','最大窗口','','number'),
+        rows += [hub_field('model','准确型号 ID'),hub_field('maximum','最大窗口','','number'),hub_field('output','最大输出','','number',hint='Anthropic 必填；按服务规格填写'),
                  hub_field('levels','思考档位',hint='例如 low, medium, high'),
                  hub_field('tools','支持工具调用',True,'toggle')]
         buttons.append(hub_button('保存','save_spec',style='primary'))
@@ -1037,13 +1199,18 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
             rows.append(hub_field('model_'+str(index),model,model in extra['selected'],'toggle'))
             if model not in extra['specs']:
                 rows.append(hub_field('window_'+str(index),'最大窗口 · '+model,'','number'))
+                if extra['draft']['connection'].get('wire_api')=='anthropic_messages':rows.append(hub_field('output_'+str(index),'最大输出 · '+model,'','number'))
         data['available']=extra['available'];data['specs']=extra['specs']
         buttons += [hub_button('全选','select_all'),hub_button('清空','clear_all'),hub_button('保存所选','save_discovered',style='primary')]
     elif route=='updates':
         data['subtitle']=state['edition_label']+' · 当前 '+str(state['version'])
+        from update_worker import recovery_summary
+        recovery=recovery_summary(directory,records(directory)[1])
+        if recovery.get('candidate_version'):rows.append(hub_item('待安装版本',recovery['candidate_version']))
         rows += [{'type':'update','progress':state['progress']},
+                 hub_item('安装与恢复',recovery['message'],'updates/maintenance'),
                  hub_item('自动更新与提醒','检查周期、模型同步、水滴提醒','updates/options'),
-                 hub_item('维护与恢复','失败重试、清理缓存与安装恢复','updates/maintenance')]
+                 hub_item('诊断报告','查看失败阶段和近期请求','diagnostics')]
         buttons += [hub_button('同步模型','sync_models'),hub_button('检查更新','check_updates',style='primary')]
     elif route=='updates/options':
         data['title']='更新设置';data['subtitle']='两个版本各自更新，保留手动模型设置。'
@@ -1082,6 +1249,12 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         data['subtitle']=state['edition_label']+' · '+str(state['version'])
         rows += [hub_item('补丁状态',state['status']),hub_item('可用模型',str(len(state['models']))+' 个'),hub_item('Codex 版本',str(state['app_version'] or '未记录')),
                  {'type':'note','text':'报告不包含密钥、聊天内容和私人文件路径。'}]
+        from official_client_host import request_diagnostics
+        _,build,_=records(directory)
+        recent=request_diagnostics(monitor.load_json(build/'host-settings.json',{}))
+        phases={'preparing':'准备输入','compacting':'恢复或压缩历史','waiting_upstream':'等待服务','receiving':'已连接服务','streaming':'正在接收','completed':'模型已完成','transferred':'传输结束','failed':'失败','cancelled':'已取消'}
+        for request in recent[:12]:
+            rows.append(hub_item(str(request.get('model','未知型号')),('官方服务' if request.get('target')=='official' else str(request.get('service') or '所选外部服务'))+' · '+phases.get(request.get('phase'),'未知阶段')+' · '+str(request.get('elapsed_ms',0))+' ms'+(' · HTTP '+str(request['status']) if request.get('status') else '')))
         if extra:rows.append({'type':'report','text':extra.get('text','')})
         buttons += [hub_button('运行诊断','diagnose',style='primary')]
         if extra:buttons.append(hub_button('复制报告','copy',text=extra.get('text','')))
@@ -1186,6 +1359,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
                 maximum=hub_number(values.get('window_'+str(i)))
                 m.require(maximum is not None and maximum>=1024,'请补充 '+model+' 的最大窗口。')
                 c['model_specs'][model]={'context_window':maximum,'supports_tools':True}
+                if c.get('wire_api')=='anthropic_messages':c['model_specs'][model]['max_output_tokens']=hub_number(values.get('output_'+str(i)))
         perform('save_connection',{'connection':c,'key':draft.get('key','')})
         route='connections';key=None
     elif intent=='save_spec':
@@ -1194,6 +1368,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         m.require(model,'请填写准确型号。')
         c.setdefault('model_specs',{})[model]={'context_window':hub_number(values.get('maximum')),
             'reasoning_levels':hub_list(values.get('levels')),'supports_tools':values.get('tools') is True}
+        if values.get('output'):c['model_specs'][model]['max_output_tokens']=hub_number(values['output'])
         perform('save_connection',{'connection':c})
     elif intent=='save_options':
         perform(intent,{**{k:values.get(k) is True for k in ('auto_update','model_sync','progress_ui')},

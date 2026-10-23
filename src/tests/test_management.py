@@ -609,3 +609,144 @@ $probe.Start()
                 key.configure(False)
                 self.assertFalse(json.loads((path.parent/'hotkey.json').read_text())['registered'])
             finally:key.close()
+
+
+class FirstSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.state=self.root/'state';self.home=self.root/'home';self.app=self.root/'app'
+        self.home.mkdir();self.app.mkdir();self.config=self.home/'config.toml';self.config.write_text('model="gpt-original"\n')
+        self.values={'app':str(self.app),'home':str(self.home),'name':'fixture','url':'http://127.0.0.1:1234/v1',
+            'kind':'openai','wire':'chat_completions','key':'fixture-key','models':'fixture-model','maximum':'262144','maintenance':True}
+        self.probe=patch.object(ui,'probe_connection',return_value={'available':['fixture-model'],'specs':{},'warnings':[]})
+        self.probe.start();self.addCleanup(self.probe.stop)
+        self.inspect=patch('official_client.inspect',return_value={'compatible':True})
+        self.inspect.start();self.addCleanup(self.inspect.stop)
+
+    def call(self,intent,values=None,expected=None,**kwargs):
+        return ui.perform(self.state,'hub',{'intent':intent,'values':values or {}},
+            ui.setup_revision(self.state) if expected is None else expected,**kwargs)
+
+    def test_both_editions_share_first_setup_without_touching_native_config(self):
+        original=self.config.read_bytes()
+        for edition in ('ds','proxy'):
+            with self.subTest(edition=edition),patch.object(ui.p,'EDITION',edition):
+                state=self.root/edition
+                view=ui.hub_view(state);self.assertEqual(view['route'],'setup')
+                self.assertEqual(view['edition'],edition)
+                ui.setup_dispatch(state,{'intent':'setup_save','values':self.values},ui.setup_revision(state))
+                draft=ui.setup_read(state)
+                self.assertNotIn('fixture-key',json.dumps(draft))
+                self.assertEqual(self.config.read_bytes(),original)
+                self.assertFalse((state/'settings.json').exists())
+        with patch.object(ui.p,'EDITION','ds'),self.assertRaises(ui.SettingsError):ui.setup_read(self.root/'proxy')
+
+    def test_manager_conflict_rejected_before_credentials_or_network(self):
+        for config in ['openai_base_url="http://127.0.0.1:3425"\n','model_provider="other"\n',
+                       '[model_providers.openai]\nbase_url="https://relay.invalid"\n']:
+            self.config.write_text(config)
+            with self.assertRaises(ui.SettingsError):self.call('setup_save',self.values)
+            self.assertFalse((self.state/'setup/credential.key').exists())
+            self.assertEqual(self.config.read_text(),config)
+
+    def test_failed_discovery_restores_previous_private_key_and_draft(self):
+        with patch.object(ui.p,'EDITION','proxy'):
+            self.call('setup_save',self.values);before=ui.setup_revision(self.state)
+            with patch.object(ui,'probe_connection',side_effect=OSError('private failure')),self.assertRaises(OSError):
+                self.call('setup_save',{**self.values,'key':'replacement'})
+            self.assertEqual(ui.setup_revision(self.state),before)
+            self.assertEqual((self.state/'setup/credential.key').read_text(),'fixture-key')
+            with self.assertRaises(ui.SettingsError):self.call('setup_save',self.values,expected='stale')
+
+    def test_failed_or_cancelled_prepare_cannot_enable_install(self):
+        with patch.object(ui.p,'EDITION','proxy'):
+            self.call('setup_save',self.values)
+            with patch.object(ui,'setup_command',side_effect=ui.SettingsError('setup_validation_failed','failed')),self.assertRaises(ui.SettingsError):self.call('setup_prepare')
+            self.assertEqual(ui.setup_read(self.state)['phase'],'draft')
+            with self.assertRaises(ui.SettingsError):self.call('setup_install')
+            with self.assertRaises(ui.SettingsError):self.call('setup_prepare',cancelled=lambda:True)
+
+    def test_prepare_rechecks_config_and_install_is_resumable(self):
+        with patch.object(ui.p,'EDITION','proxy'):
+            self.call('setup_save',self.values)
+            def prepare(args,cancelled=None):
+                out=Path(args[args.index('--output')+1]);out.mkdir(parents=True)
+                ui.monitor.atomic_json(out/'manifest.json',{'edition':'proxy','codex_home':args[args.index('--codex-home')+1]})
+            with patch.object(ui,'setup_command',side_effect=prepare):self.call('setup_prepare')
+            self.assertEqual(ui.setup_read(self.state)['phase'],'prepared')
+            with patch.object(ui.p,'require_stopped',side_effect=RuntimeError('running')),patch.object(ui.p,'install') as install,self.assertRaises(RuntimeError):self.call('setup_install')
+            install.assert_not_called()
+            with patch.object(ui.p,'require_stopped'),patch.object(ui.p,'install') as install,patch.object(ui.monitor,'enable',side_effect=OSError('registration failed')),self.assertRaises(OSError):self.call('setup_install')
+            self.assertEqual(install.call_count,1);self.assertEqual(ui.setup_read(self.state)['phase'],'installed')
+            with patch.object(ui.p,'install') as install,patch.object(ui.monitor,'enable'),patch.object(ui,'ensure_launcher'),patch.object(ui,'hub_view',return_value={'route':'models'}):
+                self.assertEqual(self.call('setup_install')['route'],'models');install.assert_not_called()
+
+    @unittest.skipUnless(sys.platform in ('darwin','win32'),'Native first-install card')
+    def test_first_setup_native_card_opens_and_closes_without_installed_state(self):
+        channel=json.loads((ui.ROOT/'edition.json').read_text())['edition']
+        with patch.object(ui.p,'EDITION',channel):result=ui.show(self.state,self_test=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+        value=json.loads(result.stdout.decode('utf-8-sig'))
+        self.assertEqual(value['route'],'setup');self.assertTrue(value['request_completed'])
+        self.assertFalse((self.state/'settings.json').exists())
+
+    def test_first_setup_recovers_commit_before_ui_draft_was_updated(self):
+        with patch.object(ui.p,'EDITION','proxy'):
+            self.call('setup_save',self.values)
+            draft=ui.setup_read(self.state);build=self.root/'built';build.mkdir()
+            ui.monitor.atomic_json(build/'manifest.json',{'edition':'proxy','codex_home':draft['home'],'status':'installed'})
+            draft.update(phase='prepared',build=str(build),manifest_digest='previous-manifest-digest')
+            ui.monitor.atomic_json(self.state/'setup/draft.json',draft)
+            self.config.write_text('model="installed-model"\n')
+            with patch('official_client_install.recover',return_value={'status':'committed'}) as recover,patch.object(ui.p,'install') as install,patch.object(ui.monitor,'enable'),patch.object(ui,'ensure_launcher'),patch.object(ui,'hub_view',return_value={'route':'models'}):
+                self.assertEqual(self.call('setup_install')['route'],'models')
+                recover.assert_called_once_with(build);install.assert_not_called()
+
+    def test_setup_uses_secret_controls_and_keeps_service_windows_when_filling_missing_specs(self):
+        with patch.object(ui.p,'EDITION','proxy'):
+            fields={v['key']:v for v in ui.setup_view(self.state)['rows'] if v.get('type')=='field'}
+            self.assertEqual(fields['key']['kind'],'secret')
+            with patch.object(ui,'probe_connection',return_value={'available':['fixture-model','missing'],'specs':{'fixture-model':{'context_window':1048576}},'warnings':[]}):
+                self.call('setup_save',{**self.values,'models':'fixture-model,missing'})
+                draft=ui.setup_read(self.state)
+                self.assertEqual(draft['connection']['model_specs'],{'missing':{'context_window':262144}})
+                self.call('setup_save',{**self.values,'model_0':True,'model_1':False})
+                self.assertEqual(ui.setup_read(self.state)['connection']['models'],['fixture-model'])
+
+
+class SetupProgressTests(unittest.TestCase):
+    def test_setup_worker_progress_is_visible_and_does_not_claim_installation(self):
+        from update_worker import SetupProgress
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);jobs=root/'settings-ui/jobs';jobs.mkdir(parents=True);identifier='a'*32
+            ui.monitor.atomic_json(jobs/(identifier+'.request.json'),{'action':'hub','payload':{}})
+            observed=[]
+            def operation(directory,action,payload,revision,cancelled):
+                progress=SetupProgress(root/'stage.json')
+                for phase,done,total in [('building',None,None),('verifying',2,8),('ready',None,None)]:
+                    progress.publish(phase,done,total)
+                    cancelled.progress(ui.monitor.load_json(root/'stage.json'))
+                    observed.append(ui.monitor.load_json(jobs/(identifier+'.result.json')))
+                return {'route':'setup'}
+            with patch.object(ui,'perform',side_effect=operation):result=ui.run_request(root,identifier)
+            self.assertEqual(result['status'],'completed')
+            self.assertIn('2/8',observed[1]['message'])
+            self.assertTrue(all(v['status']=='running' for v in observed))
+            self.assertFalse((root/'settings.json').exists());self.assertFalse((jobs/(identifier+'.request.json')).exists())
+
+    def test_setup_cancel_reaps_real_owned_child_during_verification(self):
+        import update_worker,os,time
+        from update_progress import _alive
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'setup').mkdir();(root/'builds').mkdir()
+            script=root/'patch.py'
+            script.write_text("import sys,json,time,os\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index('--progress-file')+1]);Path(__file__).with_suffix('.pid').write_text(str(os.getpid()))\np.write_text(json.dumps({'phase':'verifying','message':'fixture','completed':1,'total':4}))\ntime.sleep(30)\n",encoding='utf-8')
+            observed=[]
+            cancelled=lambda:bool(observed)
+            cancelled.progress=lambda value: observed.append(value) if value.get('phase')=='verifying' else None
+            with patch.object(update_worker.p,'ROOT',root),self.assertRaises(ui.SettingsError) as caught:
+                update_worker.setup_command(['build','--output',str(root/'builds/sample'),'--verify'],cancelled)
+            self.assertEqual(caught.exception.code,'cancelled')
+            self.assertFalse(_alive(int(script.with_suffix('.pid').read_text())))
+            self.assertEqual(observed[0]['completed'],1)
+            self.assertFalse((root/'settings.json').exists())

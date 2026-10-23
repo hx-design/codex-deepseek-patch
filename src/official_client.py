@@ -96,6 +96,10 @@ def adapter_routes(manifest, routes, platform=None):
                      "flatten_namespaces":model in connection.get("tool_adapter_models", []),
                      "chat_only":model in connection.get("chat_only_models", []),
                      "normalize_instructions":model in connection.get("normalize_instructions_models", [])}
+            if value["wire_api"]=="anthropic_messages":
+                spec=manifest.get("model_specifications",{}).get(model,{})
+                spec={**spec,**connection.get("model_specs",{}).get(model,{})}
+                value.update({k:spec[k] for k in ("max_output_tokens","reasoning_levels","thinking_mode") if spec.get(k) is not None})
             if connection.get("key_file"):
                 value["credential"] = {"kind":"file", "path":connection["key_file"]}
             result[model] = value
@@ -153,6 +157,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                   "The DS edition cannot import extension routes")
     effective = copy.deepcopy(prior)
     if model_snapshot:
+        effective["model_specifications"] = model_snapshot.get("specs",effective.get("model_specifications",{}))
         effective["locals"] = model_snapshot.get("locals", effective.get("locals", []))
         effective["deepseek_enabled"] = model_snapshot.get("deepseek_enabled", effective.get("deepseek_enabled", True))
         if 'proxy' in model_snapshot:effective['proxy'] = model_snapshot['proxy']
@@ -220,7 +225,8 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                 "host_settings_sha256":p.file_sha(output / "host-settings.json"), "model_routes":routes,
                 "keychain_account":effective.get("keychain_account"), "keychain_service":effective.get("keychain_service"),
                 "deepseek_enabled":effective.get("deepseek_enabled", edition == "ds"),
-                "locals":effective.get("locals", []), "probe_required":True}
+                "locals":effective.get("locals", []), "probe_required":True,
+                "model_specifications":(model_snapshot or {}).get("specs",effective.get("model_specifications",{}))}
     if effective.get("proxy"):
         manifest["proxy"] = effective["proxy"]
     if update_metadata:
@@ -272,6 +278,7 @@ def initial_models(app, args):
         for connection in manifest['locals']:
             specs, warnings = local.discover(connection)
             p.require(specs, 'No usable model specifications: ' + connection['id'])
+            manifest.setdefault('model_specifications',{}).update(specs)
             connection['chat_only_models'] = [model for model,spec in specs.items() if not spec.get('supports_tools', True)]
             connection['normalize_instructions_models'] = [model for model,spec in specs.items() if spec.get('normalize_instructions')]
             connection['tool_adapter_models'] = [model for model,spec in specs.items() if local.needs_tool_adapter(spec)]

@@ -49,7 +49,7 @@ class NativeStagingTests(unittest.TestCase):
 
     def test_unknown_wire_api_is_rejected_at_connection_boundary(self):
         import local_support
-        value={'id':'local-test','kind':'openai','base_url':'https://example.invalid/v1','wire_api':'anthropic_messages'}
+        value={'id':'local-test','kind':'openai','base_url':'https://example.invalid/v1','wire_api':'unrecognized_protocol'}
         with self.assertRaisesRegex(ValueError,'protocol'):local_support.validate(value)
         value['wire_api']='chat_completions';value['supports_reasoning_effort']='yes'
         with self.assertRaisesRegex(ValueError,'capability'):local_support.validate(value)
