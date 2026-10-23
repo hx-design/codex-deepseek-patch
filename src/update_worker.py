@@ -56,6 +56,45 @@ def setup_command(arguments, cancelled=None):
                         child.wait(timeout=5)
 
 
+def first_setup_view(directory, notice=''):
+    import os
+    from management import (setup_read, setup_app, hub_field, hub_button,
+                            hub_options, setup_revision, footer_layout)
+    draft=setup_read(directory);phase=draft.get('phase','draft')
+    rows=[hub_field('app','Codex 应用位置',draft.get('app') or setup_app()),
+          hub_field('home','Codex 配置目录',draft.get('home') or str(Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))))]
+    if p.EDITION=='ds':
+        rows += [hub_field('key','DeepSeek API Key','','secret',hint='只保存于本机；无需重新登录 GPT。')]
+    else:
+        connection=draft.get('connection',{})
+        rows += [hub_field('name','连接名称',connection.get('name','我的模型')),
+                 hub_field('url','接口地址',connection.get('base_url','')),
+                 hub_field('kind','服务类型',connection.get('kind','openai'),'choice',choices=[['openai','兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
+                 hub_field('wire','接口协议',connection.get('wire_api','chat_completions'),'choice',choices=[['chat_completions','Chat Completions'],['responses','Responses'],['anthropic_messages','Anthropic Messages']]),
+                 hub_field('key','API Key','','secret',hint='本地服务可留空；留空保留已保存密钥。'),
+                 hub_field('models','型号',', '.join(connection.get('models',[])),hint='填写检测到的型号，多个用逗号分隔。'),
+                 hub_field('maximum','最大上下文',draft.get('maximum'),kind='number',hint='仅在服务未提供规格时填写实际最大值。'),
+                 hub_field('output','最大输出',draft.get('output'),kind='number',hint='Anthropic 缺少规格时填写'),
+                 hub_field('respect','保留本地服务加载窗口',connection.get('respect_server_context',True),'toggle')]
+    if p.EDITION=='proxy' and draft.get('available'):
+        rows.append({'type':'note','text':'勾选接入型号，再保存选择。'})
+        rows += [hub_field('model_'+str(i),model,model in draft.get('connection',{}).get('models',[]),'toggle') for i,model in enumerate(draft['available'])]
+    rows += [hub_field('maintenance','安装后自动检查补丁和模型更新',draft.get('maintenance',True),'toggle')]
+    buttons=[hub_button('保存并检测','setup_save')]
+    if phase=='draft' and draft:buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
+    if phase=='prepared':
+        rows.append({'type':'note','text':'准备和隔离验证通过。请先正常退出 Codex，再点击安装。'})
+        buttons.append(hub_button('安装','setup_install',style='primary'))
+    if phase=='installed':
+        rows.append({'type':'note','text':'适配层已安装，继续完成设置入口与自动维护。'})
+        buttons=[hub_button('完成设置','setup_install',style='primary')]
+    return {'route':'setup','title':'首次设置 · '+('DS 版' if p.EDITION=='ds' else '扩展版'),
+            'subtitle':'发现应用 → 检测模型 → 验证 → 安装','rows':rows,'buttons':buttons,
+            'revision':setup_revision(directory),'edition':p.EDITION,'notice':notice,
+            'options':hub_options(directory),'footer':footer_layout(buttons),'back':None}
+
+
+
 def recovery_target(directory, baseline):
     """Select only the monitor's owned candidate; never recover another edition."""
     from monitor import load_json
