@@ -450,7 +450,7 @@ def validated_close(progress):
     if not record:
         return False
     directory, manifest = record
-    if manifest.get('architecture') != 'official-client-v1' or manifest.get('status') != 'prepared':
+    if manifest.get('architecture') != 'official-client-v1' or manifest.get('status') not in ('prepared','prepared_idle'):
         return False
     from official_client_install import validate_build, _guard_staged_config
     import patch as p

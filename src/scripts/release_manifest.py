@@ -33,6 +33,8 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_old_close_guard_is_fenced_and_new_controller_defers_unknown_activity',
+    'test_new_installer_commits_idle_prepared_build',
     'test_tools_hold_idle_until_outputs_arrive_and_lease_is_atomic',
     'test_observation_never_limits_stream_and_unknown_holds_install',
     'test_idle_websocket_and_authenticated_drain_release',

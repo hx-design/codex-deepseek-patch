@@ -168,7 +168,7 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
                   'The previous adapter service state was not restored')
 
 def validate_build(directory, manifest):
-    p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') == 'prepared',
+    p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') in ('prepared','prepared_idle'),
               'A prepared native-client build is required')
     p.require(manifest.get('edition') == p.EDITION, 'Native build belongs to another edition')
     p.require(manifest.get('native_probe') == 'passed', 'Run the native adapter regression before installation')

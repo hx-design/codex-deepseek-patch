@@ -680,3 +680,15 @@ class TransactionProgressTests(unittest.TestCase):
         for phase in ('completed','available','building','failed'):self.progress.publish(phase)
         self.assertEqual(self.progress.read()['phase'],'rolled_back')
         self.progress.retry();self.assertEqual(self.progress.read()['phase'],'available')
+
+    def test_old_close_guard_is_fenced_and_new_controller_defers_unknown_activity(self):
+        self.settings();directory,manifest=self.build()
+        manifest['status']='prepared_idle';monitor.atomic_json(directory/'manifest.json',manifest)
+        # Published old controllers check this state before any exit request.
+        self.assertNotEqual(manifest['status'],'prepared')
+        monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'graceful_close') as close:
+            self.assertFalse(u.validated_close(self.progress));close.assert_not_called()
+        self.assertEqual(self.progress.read()['phase'],'waiting_for_idle')
+        self.assertEqual(monitor.load_json(self.root/'progress.request.json')['action'],'wait_idle')

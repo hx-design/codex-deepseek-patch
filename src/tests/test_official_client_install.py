@@ -691,3 +691,12 @@ class RuntimeCommitTests(unittest.TestCase):
             fixture.assert_baseline(self)
             tx=json.loads((fixture.directory/'native-install-transaction.json').read_text())
             self.assertEqual(tx['phase'],'rolled_back');self.assertTrue(tx['recovered']['runtime'])
+
+    def test_new_installer_commits_idle_prepared_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture=Fixture(Path(temp),update=True)
+            fixture.manifest['status']='prepared_idle'
+            p.save_json(fixture.directory/'manifest.json',fixture.manifest)
+            with fixture.boundaries():installer.install(fixture.directory,fixture.manifest)
+            self.assertEqual(fixture.manifest['status'],'installed')
+            self.assertEqual((fixture.target/'app.asar').read_text(),'official')

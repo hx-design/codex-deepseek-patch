@@ -27,6 +27,10 @@ def verify_build(output, progress=None):
             **({'progress':lambda done,total:progress.publish('verifying',done,total,unit='checks')} if progress else {}))
         p.require(report.get('status')=='passed','Native official-client validation failed')
         manifest.update(native_probe='passed',native_probe_report=str(output/'native-probe'))
+        if manifest.get('update',{}).get('monitor_state_dir'):
+            # Older UI controllers only know `prepared` and may close the app
+            # without waiting for idle. They must defer to the new installer.
+            manifest['status']='prepared_idle'
         p.save_json(output/'manifest.json',manifest)
         return report
     from scripts.test_offline import main as offline

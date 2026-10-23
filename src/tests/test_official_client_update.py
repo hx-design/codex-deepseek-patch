@@ -159,7 +159,7 @@ class WorkerTests(unittest.TestCase):
         for status in ('passed','failed'):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp);record={'architecture':native.ARCHITECTURE,'edition':'ds','source_target':'/official',
-                    'native_probe':'passed','native_probe_report':'previous-run'}
+                    'native_probe':'passed','native_probe_report':'previous-run','status':'prepared','update':{'monitor_state_dir':str(root)}}
                 from official_client import ADAPTER_FILES
                 record['runtime_sha256']={}
                 for name in ADAPTER_FILES:
@@ -176,6 +176,7 @@ class WorkerTests(unittest.TestCase):
                 run.assert_called_once_with(Path('/official'),root/'native-probe','ds');old.assert_not_called()
                 self.assertEqual(json.loads((root/'manifest.json').read_text()).get('native_probe'),
                                  'passed' if status=='passed' else None)
+                if status=='passed':self.assertEqual(json.loads((root/'manifest.json').read_text())['status'],'prepared_idle')
 
     def test_native_install_does_not_call_legacy_bundle_installer(self):
         with tempfile.TemporaryDirectory() as temp:
