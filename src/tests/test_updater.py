@@ -13,6 +13,44 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_unchanged_runtime_clears_stale_notice_without_restarting_update(self):
+        from update_progress import Progress
+        for edition in ('ds','proxy'):
+            with self.subTest(edition=edition),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);obj=object.__new__(u.UpdateBackend)
+                obj.directory=root;obj.edition=edition;obj.settings={'state_dir':str(root),'edition':edition}
+                obj.prepared=True;obj.prepare=Mock();obj.desired_runtime='runtime';obj.model_snapshot=None;obj.warnings=[]
+                obj.base=Mock(app=root/'app',baseline=root/'baseline');obj.base.snapshot.return_value={
+                    'version':'v','build':'b','fingerprint':'app','hashes':{'resources/app.asar':'asar'}}
+                record={'architecture':'official-client-v1','status':'installed','app_version':'v','app_build':'b',
+                    'original_asar':'asar','update':{'runtime_digest':'runtime','app_fingerprint':'app','release':{'version':'1.0'}}}
+                obj.installed_metadata=lambda:record['update']
+                progress=Progress(root);identity=progress.begin(edition,'1.0','old-feed-key')
+                with mock('official_client_update.read_manifest',return_value=record),mock.object(Progress,'present') as present:
+                    first=obj.snapshot();second=obj.snapshot()
+                self.assertEqual(first,second);self.assertEqual(progress.read()['phase'],'current')
+                self.assertEqual(progress.read()['id'],identity);self.assertFalse(progress.read()['can_start']);present.assert_not_called()
+
+    def test_current_verified_runtime_needs_no_download_or_package_preflight(self):
+        obj=object.__new__(u.UpdateBackend);obj.edition='ds';obj.directory=Path('unused')
+        obj.installed_metadata=lambda:{'release':{'commit':'published'},'runtime_digest':'installed'}
+        with mock.object(u,'edition',return_value={'edition':'ds'}),mock.object(u,'runtime_digest',return_value='installed'), \
+             mock.object(u,'source_package') as fetch:
+            self.assertEqual(obj.source_for_release({'commit':'published'}),p.ROOT);fetch.assert_not_called()
+        with mock.object(u,'edition',return_value={'edition':'ds'}),mock.object(u,'runtime_digest',return_value='modified'), \
+             mock.object(u,'source_package') as fetch:
+            obj.source_for_release({'commit':'published'});fetch.assert_called_once()
+
+    def test_check_feedback_never_creates_install_intent_or_notification(self):
+        from update_progress import CheckStatus,Progress
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);check=CheckStatus(root,'ds')
+            with mock.object(Progress,'present') as present:
+                check.publish('checking');check.publish('downloading',1,4);check.publish('verifying');check.publish('current');check.finish()
+            value=monitor.load_json(root/'update.check.json')
+            self.assertEqual(value['phase'],'current');self.assertFalse(value['active'])
+            self.assertFalse((root/'progress.json').exists());self.assertFalse((root/'progress.request.json').exists());present.assert_not_called()
+
     def test_explicit_checks_and_model_edits_work_with_automatic_checks_disabled(self):
         for force_model,force_code in ((False,False),(True,False),(True,True)):
             with self.subTest(model=force_model,code=force_code),tempfile.TemporaryDirectory() as temp:
@@ -59,7 +97,7 @@ class UpdateTests(unittest.TestCase):
             with mock('update_progress.worker_progress',return_value=progress), \
                  mock.object(update_worker,'execute',side_effect=p.AppRunningError('reopened')):
                 self.assertEqual(update_worker.main(['install',str(path)]),75)
-            progress.publish.assert_called_once_with('waiting_for_exit')
+            progress.reopened.assert_called_once();progress.publish.assert_not_called()
             self.assertFalse(path.with_suffix('.result.json').exists())
 
     def test_model_sync_is_quiet_only_when_app_and_code_are_unchanged(self):
@@ -396,3 +434,56 @@ class PairedCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Missing validation'):release.require_receipts(candidate,Path(temp)/'proof')
             candidate['editions']['ds']['release']['files']['common.py']='0'*64
             self.assertNotEqual(candidate['id'],release.candidate_id(candidate))
+
+class RuntimeTransactionTests(unittest.TestCase):
+    def fixture(self,root):
+        state=root/'state';state.mkdir();runtime=state/'runtime';runtime.mkdir();package=root/'package';package.mkdir()
+        for path,version in ((runtime,'old'),(package,'new')):
+            (path/'edition.json').write_text(json.dumps({'edition':'ds','version':version}))
+            (path/'code.py').write_text(version)
+        files=['edition.json','code.py']
+        def identity(path,action,job,out):
+            return {'edition':'ds','files':files,'runtime_digest':u.runtime_digest(path,files)}
+        return state,runtime,package,identity
+
+    def test_runtime_startup_failure_restores_exact_old_tree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state,runtime,package,identity=self.fixture(Path(temp).resolve());records=[]
+            def worker(path,action,job,out):
+                if Path(out).name=='activation-confirm':raise RuntimeError('startup fixture failed')
+                return identity(path,action,job,out)
+            with mock.object(u,'worker',side_effect=worker),mock.object(p,'SERVICE_RUNTIME_FILES',('edition.json','code.py')):
+                with self.assertRaisesRegex(RuntimeError,'startup fixture'):
+                    u.activate_runtime(package,state,'ds',checkpoint=records.append)
+            self.assertEqual((runtime/'code.py').read_text(),'old');self.assertEqual(len(records),1)
+            u.rollback_runtime(records[0]);self.assertEqual((runtime/'code.py').read_text(),'old')
+            self.assertEqual((package/'code.py').read_text(),'new')
+
+    def test_runtime_checkpoint_precedes_swap_and_recovery_rejects_user_edits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state,runtime,package,identity=self.fixture(Path(temp).resolve());records=[]
+            def checkpoint(record):
+                self.assertEqual((runtime/'code.py').read_text(),'old');records.append(record)
+            with mock.object(u,'worker',side_effect=identity),mock.object(p,'SERVICE_RUNTIME_FILES',('edition.json','code.py')):
+                u.activate_runtime(package,state,'ds',checkpoint=checkpoint)
+            self.assertEqual((runtime/'code.py').read_text(),'new')
+            (runtime/'code.py').write_text('independent')
+            with self.assertRaises(p.PatchError):u.rollback_runtime(records[0])
+            self.assertEqual((runtime/'code.py').read_text(),'independent')
+            (runtime/'code.py').write_text('new');u.rollback_runtime(records[0])
+            self.assertEqual((runtime/'code.py').read_text(),'old')
+
+    def test_public_download_reports_bytes_with_and_without_length(self):
+        import io
+        raw=b'x'*150000
+        for known in (True,False):
+            class Response(io.BytesIO):
+                headers={'Content-Length':str(len(raw))} if known else {}
+                status=200
+                def geturl(self):return 'https://raw.githubusercontent.com/limyum-creator/codex-deepseek-patch/main/update.json'
+            with mock.object(u.urllib.request,'build_opener') as make:
+                make.return_value.open.return_value=Response(raw);counts=[]
+                result=u.public_get('https://raw.githubusercontent.com/limyum-creator/codex-deepseek-patch/main/update.json',progress=lambda d,t:counts.append((d,t)))
+            self.assertEqual(result,raw);self.assertEqual(counts[-1],(len(raw),len(raw)))
+            self.assertTrue(all(d<=len(raw) for d,t in counts))
+            self.assertTrue(all(t in (len(raw),None) for d,t in counts))

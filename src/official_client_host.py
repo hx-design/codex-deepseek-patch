@@ -127,6 +127,32 @@ def health_status(settings, timeout=0.4):
         return {'ready': False, 'reason': 'invalid_response'}
 
 
+def activity_status(settings, *, lease=None, release=False, timeout=1.5):
+    """Read/drain only the exact owned adapter; old protocols remain unknown."""
+    try:
+        import math
+        settings=_settings(settings)
+        url=settings['health_url'];data=None
+        if lease is not None:
+            _require(isinstance(lease,str) and __import__('re').fullmatch('[a-f0-9]{32}',lease),'Invalid update lease')
+            url=url.removesuffix('/health')+'/maintenance'
+            data=json.dumps({'action':'release' if release else 'drain','lease':lease}).encode()
+        request=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}),_NoRedirect()).open(request,timeout=timeout) as response:
+            value=json.loads(response.read(8193))
+        if value.get('identity')!=settings['health_identity'] or value.get('edition')!=settings.get('edition'):
+            return {'known':False,'reason':'identity_mismatch'}
+        a=value.get('activity',{})
+        if value.get('update_control')!=1:return {'known':False,'reason':'older_adapter'}
+        _require(all(type(a.get(k)) is int and a[k]>=0 for k in ('requests','tools','unknown')) and
+                 isinstance(a.get('idle_for'),(float,int)) and math.isfinite(a['idle_for']) and a['idle_for']>=0,
+                 'Invalid activity response')
+        return {'known':True,**a,'acquired':value.get('acquired') is True,
+                'idle':not any(a[k] for k in ('requests','tools','unknown')) and a['idle_for']>=10}
+    except Exception:
+        return {'known':False,'reason':'unavailable'}
+
+
 def healthy(settings, timeout=0.4):
     """Check the installation identity, never accept an unrelated local listener."""
     return health_status(settings, timeout)['ready']

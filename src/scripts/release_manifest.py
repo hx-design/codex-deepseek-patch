@@ -20,6 +20,8 @@ VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHAN
 REQUIRED_NATIVE = frozenset((
     'native_catalog_reasoning', 'existing_chat_native_identity_migration',
     'same_thread_model_switching', 'native_auto_manual_compaction_windows',
+    'same_thread_external_after_gpt_quota_exhausted',
+    'long_history_compaction_after_gpt_quota_exhausted',
     'native_lazy_160_mcp_tools', 'native_custom_tool_execution',
     'native_prediction_provider_and_fork', 'gpt_ws_registered_http_auth_isolation',
     'old_encrypted_history_without_gpt_quota', 'native_tools_after_old_history_recovery',
@@ -31,6 +33,26 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_codec_slow_pipe_writes_finish_and_midflight_cancel_reaps_child',
+    'test_old_close_guard_is_fenced_and_new_controller_defers_unknown_activity',
+    'test_new_installer_commits_idle_prepared_build',
+    'test_tools_hold_idle_until_outputs_arrive_and_lease_is_atomic',
+    'test_observation_never_limits_stream_and_unknown_holds_install',
+    'test_idle_websocket_and_authenticated_drain_release',
+    'test_order_fence_and_actual_counts_survive_old_writer',
+    'test_one_click_wait_cancel_and_restart_keep_prepared_package',
+    'test_unknown_activity_waits_for_exit_and_timeout_retains_build',
+    'test_rollback_phase_is_terminal_until_explicit_retry',
+    'test_runtime_startup_failure_restores_exact_old_tree',
+    'test_runtime_checkpoint_precedes_swap_and_recovery_rejects_user_edits',
+    'test_runtime_failure_before_commit_restores_service_and_config',
+    'test_public_download_reports_bytes_with_and_without_length',
+
+    'test_current_verified_runtime_needs_no_download_or_package_preflight',
+    'test_unchanged_runtime_clears_stale_notice_without_restarting_update',
+    'test_same_candidate_recheck_preserves_start_and_verified_build',
+    'test_single_start_crosses_stability_wait_and_installs_once',
+    'test_native_widgets_complete_private_snapshot_and_close_headlessly',
     'test_native_image_generate_and_edit_keep_official_auth_and_bytes',
     'test_new_native_http_services_are_opaque_and_stay_on_official_origin',
     'test_native_heartbeats_reach_client_during_silent_reasoning',
@@ -64,7 +86,8 @@ REQUIRED_REGRESSIONS = frozenset((
 PLATFORM_REGRESSIONS = {
     'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler',
               'test_macos_update_and_rollback_wait_for_old_launchd_job'},
-    'windows': {'test_windows_production_host_survives_hide_reopen_and_unreadable_wake',
+    'windows': {'test_explicit_exit_closes_owned_headless_backend_and_keeps_other_processes',
+                'test_windows_production_host_survives_hide_reopen_and_unreadable_wake',
                 'test_windows_routed_buttons_drag_and_tooltips_reach_real_handlers'},
 }
 
@@ -121,10 +144,11 @@ def create(commit,sequence):
     def read(name):return git("show",commit+":"+name)
     channel=json.loads(read("edition.json"))
     names=git("ls-tree","-r","--name-only",commit,text=True).splitlines()
-    files={name:hashlib.sha256(read(name)).hexdigest() for name in names if name!="update.json"}
+    contents={name:read(name) for name in names if name!="update.json"}
+    files={name:hashlib.sha256(raw).hexdigest() for name,raw in contents.items()}
     if not 8 <= len(files) <= 100:
         raise ValueError('Portable inventory must remain compatible with installed updaters (8-100 files)')
-    return {"format":1,**channel,"sequence":sequence,"commit":commit,"files":files,
+    return {"format":1,**channel,"sequence":sequence,"commit":commit,"files":files,"file_sizes":{name:len(raw) for name,raw in contents.items()},
             "archive": {'format': 'github-zip-v1',
                         'url': 'https://codeload.github.com/limyum-creator/codex-deepseek-patch/zip/' + commit}}
 

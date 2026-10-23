@@ -45,7 +45,7 @@ class WindowsProgressContractTests(unittest.TestCase):
 
     def test_actions_are_fixed_controller_argv_hidden_and_asynchronous(self):
         action = self.source.split('function Send-Action',1)[1].split('function Short-Text',1)[0]
-        self.assertIn("$Action -notin @('start','launch','dismiss')",action)
+        self.assertIn("$Action -notin @('start','launch','dismiss','cancel')",action)
         self.assertIn("@($ControllerPath, '--state-dir', $StateDirectory, '--action', $Action, '--id', $script:runId)",action)
         self.assertIn("$arguments += @('--phase', [string]$script:state.phase)",action)
         self.assertIn('Quote-Argument $_',action)
@@ -65,14 +65,14 @@ class WindowsProgressContractTests(unittest.TestCase):
         self.assertNotIn('start',close)
         self.assertNotIn('launch',close)
         self.assertIn("$launch.Add_Click({ Send-Action 'launch'",self.source)
-        self.assertIn("$start.Add_Click({ Send-Action 'start'",self.source)
+        self.assertIn("$start.Add_Click({ Send-Action $(if($script:state.can_cancel){'cancel'}else{'start'})",self.source)
         self.assertIn("$Action -eq 'launch' -and $script:state.can_launch -ne $true",self.source)
         self.assertIn('$form.TopMost = $false',self.source)
         self.assertIn('[Windows.Forms.Application]::Run($form)',self.source)
 
     def test_determinate_progress_comes_from_real_work_counts(self):
         self.assertIn('100 * $completed / $total',self.source)
-        self.assertIn("$percent.Text = [string]$next.completed + ' / ' + [string]$next.total",self.source)
+        self.assertIn("$percent.Text = [string][Math]::Floor(100*$completed/$total) + '% · ' + [string]$next.completed + ' / ' + [string]$next.total",self.source)
         self.assertIn("$progress.Style = 'Marquee'",self.source)
         self.assertIn('$null -ne $next.completed',self.source)
         self.assertNotRegex(self.source,r'\$(?:completed|total|progress\.Value)\s*\+\+')

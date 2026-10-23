@@ -314,7 +314,7 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         from update_progress import action as update_action
         value=hub_progress(directory)
         require(value and value['id']==payload.get('id'),'更新状态已改变，请刷新后重试。')
-        require(payload.get('command') in ('start','launch'),'未知更新操作。')
+        require(payload.get('command') in ('start','launch','cancel'),'未知更新操作。')
         return update_action(directory,value['id'],payload['command'],payload.get('phase'))
     if action in ('check_updates','retry_update','sync_models'):
         monitor.request_update(directory,sync_now=action!='check_updates',code_now=action!='sync_models',retry=action=='retry_update')
@@ -921,13 +921,13 @@ def hub_shell(directory):
 
 
 def hub_progress(directory):
-    from update_progress import TEXT
-    value=monitor.load_json(Path(directory)/'progress.json',{})
+    from update_progress import TEXT,Progress
+    value=Progress(directory).read()
     if not isinstance(value,dict) or value.get('edition')!=p.EDITION or value.get('phase') not in TEXT:
         return {}
     if not isinstance(value.get('id'),str) or not re.fullmatch(r'[a-f0-9]{32}',value['id']):return {}
     return {k:value[k] for k in ('format','id','edition','version','phase','title','detail',
-            'completed','total','can_start','can_launch','phase_started_at') if k in value}
+            'completed','total','unit','percent','can_cancel','can_start','can_launch','phase_started_at') if k in value}
 
 
 def hub_field(key, label, value='', kind='text', *, choices=None, hint=None):

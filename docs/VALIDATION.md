@@ -1,5 +1,14 @@
 ## 后续版本的强制发布检查
 
+### 预下载、空闲安装与事务回退
+
+压缩管道还必须覆盖延迟开始读取的大输入，以及输入尚未发送完成时取消并回收子进程。Python 3.11 的短超时 communicate 重试可能丢失后续 stdin 写入注册；压缩改为单次读写配合取消等待，保持字节完整。
+
+四组合发布门禁新增：真实字节进度（含无 Content-Length）、同阶段计数不回退、旧进度写入隔离、单次点击跨等待继续、工具尚未返回时禁止安装、空闲 WebSocket 不阻塞、排空锁与新请求竞争、取消与一小时到期保留候选、旧协议等待正常退出、启动失败恢复旧运行时、配置与服务回退、独立修改阻止覆盖。AppKit/WPF 实际控件分别检查 25% 显示、取消等待按钮及完成后的启动按钮。
+
+每次发布继续运行原生 CLI 的 GPT → DS →（扩展版 Grok/Gemini/本地接口）→ GPT、额度耗尽后的跨供应商压缩与工具、原生生图、登录隔离和 Windows 后台退出用例。测试使用隔离服务和合成凭据，正式运行中的应用与用户任务不参与退出/回退测试。
+
+
 同对话切换须分别覆盖未压缩的 GPT → DS → GPT，以及 GPT 原生加密压缩后 → DS 恢复历史、调用工具 → GPT。历史摘要的异常回归必须包含 HTTP 200 SSE 内的输出截断、内容过滤、额度不足、限流、鉴权失败及未知失败。输出截断须验证分段恢复保留全部 UTF-8 输入、仅缓存完整结果、取消有效且请求次数有界；其他失败不在适配层反复提交。错误保留可操作的分类，不复制上游提示词或凭据。上述共享代码检查随两系统、两版本的完整测试一起运行。
 
 ## 大请求与原生行为回归门槛
@@ -451,3 +460,12 @@ GitHub Actions 执行跨平台离线测试，不执行 macOS 应用启动或 Dee
 ## 0.5.11 / 0.4.11: macOS scheduled signature checks
 
 The same read-only signature command was exercised under launchd Background and Standard process classes. Standard completed in approximately one second; Background stalled under I/O throttling. The monitor now uses Standard while retaining its bounded timer, quiet execution, and no KeepAlive. Already-loaded older macOS jobs restore normal scheduling for their own process and children at the start of each check, without stopping the job. Windows task identity, hidden execution and triggers are unchanged.
+
+
+### Update identity, backend exit and edge interaction regressions
+
+- Bind a candidate to one runtime/app identity across discovery, verification, manual start and activation. Rechecking the same candidate retains its start intent and prepared build. An unchanged verified installation must not redownload, offer an install, or raise another update notice.
+- Keep discovery feedback separate from installation actions: download and compatibility checks show their current phase, while only a verified pending update gets a Start button. One explicit start continues through the stability delay; a ready installation skips new network discovery after app exit.
+- Windows exit tests run copied disposable executables as an ordinary user. Verify that a headless process inside the exact application root exits, while another root and the shared sandbox service survive. Never run termination tests against an active user app.
+- Both native settings hosts must exercise edge click ordering: reveal first, directional button entry next, rapid clicks coalesced, and pending entry cancelled on hide/detach. Windows controls retain keyboard focus styling without the default dotted adorner.
+- Both native edition probes carry usage above the destination compaction threshold before a GPT quota failure, then switch within the same chat, compact through the destination model, execute tools, and verify no further GPT request. The original reported user's OS/version/error should be recorded separately when available.

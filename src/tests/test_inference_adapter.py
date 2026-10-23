@@ -380,10 +380,32 @@ class AdapterTests(unittest.TestCase):
         response.close();conn.close()
         self.assertTrue(self.upstream.cancelled.wait(2),'Native cancellation left a silent upstream open')
 
+    def test_idle_websocket_and_authenticated_drain_release(self):
+        ws,_=connect_websocket(self.wsurl,timeout=2)
+        try:
+            # An idle long-lived transport is not an active generation.
+            self.assertEqual(self.server.activity.status()['requests'],0)
+            self.server.activity.last-=11
+            path='/'+self.profile['token']+'/maintenance'
+            status,_,raw=self.request({'action':'drain','lease':'a'*32},path=path)
+            self.assertEqual(status,200);self.assertTrue(json.loads(raw)['acquired'])
+            status,_,raw=self.request({'model':'deepseek-fixture','input':[]})
+            self.assertEqual(status,503);self.assertEqual(len(self.upstream.seen),0)
+            self.assertEqual(self.request({'action':'release','lease':'a'*32},path='/wrong/maintenance')[0],401)
+            self.assertTrue(self.server.activity.status()['draining'])
+            self.assertEqual(self.request({'action':'release','lease':'a'*32},path=path)[0],200)
+            self.assertFalse(self.server.activity.status()['draining'])
+            status,_,raw=self.request({'model':'deepseek-fixture','input':[]})
+            self.assertEqual(status,200)
+        finally:ws.close()
+
     def test_health_path_token_host_origin_and_encoding_boundaries(self):
         status, _, raw = self.request(path='/' + self.profile['token'] + '/health', method='GET')
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(raw), {'ok': True, 'identity': 'fixture-relay', 'edition': 'ds'})
+        value=json.loads(raw)
+        self.assertEqual({key:value[key] for key in ('ok','identity','edition')}, {'ok': True, 'identity': 'fixture-relay', 'edition': 'ds'})
+        self.assertEqual(value['update_control'],1)
+        self.assertEqual(value['activity']['requests'],0)
         for path, headers, expected in [('/wrong/health', {}, 401),
             (self.path, {'Host': 'evil.invalid'}, 403),
             (self.path, {'Origin': 'https://evil.invalid'}, 403),
@@ -788,3 +810,37 @@ class ProfileTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class UpdateActivityTests(unittest.TestCase):
+    def test_tools_hold_idle_until_outputs_arrive_and_lease_is_atomic(self):
+        now=[0.0];a=relay.Activity(lambda:now[0]);owner=object()
+        a.begin(owner)
+        a.observe(owner,{'type':'response.output_item.done','item':{'type':'function_call','call_id':'call-1'}})
+        a.end(owner);now[0]=20
+        self.assertEqual(a.status()['requests'],0);self.assertEqual(a.status()['tools'],1)
+        self.assertFalse(a.drain('a'*32))
+        a.begin(object());self.assertFalse(a.drain('a'*32))
+        a.active.clear();a.consume({'input':[{'type':'function_call_output','call_id':'call-1','output':'private'}]})
+        now[0]=31;self.assertTrue(a.drain('a'*32))
+        with self.assertRaises(relay.RelayError):a.begin(object())
+        self.assertFalse(a.drain('b'*32));a.drain('b'*32,True)
+        self.assertTrue(a.status()['draining']);a.drain('a'*32,True)
+        a.begin(owner);a.end(owner)
+        now[0]=42;self.assertTrue(a.drain('a'*32));now[0]=163
+        a.begin(owner);self.assertFalse(a.status()['draining'])
+        self.assertNotIn('private',json.dumps(a.status()))
+
+    def test_observation_never_limits_stream_and_unknown_holds_install(self):
+        a=relay.Activity(lambda:100);owner=object();observer=relay.ActivityStream(a,owner)
+        observer.feed(b'data: '+b'x'*300000+b'\n\n')
+        self.assertEqual(a.status()['unknown'],1)
+        self.assertFalse(a.drain('a'*32))
+        raw=encoded({'type':'response.completed','response':{'output':[{'type':'custom_tool_call','call_id':'x'}]}})
+        for chunk in (b'data: '+raw[:20],raw[20:]+b'\n\n'):observer.feed(chunk)
+        self.assertEqual(a.status()['unknown'],0);self.assertEqual(a.status()['tools'],1)
+        a.cancel(owner);self.assertEqual(a.status()['tools'],0)
+
+    def test_metadata_tools_do_not_hold_server_side_image_requests(self):
+        a=relay.Activity();a.observe('r',{'output':[{'type':'image_generation_call','id':'image'},
+            {'type':'web_search_call','id':'search'}]})
+        self.assertEqual(a.status()['tools'],0)

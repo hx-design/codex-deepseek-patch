@@ -37,6 +37,27 @@ class NativeCompressionTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError,'cancelled'):
             zstd_body(wire,node=node,cancelled=cancelled)
 
+    def test_codec_slow_pipe_writes_finish_and_midflight_cancel_reaps_child(self):
+        from inference_transport import zstd_body
+        node=os.environ.get('CODEX_TEST_COMPRESSION_NODE') or shutil.which('node')
+        if not node:self.skipTest('A zstd-capable vendor/test runtime is unavailable')
+        original=subprocess.Popen;children=[];delay=[250]
+        def delayed(args,**kwargs):
+            args=list(args)
+            args[2]='Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,'+str(delay[0])+');'+args[2]
+            child=original(args,**kwargs);children.append(child);return child
+        raw=b'pipe payload with complete input'*100000
+        with patch('inference_transport.subprocess.Popen',side_effect=delayed),patch.dict('sys.modules',{'compression':None}):
+            compressed=zstd_body(raw,decompress=False,node=node)
+            self.assertEqual(zstd_body(compressed,node=node),raw)
+            delay[0]=30000;cancelled=threading.Event();timer=threading.Timer(.2,cancelled.set);timer.start()
+            try:
+                with self.assertRaisesRegex(OSError,'cancelled'):
+                    zstd_body(raw,decompress=False,node=node,cancelled=cancelled)
+            finally:timer.cancel();timer.join()
+        self.assertTrue(all(child.poll() is not None for child in children))
+        self.assertTrue(all(child.stdin.closed and child.stdout.closed for child in children))
+
 
 def frame(payload=b'', opcode=1, *, final=True, masked=True, rsv=0):
     key = b'abcd'

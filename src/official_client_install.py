@@ -168,7 +168,7 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
                   'The previous adapter service state was not restored')
 
 def validate_build(directory, manifest):
-    p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') == 'prepared',
+    p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') in ('prepared','prepared_idle'),
               'A prepared native-client build is required')
     p.require(manifest.get('edition') == p.EDITION, 'Native build belongs to another edition')
     p.require(manifest.get('native_probe') == 'passed', 'Run the native adapter regression before installation')
@@ -295,6 +295,11 @@ def _read_transaction(directory):
     backup = directory / transaction['previous_config_file']
     p.require(backup.is_file() and not backup.is_symlink() and p.file_sha(backup) == transaction['previous_config_sha256'],
               'Native configuration recovery backup changed')
+    runtime=transaction.get('runtime_activation')
+    if runtime:
+        state=original.get('update',{}).get('monitor_state_dir')
+        p.require(state and Path(state).resolve()==Path(runtime['directory']) and runtime['edition']==transaction['edition'],
+                  'Native runtime recovery target changed')
     origin = transaction.get('origin_index')
     if origin:
         p.require(origin['path'] == str(Path(transaction['home']) / 'model-adapter-legacy-origins.json')
@@ -357,8 +362,21 @@ def _recover_locked(directory, transaction):
         except Exception as error:
             errors.append({'resource': resource, 'error_type': type(error).__name__})
 
+    if transaction.get('runtime_activation'):
+        from updater import rollback_runtime
+        attempt('runtime',lambda:rollback_runtime(transaction['runtime_activation']))
+
     if transaction['actions'].get('service'):
-        attempt('service', lambda: service.restore(transaction['previous_service']))
+        def restore_service():
+            service.restore(transaction['previous_service'])
+            baseline=previous.get('legacy_baseline')
+            if transaction['previous_service'].get('loaded') and baseline:
+                prior_path=Path(baseline);prior=json.loads((prior_path/'manifest.json').read_text(encoding='utf-8'))
+                if prior.get('architecture')==ARCHITECTURE:
+                    host=prior_path/'host-settings.json'
+                    p.require(p.file_sha(host)==prior['host_settings_sha256'],'Previous service settings changed')
+                    service._wait_ready(json.loads(host.read_text(encoding='utf-8')))
+        attempt('service',restore_service)
 
     def restore_app():
         # The exchange and its journal write are separate atomic operations.
@@ -554,6 +572,21 @@ def install(directory, manifest):
                 manifest['windows_shortcut'] = transaction['shortcut']
             elif prior.get('windows_shortcut'):
                 manifest['windows_shortcut'] = copy.deepcopy(prior['windows_shortcut'])
+            update=manifest.get('update',{})
+            if update.get('package') and update.get('monitor_state_dir'):
+                from updater import activate_runtime
+                state=Path(update['monitor_state_dir']).resolve()
+                monitor_settings=json.loads((state/'settings.json').read_text(encoding='utf-8'))
+                p.require(monitor_settings.get('edition')==manifest['edition'],'Update runtime channel changed')
+                def checkpoint(record):
+                    transaction['runtime_activation']=record
+                    _record(directory,transaction,'runtime_activating')
+                from update_progress import from_manifest
+                progress=from_manifest(manifest)
+                if progress:progress.publish('activating')
+                activate_runtime(Path(update['package']),state,manifest['edition'],checkpoint=checkpoint)
+                _record(directory,transaction,'runtime_ready')
+                p.require(healthy(settings),'Adapter stopped while activating the update runtime')
             manifest.update(status='installed', installed_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                             installed_config_hash=p.sha(activated.encode()), native_config=ownership,
                             install_transaction=txid,
@@ -567,7 +600,13 @@ def install(directory, manifest):
             if _manifest_committed(directory, transaction):
                 _record(directory, transaction, 'committed')
             else:
+                from update_progress import from_manifest,release_idle
+                progress=from_manifest(manifest)
+                if progress:progress.publish('recovering')
                 _recover_locked(directory, transaction)
+                if progress:
+                    release_idle(progress)
+                    progress.publish('rolled_back',present=True)
                 manifest.clear()
                 manifest.update(transaction['previous_manifest'])
                 raise

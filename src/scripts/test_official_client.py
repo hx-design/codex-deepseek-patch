@@ -596,12 +596,19 @@ def require_tool_success(events, kind, marker=None):
     raise patch.PatchError('Native ' + kind + ' did not report successful execution')
 
 
-def run(app, reportdir, edition, *, services=False):
+def run(app, reportdir, edition, *, services=False, progress=None):
     app, reportdir = Path(app), Path(reportdir)
     patch.require(edition in ('ds', 'proxy'), 'Unknown edition')
     reportdir.mkdir(parents=True, exist_ok=True)
     report = {'status': 'failed', 'edition': edition, 'external_inference_turns': 0,
               'real_credentials_used': False, 'provider': PROVIDER, 'mcp_tools': 160, 'checks': {}}
+    if progress:
+        class Checks(dict):
+            def __setitem__(self,key,value):
+                super().__setitem__(key,value)
+                progress(len(self),19 if edition=='proxy' else 16)
+        report['checks']=Checks()
+        progress(0,19 if edition=='proxy' else 16)
     report.update(runner_runtime=Path(sys.executable).name, mcp_runtime=Path(mcp_runtime()).name)
     process, adapter, upstream = None, None, None
     started_servers = []
@@ -813,6 +820,10 @@ def run(app, reportdir, edition, *, services=False):
                     report['checks']['native_chat_custom_tools_return_gpt'] = 'passed'
                 # A real native usage-limit error must not poison the same
                 # thread when its next turn selects an independent provider.
+                # Carry a native usage count above the destination's threshold.
+                # A short quota fixture misses pre-turn compaction during switching.
+                upstream.next_usage = int(dict(models)[DS] * .7) + 100
+                turn(GPT, 'long GPT history before quota exhaustion')
                 upstream.official_exhausted = True
                 result = rpc.request('turn/start', {'threadId':tid, 'model':GPT, 'effort':'high',
                     'input':[{'type':'text','text':'Exercise the synthetic exhausted GPT quota.'}]})
@@ -837,6 +848,8 @@ def run(app, reportdir, edition, *, services=False):
                 patch.require(not any(v['model'] == GPT for v in upstream.wire[before:]),
                               'Independent turn contacted GPT after quota exhaustion')
                 report['checks']['same_thread_external_after_gpt_quota_exhausted'] = 'passed'
+                patch.require(any(t['compaction'] for t in turns if t['label']=='independent provider after exhausted GPT quota'), 'Long quota switch did not exercise external compaction')
+                report['checks']['long_history_compaction_after_gpt_quota_exhausted'] = 'passed'
                 report['quota_error'] = quota_error
                 upstream.official_exhausted = False
                 turn(GPT, 'return after synthetic GPT quota reset')
