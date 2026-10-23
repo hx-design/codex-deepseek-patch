@@ -37,7 +37,7 @@ The built-in `openai` identity and native prediction request path are retained. 
 
 When switching from older encrypted GPT compactions, the selected external model recovers a readable handoff. Truncated summaries split only the failing input and are cached after complete recovery. Quota, rate-limit, authentication and filtering failures receive distinct errors instead of a generic summary 502.
 
-The development candidate supports Responses, Chat Completions and native Anthropic Messages. Select the protocol exposed by the service. Messages uses independent credentials, declared output limits and same-model thinking-signature round trips. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
+The extension supports Responses, Chat Completions and native Anthropic Messages. Select the protocol exposed by the service. Messages uses independent credentials, declared output limits and same-model thinking-signature round trips. Capabilities are declared by service metadata or configuration, not guessed from a vendor name. Unknown specifications do not receive arbitrary small context limits.
 
 Python 3.11+ and the official macOS/Windows Codex app are required. No separate Node.js installation is required: older Python uses the untouched runtime bundled with Codex for native request compression. There is no resident management UI, database or model engine. A per-user system service runs the adapter; a separate scheduled monitor checks code/models and exits. Windows processes are windowless. Legacy code remains for recovery and regression, not new app modification.
 
