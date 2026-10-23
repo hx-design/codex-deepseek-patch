@@ -253,7 +253,7 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
                'official_client_config.py','official_client_host.py','inference_adapter.py',
                'inference_transport.py','legacy_history.py','reasoning_origin.py','chat_completions_compat.py',
                'official_client_migration.py','scripts/test_official_client.py',
-               'update_progress.py','update_progress_macos.js','update_progress.ps1'}
+               'update_progress.py','update_progress_macos.js','update_progress.ps1','tests/test_official_client_update.py'}
         names.update(name.replace('.','/')+'.py' for name in updater.NATIVE_PREFLIGHT_MODULES)
         contents.update({name:b'fixture\n' for name in names})
         value['files']={name:hashlib.sha256(raw).hexdigest() for name,raw in contents.items()}
@@ -261,10 +261,14 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, mock.object(updater.shutil,'which',return_value=None), \
              mock.object(updater.subprocess,'run',return_value=Mock(returncode=0,stderr='')) as runner:
             updater.source_package(value,temp,lambda url:contents[url.split('/'+value['commit']+'/',1)[1]])
-        self.assertEqual(runner.call_count,1)
+        self.assertEqual(runner.call_count,2)
+        self.assertEqual(runner.call_args_list[0].args[0][:2],[sys.executable,'-c'])
+        self.assertIn('ast.parse',runner.call_args_list[0].args[0][2])
         command=runner.call_args.args[0]
         self.assertEqual(command[:3],[sys.executable,'-m','unittest'])
-        self.assertIn('tests.test_official_client_update',command)
+        self.assertIn('tests.test_official_client_config',command)
+        self.assertNotIn('tests.test_management',command)
+        self.assertNotIn('tests.test_official_client_install',command)
         self.assertNotIn('tests/route.test.cjs',command)
 
     def test_native_baseline_refuses_a_legacy_candidate_even_without_update_metadata(self):
