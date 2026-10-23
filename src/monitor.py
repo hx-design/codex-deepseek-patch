@@ -428,6 +428,18 @@ def service_label(directory):
     return "com.codex.deepseek-patch.monitor." + digest
 
 
+def run_requested(instance, retry=False, sleep=time.sleep):
+    """Continue a single explicit click after the candidate stability interval."""
+    from update_progress import Progress
+    result=instance.run_once(retry=retry)
+    if result.get('phase')=='stabilizing' and Progress(instance.directory).requested():
+        delay=max(0,getattr(instance.backend,'stable_seconds',DEFAULT_STABLE_SECONDS)-
+                  (instance.clock()-result['candidate']['first_seen']))
+        sleep(min(delay,DEFAULT_STABLE_SECONDS))
+        result=instance.run_once()
+    return result
+
+
 def service_command(directory, python=None):
     executable = Path(python or sys.executable)
     if sys.platform == "win32" and executable.name.lower() == "python.exe":
@@ -826,7 +838,8 @@ def main(argv=None):
                 recovery = saved_state.get("pending", {}).get("build", {}).get("directory")
                 if recovery:
                     settings["recovery_build"] = recovery
-            result = Monitor(args.state_dir, CoreBackend(settings)).run_once(retry=args.retry)
+            instance=Monitor(args.state_dir, CoreBackend(settings))
+            result = run_requested(instance, retry=args.retry)
             if result.get('phase') in ('installed','idle'):
                 from management import maintenance
                 maintenance(args.state_dir)

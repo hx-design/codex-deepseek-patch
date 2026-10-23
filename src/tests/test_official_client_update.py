@@ -293,7 +293,7 @@ class NativeUpdateRecoveryTests(unittest.TestCase):
 class DiscoveryOrderingTests(unittest.TestCase):
     def test_store_package_is_rediscovered_before_model_refresh(self):
         obj=object.__new__(updater.UpdateBackend)
-        obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
+        obj.package=p.ROOT;obj.prepared=False;obj.settings={'app':'/Store/removed-old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
         obj.base=Mock(spec=['app','baseline','snapshot'],app=Path('/Store/removed-old'),baseline=None)
         def discover():
@@ -310,7 +310,7 @@ class DiscoveryOrderingTests(unittest.TestCase):
 
     def test_native_discovery_does_not_repeat_full_signature_and_hash_check(self):
         obj=object.__new__(updater.UpdateBackend)
-        obj.prepared=False;obj.settings={'app':'/Store/old'}
+        obj.package=p.ROOT;obj.prepared=False;obj.settings={'app':'/Store/old'}
         obj.desired_runtime='code';obj.model_snapshot={'digest':'models'};obj.warnings=[]
         obj.base=Mock(app=Path('/Store/old'),baseline=None)
         def discover():obj.base.app=Path('/Store/current')

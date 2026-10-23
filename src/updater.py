@@ -439,6 +439,14 @@ class UpdateBackend:
             settings.update(architecture='official-client-v1',baseline=str(baseline),app=str(record['target']))
             if settings!=previous:atomic_json(settings_path,settings)
 
+    def source_for_release(self, release, progress=None):
+        installed=self.installed_metadata()
+        if ((installed.get('release') or {}).get('commit')==release['commit']
+                and edition(p.ROOT)['edition']==self.edition
+                and installed.get('runtime_digest')==runtime_digest(p.ROOT)):
+            return p.ROOT
+        return source_package(release,self.directory,progress=progress)
+
     def prepare(self):
         if self.prepared:return
         pending=self.directory/'activation-pending.json'
@@ -456,6 +464,9 @@ class UpdateBackend:
         force_code=self.settings.get('force_code',False)
         if (self.settings.get('auto_update',True) or force_code) and (force or force_code or now-self.cache.get('code_checked',0)>=CHECK_SECONDS):
             self.cache['code_checked']=now
+            from update_progress import CheckStatus
+            self.check_status=CheckStatus(self.directory,self.edition)
+            self.check_status.publish('checking')
             try:
                 branch=CHANNELS[self.edition]
                 url='https://raw.githubusercontent.com/'+REPOSITORY+'/'+branch+'/update.json'
@@ -466,27 +477,23 @@ class UpdateBackend:
                 numbers=lambda v:tuple(int(x) for x in re.findall(r'\d+',v))
                 p.require(numbers(release['version'])>=numbers(edition()['version']),'Older patch version refused')
                 self.cache['highest_sequence']=release['sequence']
-                installed_release=self.installed_metadata().get('release') or {}
-                if release['commit']!=installed_release.get('commit'):
-                    from update_progress import Progress
-                    self.progress=Progress(self.directory)
-                    self.progress.begin(self.edition,release['version'],release['commit'])
-                    self.progress.publish('available',present=True)
-                self.package=source_package(release,self.directory,
-                    progress=self.progress if release['commit']!=installed_release.get('commit') else None)
+                # A feed revision alone is not an installation change. Bind UI
+                # intent once, after comparing the actual app/runtime/model state.
+                self.package=self.source_for_release(release,progress=self.check_status)
                 self.cache['release']=release
             except Exception as error:
                 from monitor import safe_error
+                self.check_status.publish('failed')
                 self.warnings.append('Patch update check: '+safe_error(error))
                 if self.progress:self.progress.publish('failed',present=True)
         if self.cache.get('release'):
             try:
                 validate_release(self.cache['release'],self.edition,self.cache['highest_sequence'])
-                self.package=source_package(self.cache['release'],self.directory)
+                self.package=self.source_for_release(self.cache['release'])
             except Exception:
                 self.warnings.append('Cached update package is unavailable; using the installed runtime')
                 self.package=p.ROOT
-        identity=worker(self.package,'identity',{},self.directory/'identity')
+        identity=worker(self.package,'identity',{'quiet_progress':True},self.directory/'identity')
         p.require(identity['edition']==self.edition,'Candidate runtime belongs to another edition')
         self.desired_architecture=identity.get('architecture','legacy')
         p.require(self.desired_architecture in ('legacy','official-client-v1'),'Unknown candidate runtime architecture')
@@ -532,6 +539,22 @@ class UpdateBackend:
         record=read_manifest(self.base.baseline)
         self.quiet_model_sync=self.model_only_change(app,self.desired_runtime,record)
         model_digest=self.model_snapshot['digest'] if self.model_snapshot else self.installed_metadata().get('model_digest','legacy')
+        if not self.quiet_model_sync:
+            from update_progress import for_settings
+            self.progress=for_settings(self.settings,root=self.package,
+                version=edition(self.package)['version'],force=True,runtime=self.desired_runtime,
+                app_hash=next((v for k,v in app.get('hashes',{}).items() if k.endswith('app.asar')),None))
+        else:
+            from update_progress import Progress
+            progress=Progress(self.directory)
+            value=progress.read()
+            installed_version=(record.get('update',{}).get('release') or {}).get('version')
+            if value.get('version')==installed_version and value.get('phase') in ('available','checking','failed'):
+                progress.publish('current')
+        check=getattr(self,'check_status',None)
+        if check:
+            if self.quiet_model_sync and not self.warnings:check.publish('current')
+            check.finish()
         return {**app,'app_fingerprint':app['fingerprint'],'runtime_digest':self.desired_runtime,
                 'model_digest':model_digest,'fingerprint':self.combined(app['fingerprint'],self.desired_runtime,model_digest),
                 'warnings':self.warnings}
@@ -593,6 +616,7 @@ class UpdateBackend:
         return {'directory':str(output)}
 
     def progress_phase(self,phase):
+        if phase=='failed' and getattr(self,'check_status',None):self.check_status.publish('failed')
         if getattr(self,'quiet_model_sync',False) is True:return
         try:
             if not getattr(self,'progress',None):
@@ -600,7 +624,12 @@ class UpdateBackend:
                 if phase=='available':self.progress=for_settings(self.settings,root=self.package,force=True)
                 value=Progress(self.directory).read()
                 if value and value.get('edition')==self.edition:self.progress=Progress(self.directory)
-            if getattr(self,'progress',None):self.progress.publish(phase,present=phase in ('available','completed','failed'))
+            if getattr(self,'progress',None):
+                # Re-observing the same candidate must not reset an in-flight
+                # update, its prepared build or the user's single start click.
+                if phase=='available' and self.progress.read().get('phase') not in ('available','current'):
+                    return
+                self.progress.publish(phase,present=phase in ('available','completed','failed'))
         except Exception:pass  # Optional view state cannot block runtime activation.
 
     def request_close(self,build):

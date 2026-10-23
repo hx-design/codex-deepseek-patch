@@ -61,6 +61,21 @@ class FakeBackend:
 
 
 class MonitorTests(unittest.TestCase):
+    def test_single_start_crosses_stability_wait_and_installs_once(self):
+        from update_progress import Progress
+        progress=Progress(self.directory);identity=progress.begin('ds','1.0','candidate')
+        monitor.atomic_json(self.directory/'progress.request.json',{'id':identity,'action':'start'})
+        def advance(seconds):self.now+=seconds
+        result=monitor.run_requested(self.monitor,sleep=advance)
+        self.assertEqual(result['phase'],'installed')
+        self.assertEqual(len(self.backend.builds),1);self.assertEqual(len(self.backend.installs),1)
+        self.assertEqual(self.now,1010)
+
+    def test_passive_check_returns_immediately_without_an_install_click(self):
+        sleeper=Mock()
+        self.assertEqual(monitor.run_requested(self.monitor,sleep=sleeper)['phase'],'stabilizing')
+        sleeper.assert_not_called();self.assertEqual(self.backend.installs,[])
+
     def test_busy_owner_preserves_and_consumes_coalesced_settings_request_once(self):
         self.backend.settings={}
         monitor.request_update(self.directory,sync_now=True)

@@ -295,8 +295,9 @@ class SettingsTests(unittest.TestCase):
         motion=value['motion']
         self.assertGreaterEqual(motion['opened'],2)
         self.assertGreaterEqual(motion['closed'],2)
-        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts'):
+        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts','edge_click_deferred','edge_click_coalesced','edge_click_revealed','hidden_click_cancelled'):
             self.assertTrue(motion[name],(name,motion))
+        if sys.platform=='win32':self.assertTrue(motion['no_dotted_focus'])
         self.assertEqual(motion['edges'],[True]*4)
         self.assertEqual(motion['directions'],[90,-90,180,0])
         self.assertEqual(motion['audio_loaded'],2)

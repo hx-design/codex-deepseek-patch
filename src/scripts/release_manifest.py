@@ -20,6 +20,8 @@ VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHAN
 REQUIRED_NATIVE = frozenset((
     'native_catalog_reasoning', 'existing_chat_native_identity_migration',
     'same_thread_model_switching', 'native_auto_manual_compaction_windows',
+    'same_thread_external_after_gpt_quota_exhausted',
+    'long_history_compaction_after_gpt_quota_exhausted',
     'native_lazy_160_mcp_tools', 'native_custom_tool_execution',
     'native_prediction_provider_and_fork', 'gpt_ws_registered_http_auth_isolation',
     'old_encrypted_history_without_gpt_quota', 'native_tools_after_old_history_recovery',
@@ -31,6 +33,11 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_current_verified_runtime_needs_no_download_or_package_preflight',
+    'test_unchanged_runtime_clears_stale_notice_without_restarting_update',
+    'test_same_candidate_recheck_preserves_start_and_verified_build',
+    'test_single_start_crosses_stability_wait_and_installs_once',
+    'test_native_widgets_complete_private_snapshot_and_close_headlessly',
     'test_native_image_generate_and_edit_keep_official_auth_and_bytes',
     'test_new_native_http_services_are_opaque_and_stay_on_official_origin',
     'test_native_heartbeats_reach_client_during_silent_reasoning',
@@ -64,7 +71,8 @@ REQUIRED_REGRESSIONS = frozenset((
 PLATFORM_REGRESSIONS = {
     'macos': {'test_native_carbon_queue_reaches_registered_shortcut_handler',
               'test_macos_update_and_rollback_wait_for_old_launchd_job'},
-    'windows': {'test_windows_production_host_survives_hide_reopen_and_unreadable_wake',
+    'windows': {'test_explicit_exit_closes_owned_headless_backend_and_keeps_other_processes',
+                'test_windows_production_host_survives_hide_reopen_and_unreadable_wake',
                 'test_windows_routed_buttons_drag_and_tooltips_reach_real_handlers'},
 }
 

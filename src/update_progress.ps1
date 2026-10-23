@@ -23,7 +23,7 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $script:runId = $null
 $script:state = $null
-$phases = @('available','checking','downloading','building','verifying','waiting_for_exit',
+$phases = @('current','available','checking','downloading','building','verifying','waiting_for_exit',
             'closing','installing','activating','completed','failed')
 
 function Quote-Argument([string]$Value) {
@@ -147,7 +147,7 @@ function Refresh-State {
         $message.Text = Short-Text $next.detail 500
         $start.Enabled = $next.can_start -eq $true
         $launch.Enabled = $next.can_launch -eq $true
-        if ($next.phase -in @('completed','failed')) {
+        if ($next.phase -in @('current','completed','failed')) {
             $progress.MarqueeAnimationSpeed = 0
             $progress.Style = 'Continuous'
             $progress.Value = if ($next.phase -eq 'completed') { 100 } else { 0 }

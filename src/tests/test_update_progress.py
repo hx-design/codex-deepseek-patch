@@ -335,6 +335,26 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(command[:3],['/usr/bin/arch','-'+machine,'/usr/bin/osascript'])
             self.assertEqual(command[-1],'/private/state with spaces')
 
+    def test_same_candidate_recheck_preserves_start_and_verified_build(self):
+        settings=self.settings()
+        for phase in ('available','checking','waiting_for_exit','failed','completed'):
+            with self.subTest(phase=phase),mock.patch('updater.runtime_digest',return_value='stable'), \
+                 mock.patch('updater.edition',return_value={'version':'1.0'}), \
+                 mock.patch('patch.app_layout',side_effect=ValueError('fixture')):
+                progress=u.for_settings(settings,force=True)
+                progress.publish(phase,build=self.root/'prepared')
+                monitor.atomic_json(self.root/'progress.request.json',{'id':progress.read()['id'],'action':'start'})
+                identity=progress.read()['id']
+                again=u.for_settings(settings,force=True)
+                self.assertEqual(again.read()['id'],identity);self.assertTrue(again.requested())
+                self.assertEqual(again.read()['phase'],phase)
+                self.assertEqual(monitor.load_json(self.root/'progress.context.json')['build'],str(self.root/'prepared'))
+
+    def test_new_monitor_identity_probe_does_not_raise_or_rebind_progress(self):
+        with mock.patch.object(u,'for_settings') as make:
+            self.assertIsNone(u.worker_progress('identity',{'quiet_progress':True},self.root/'identity/worker-identity.json'))
+        make.assert_not_called()
+
     def test_mac_normal_close_exact_paths_no_kill(self):
         with mock.patch.object(u.sys,'platform','darwin'),mock.patch.object(u.subprocess,'run') as run:
             u.graceful_close(['/Applications/Codex.app'])
@@ -355,6 +375,20 @@ class ProgressTest(unittest.TestCase):
              mock.patch('official_client_shortcut.official_entry',return_value={'target':'legacy.exe'}):
             with self.assertRaises(ValueError):u.launch_official(self.root,manifest)
         self.spawn_mock.assert_not_called()
+
+    def test_ready_start_uses_local_install_path_and_no_second_check(self):
+        self.settings();self.build();self.progress.publish('waiting_for_exit')
+        with mock.patch.object(u,'validated_close',return_value=True):
+            u.action(self.root,self.identity,'start')
+        self.assertIn('--install-ready',self.spawn_mock.call_args.args[0])
+
+    def test_exit_failure_keeps_prepared_update_actionable(self):
+        self.settings();self.build();self.progress.publish('waiting_for_exit')
+        monitor.atomic_json(self.root/'progress.request.json',{'id':self.identity,'action':'start'})
+        with mock.patch('official_client_install.validate_build'),mock.patch('official_client_install._guard_staged_config'), \
+             mock.patch.object(u,'graceful_close',side_effect=OSError('fixture denied')):
+            self.assertFalse(u.validated_close(self.progress))
+        self.assertEqual(self.progress.read()['phase'],'waiting_for_exit');self.assertTrue(self.progress.read()['can_start'])
 
     def test_quit_timeout_offers_manual_exit_or_retry(self):
         self.build()

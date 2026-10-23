@@ -1,7 +1,7 @@
 """Windows app discovery, PE resource integrity and native credential helpers.
 
-All mutations target an explicit caller-selected copy. Store installations remain
-read-only. No third party modules, fuse disabling or plaintext credential files.
+App-file mutations target an explicit caller-selected copy. Store files remain
+read-only; an explicit updater action may stop verified app processes. No third party modules, fuse disabling or plaintext credential files.
 """
 from __future__ import annotations
 
@@ -40,6 +40,74 @@ def background_options():
 def native_ui_options():
     """Suppress a console without hiding the application's first GUI window."""
     return {"creationflags": 0x08000000} if os.name == 'nt' else {}
+
+
+def close_app_handles(targets):
+    """Explicit updater exit: retain verified process handles across graceful quit.
+
+    Never kill by executable name, follow unrelated descendants, cross sessions,
+    or include the Store sandbox service. A relaunched app has new handles and
+    is left for the installer's final running-process check.
+    """
+    import ntpath
+    import time
+    from ctypes import wintypes as w
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD];kernel.OpenProcess.restype=w.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes=[w.HANDLE,w.DWORD,w.LPWSTR,ctypes.POINTER(w.DWORD)]
+    kernel.WaitForSingleObject.argtypes=[w.HANDLE,w.DWORD];kernel.WaitForSingleObject.restype=w.DWORD
+    kernel.TerminateProcess.argtypes=[w.HANDLE,w.UINT];kernel.TerminateProcess.restype=w.BOOL
+    kernel.CloseHandle.argtypes=[w.HANDLE]
+    kernel.ProcessIdToSessionId.argtypes=[w.DWORD,ctypes.POINTER(w.DWORD)]
+    current=w.DWORD()
+    if not kernel.ProcessIdToSessionId(os.getpid(),ctypes.byref(current)):
+        raise WindowsSupportError('Unable to verify the updater session')
+    roots=[ntpath.normcase(str(_app_root(p))).rstrip('\\/')+'\\' for p in targets]
+    handles={}
+    try:
+        # Enumerate without spawning PowerShell/WMI during the quit gap.
+        kernel.K32EnumProcesses.argtypes=[ctypes.POINTER(w.DWORD),w.DWORD,ctypes.POINTER(w.DWORD)]
+        capacity=1024
+        while True:
+            ids=(w.DWORD*capacity)();used=w.DWORD()
+            if not kernel.K32EnumProcesses(ids,ctypes.sizeof(ids),ctypes.byref(used)):
+                raise WindowsSupportError('Unable to inspect Codex processes')
+            if used.value<ctypes.sizeof(ids):break
+            capacity*=2
+        for pid in ids[:used.value//ctypes.sizeof(w.DWORD)]:
+            if not pid or pid==os.getpid():continue
+            handle=kernel.OpenProcess(0x1000|0x100000|0x0001,False,pid)
+            if not handle:continue
+            path=ctypes.create_unicode_buffer(32768);size=w.DWORD(len(path));session=w.DWORD()
+            valid=(kernel.QueryFullProcessImageNameW(handle,0,path,ctypes.byref(size))
+                   and kernel.ProcessIdToSessionId(pid,ctypes.byref(session)) and session.value==current.value
+                   and any(ntpath.normcase(path.value).startswith(root) for root in roots)
+                   and ntpath.basename(path.value).casefold()!='codex-windows-sandbox-service.exe')
+            if valid:handles[pid]=handle
+            else:kernel.CloseHandle(handle)
+        user=ctypes.WinDLL('user32',use_last_error=True)
+        callback=ctypes.WINFUNCTYPE(w.BOOL,w.HWND,w.LPARAM)
+        user.EnumWindows.argtypes=[callback,w.LPARAM]
+        user.GetWindowThreadProcessId.argtypes=[w.HWND,ctypes.POINTER(w.DWORD)]
+        user.PostMessageW.argtypes=[w.HWND,w.UINT,w.WPARAM,w.LPARAM]
+        @callback
+        def close_window(hwnd, _):
+            pid=w.DWORD();user.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
+            if pid.value in handles and kernel.WaitForSingleObject(handles[pid.value],0)==258:
+                user.PostMessageW(hwnd,0x0010,0,0)  # WM_CLOSE, asynchronous normal quit
+            return True
+        user.EnumWindows(close_window,0)
+        until=time.monotonic()+3
+        while time.monotonic()<until and any(kernel.WaitForSingleObject(h,0)==258 for h in handles.values()):
+            time.sleep(.1)
+        for handle in handles.values():
+            if kernel.WaitForSingleObject(handle,0)==258 and not kernel.TerminateProcess(handle,0):
+                raise WindowsSupportError('The verified Codex backend could not exit')
+        for handle in handles.values():
+            if kernel.WaitForSingleObject(handle,5000)!=0:
+                raise WindowsSupportError('Codex backend exit has not completed')
+    finally:
+        for handle in handles.values():kernel.CloseHandle(handle)
 
 
 def grant_current_user(directory):

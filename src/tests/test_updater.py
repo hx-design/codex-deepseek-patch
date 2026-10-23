@@ -13,6 +13,44 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_unchanged_runtime_clears_stale_notice_without_restarting_update(self):
+        from update_progress import Progress
+        for edition in ('ds','proxy'):
+            with self.subTest(edition=edition),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);obj=object.__new__(u.UpdateBackend)
+                obj.directory=root;obj.edition=edition;obj.settings={'state_dir':str(root),'edition':edition}
+                obj.prepared=True;obj.prepare=Mock();obj.desired_runtime='runtime';obj.model_snapshot=None;obj.warnings=[]
+                obj.base=Mock(app=root/'app',baseline=root/'baseline');obj.base.snapshot.return_value={
+                    'version':'v','build':'b','fingerprint':'app','hashes':{'resources/app.asar':'asar'}}
+                record={'architecture':'official-client-v1','status':'installed','app_version':'v','app_build':'b',
+                    'original_asar':'asar','update':{'runtime_digest':'runtime','app_fingerprint':'app','release':{'version':'1.0'}}}
+                obj.installed_metadata=lambda:record['update']
+                progress=Progress(root);identity=progress.begin(edition,'1.0','old-feed-key')
+                with mock('official_client_update.read_manifest',return_value=record),mock.object(Progress,'present') as present:
+                    first=obj.snapshot();second=obj.snapshot()
+                self.assertEqual(first,second);self.assertEqual(progress.read()['phase'],'current')
+                self.assertEqual(progress.read()['id'],identity);self.assertFalse(progress.read()['can_start']);present.assert_not_called()
+
+    def test_current_verified_runtime_needs_no_download_or_package_preflight(self):
+        obj=object.__new__(u.UpdateBackend);obj.edition='ds';obj.directory=Path('unused')
+        obj.installed_metadata=lambda:{'release':{'commit':'published'},'runtime_digest':'installed'}
+        with mock.object(u,'edition',return_value={'edition':'ds'}),mock.object(u,'runtime_digest',return_value='installed'), \
+             mock.object(u,'source_package') as fetch:
+            self.assertEqual(obj.source_for_release({'commit':'published'}),p.ROOT);fetch.assert_not_called()
+        with mock.object(u,'edition',return_value={'edition':'ds'}),mock.object(u,'runtime_digest',return_value='modified'), \
+             mock.object(u,'source_package') as fetch:
+            obj.source_for_release({'commit':'published'});fetch.assert_called_once()
+
+    def test_check_feedback_never_creates_install_intent_or_notification(self):
+        from update_progress import CheckStatus,Progress
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);check=CheckStatus(root,'ds')
+            with mock.object(Progress,'present') as present:
+                check.publish('checking');check.publish('downloading',1,4);check.publish('verifying');check.publish('current');check.finish()
+            value=monitor.load_json(root/'update.check.json')
+            self.assertEqual(value['phase'],'current');self.assertFalse(value['active'])
+            self.assertFalse((root/'progress.json').exists());self.assertFalse((root/'progress.request.json').exists());present.assert_not_called()
+
     def test_explicit_checks_and_model_edits_work_with_automatic_checks_disabled(self):
         for force_model,force_code in ((False,False),(True,False),(True,True)):
             with self.subTest(model=force_model,code=force_code),tempfile.TemporaryDirectory() as temp:

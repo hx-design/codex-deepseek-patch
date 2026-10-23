@@ -451,3 +451,12 @@ GitHub Actions 执行跨平台离线测试，不执行 macOS 应用启动或 Dee
 ## 0.5.11 / 0.4.11: macOS scheduled signature checks
 
 The same read-only signature command was exercised under launchd Background and Standard process classes. Standard completed in approximately one second; Background stalled under I/O throttling. The monitor now uses Standard while retaining its bounded timer, quiet execution, and no KeepAlive. Already-loaded older macOS jobs restore normal scheduling for their own process and children at the start of each check, without stopping the job. Windows task identity, hidden execution and triggers are unchanged.
+
+
+### Update identity, backend exit and edge interaction regressions
+
+- Bind a candidate to one runtime/app identity across discovery, verification, manual start and activation. Rechecking the same candidate retains its start intent and prepared build. An unchanged verified installation must not redownload, offer an install, or raise another update notice.
+- Keep discovery feedback separate from installation actions: download and compatibility checks show their current phase, while only a verified pending update gets a Start button. One explicit start continues through the stability delay; a ready installation skips new network discovery after app exit.
+- Windows exit tests run copied disposable executables as an ordinary user. Verify that a headless process inside the exact application root exits, while another root and the shared sandbox service survive. Never run termination tests against an active user app.
+- Both native settings hosts must exercise edge click ordering: reveal first, directional button entry next, rapid clicks coalesced, and pending entry cancelled on hide/detach. Windows controls retain keyboard focus styling without the default dotted adorner.
+- Both native edition probes carry usage above the destination compaction threshold before a GPT quota failure, then switch within the same chat, compact through the destination model, execute tools, and verify no further GPT request. The original reported user's OS/version/error should be recorded separately when available.

@@ -121,11 +121,11 @@ function run(argv){
  const spray=$.WhaleSpray.alloc.initWithFrame($.NSMakeRect(0,0,L.width,L.height));spray.wantsLayer=true;spray.hidden=true;
  const whale=makeButton(content,L.closed_whale_x,0,L.bubble,L.bubble,'鲸鱼菜单',toggleOrbit,{whale:true,hint:'拖动贴边 · 右键设置'});
  const badge=makeButton(content,2,20,28,28,'补丁更新提醒',()=>openCard('updates',null,-1),{badge:true,update:true,drop:{path:L.shapes[L.badge.shape],angle:L.badge.angle},icon:'M12 18V6 M7 11L12 6L17 11',hint:'点击查看更新'});badge.hidden=true;
- const edgeBubble=makeButton(content,0,0,L.dock.size,L.dock.size,'贴边鲸鱼',()=>{peekDock(true);toggleOrbit();},{edge:true,update:true,drop:{path:L.shapes[1],angle:0},icon:'M8 10L12 14L16 10'});edgeBubble.hidden=true;
+ const edgeBubble=makeButton(content,0,0,L.dock.size,L.dock.size,'贴边鲸鱼',()=>{openDockedOrbit();},{edge:true,update:true,drop:{path:L.shapes[1],angle:0},icon:'M8 10L12 14L16 10'});edgeBubble.hidden=true;
  const hintButton=makeButton(dockHint.contentView,0,0,L.dock.size,L.dock.size,'贴边预览',()=>{},{edge:true,preview:true,drop:{path:L.shapes[1],angle:0},icon:'M8 10L12 14L16 10'});
  const nodes=shell.categories.map((c,i)=>{const d=L.drops[i],v=makeButton(content,0,0,d.size,d.size,c.name,()=>openCard(c.id,null,i),{update:c.id==='updates',drop:{path:L.shapes[d.shape],angle:d.angle},icon:c.icon,hint:c.description});v.hidden=true;return v;});
  function savePosition(){const p=dock?{x:dock.peek.x+L.closed_whale_x,y:dock.peek.y}:collapsedOrigin();write(ui+'/position.json',{x:Number(p.x),y:Number(p.y),edge:dock?dock.edge:null});}
- function layoutNodes(progress){nodes.forEach((v,i)=>{const d=L.drops[i],t=Math.max(0,Math.min(1,(progress-i*.025)/.875)),ease=reduced()?t:1-Math.pow(1-t,3)*Math.cos(t*4.5),x=L.spout_x+(d.x-L.spout_x)*ease,y=L.height-L.spout_y+(L.spout_y-d.y)*ease+Math.sin(Math.PI*t)*7,size=d.size*(.25+.75*ease);frame(v,x-size/2,y-size/2,size,size);v.alphaValue=Math.min(1,t*4);if(testing)animationTopClearance=Math.min(animationTopClearance,L.height-y-size/2);v.needsDisplay=true;});spray.needsDisplay=true;}
+ function layoutNodes(progress){if(animation&&animation.direction==='edge-open'){const t=Math.max(0,Math.min(1,progress)),edge=dock?dock.edge:'left';nodes.forEach((v,i)=>{const d=L.drops[i],u=Math.max(0,Math.min(1,(t-i*.025)/.875)),q=1-Math.pow(1-u,3),dx=edge==='left'?-14:edge==='right'?14:0,dy=edge==='top'?14:edge==='bottom'?-14:0;frame(v,d.x-d.size/2+dx*(1-q),L.height-d.y-d.size/2+dy*(1-q),d.size,d.size);v.alphaValue=q;v.needsDisplay=true;});return;}nodes.forEach((v,i)=>{const d=L.drops[i],t=Math.max(0,Math.min(1,(progress-i*.025)/.875)),ease=reduced()?t:1-Math.pow(1-t,3)*Math.cos(t*4.5),x=L.spout_x+(d.x-L.spout_x)*ease,y=L.height-L.spout_y+(L.spout_y-d.y)*ease+Math.sin(Math.PI*t)*7,size=d.size*(.25+.75*ease);frame(v,x-size/2,y-size/2,size,size);v.alphaValue=Math.min(1,t*4);if(testing)animationTopClearance=Math.min(animationTopClearance,L.height-y-size/2);v.needsDisplay=true;});spray.needsDisplay=true;}
  function ensureMotionTimer(){if(fastTimer)return;fastTimer=$.NSTimer.timerWithTimeIntervalTargetSelectorUserInfoRepeats(1/60,receiver,'animate:',null,true);$.NSRunLoop.mainRunLoop.addTimerForMode(fastTimer,$.NSRunLoopCommonModes);}
  function stopIdleMotion(){if(!animation&&!cardMotion&&!textMotion&&!dockAnimation&&fastTimer){fastTimer.invalidate;fastTimer=null;}}
  function clearSpray(){spray.hidden=true;spray.removeFromSuperview;content.needsDisplay=true;}
@@ -133,11 +133,11 @@ function run(argv){
  function animate(){const now=Date.now(),kind=cardMotion?'card':animation?'menu':dockAnimation?'dock':'idle',draws=profile.draws;if(animation){const t=Math.min(1,(now-animation.start)/animation.duration);layoutNodes(animation.direction==='close'?1-t:t);if(t>=1){const close=animation.direction==='close';animation=null;clearSpray();if(close)hideOrbit();}}animateCard(now);animateText(now);animateDock(now);stopIdleMotion();if(profiling){const v=kind==='card'&&card?card.contentView:hub.contentView,rep=v.bitmapImageRepForCachingDisplayInRect(v.bounds);v.cacheDisplayInRectToBitmapImageRep(v.bounds,rep);profile.frames.push({kind:kind,ms:Date.now()-now,draws:profile.draws-draws});}}
 
  function collapseOrbit(){playBubble('close');if(card){closeCard(()=>startAnimation('close'));return;}tip.orderOut(null);startAnimation('close');}
- function toggleOrbit(silent){if(dock&&!dock.revealed)peekDock(true);if(expanded){collapseOrbit();return;}if(!silent)playBubble('open');const f=collapsedOrigin(),b=boundsAt(Number(f.x)+L.bubble/2,Number(f.y)+L.bubble/2),p=clampPoint(Number(f.x)-L.whale_x,Number(f.y)-whaleBottom,L.width,L.height,b);hub.setFrameDisplay($.NSMakeRect(Number(p.x),Number(p.y),L.width,L.height),true);frame(whale,L.whale_x,whaleBottom,L.bubble,L.bubble);expanded=true;refreshUpdate();nodes.forEach(v=>{delete buttonData[Number(v.tag)].hoverFrame;v.hidden=false;});startAnimation('open');layoutNodes(0);tip.orderOut(null);}
+ function toggleOrbit(silent,fromEdge){if(dock&&(!dock.revealed||dockAnimation)){openDockedOrbit();return;}if(expanded){collapseOrbit();return;}if(!silent)playBubble('open');const f=collapsedOrigin(),b=boundsAt(Number(f.x)+L.bubble/2,Number(f.y)+L.bubble/2),p=clampPoint(Number(f.x)-L.whale_x,Number(f.y)-whaleBottom,L.width,L.height,b);hub.setFrameDisplay($.NSMakeRect(Number(p.x),Number(p.y),L.width,L.height),true);frame(whale,L.whale_x,whaleBottom,L.bubble,L.bubble);expanded=true;refreshUpdate();nodes.forEach(v=>{delete buttonData[Number(v.tag)].hoverFrame;v.hidden=false;});startAnimation(fromEdge?'edge-open':'open');layoutNodes(0);tip.orderOut(null);}
  function hideOrbit(){clearSpray();disposeCard();tip.orderOut(null);if(!expanded)return;const p=collapsedOrigin();expanded=false;animation=null;stopIdleMotion();nodes.forEach(v=>v.hidden=true);hub.setFrameDisplay($.NSMakeRect(Number(p.x)-L.closed_whale_x,Number(p.y),L.closed_width,L.bubble),true);frame(whale,L.closed_whale_x,0,L.bubble,L.bubble);refreshUpdate();savePosition();}
 
  function openPreferences(){show(false,true);openCard('preferences',null,5);}
- function hide(){hideDockHint();stopDockTimer();hideOrbit();hub.orderOut(null);tip.orderOut(null);hidden=true;}
+ function hide(){dockOpenPending=false;hideDockHint();stopDockTimer();hideOrbit();hub.orderOut(null);tip.orderOut(null);hidden=true;}
  function show(toggle,activate){if(toggle&&!hidden){hide();return;}hidden=false;ensureDockTimer();if(activate!==false)wakeDock();hub.orderFrontRegardless;if(activate!==false)app.activateIgnoringOtherApps(true);}
  function showTip(button,title,description){if(card)return;
   const a=$.NSMutableDictionary.dictionary;a.setObjectForKey(font(11,false),$.NSFontAttributeName);
@@ -180,17 +180,19 @@ function run(argv){
  }
  function dockAt(edge,instant,requireLeave){hideDockHint();hideOrbit();dock=dockTarget(edge);dock.hoverArmed=!requireLeave;buttonData[Number(edgeBubble.tag)].drop.angle=L.dock.angles[edge];edgeBubble.needsDisplay=true;hub.setFrameDisplay($.NSMakeRect(dock.peek.x,dock.peek.y,L.closed_width,L.bubble),true);setDockReveal(false,instant);ensureDockTimer();savePosition();
  }
- function setDockReveal(show,instant){if(!dock)return;hideOrbit();dockLeave=0;dock.revealed=show;const f=hub.frame,from={x:Number(f.origin.x),y:Number(f.origin.y),w:Number(f.size.width),h:Number(f.size.height)},p=show?dock.peek:dock.small;
+ let dockOpenPending=false;
+ function setDockReveal(show,instant){if(!dock)return;if(!show)dockOpenPending=false;hideOrbit();dockLeave=0;dock.revealed=show;const f=hub.frame,from={x:Number(f.origin.x),y:Number(f.origin.y),w:Number(f.size.width),h:Number(f.size.height)},p=show?dock.peek:dock.small;
   dockAnimation={start:Date.now(),duration:instant||reduced()?1:L.dock.duration_ms,from:from,to:{x:p.x,y:p.y,w:show?L.closed_width:L.dock.size,h:show?L.bubble:L.dock.size},show:show};whale.hidden=false;edgeBubble.hidden=false;badge.hidden=true;ensureMotionTimer();if(instant)animateDock(Date.now()+2);
  }
  function animateDock(now){if(!dockAnimation||!dock)return;const a=dockAnimation,t=Math.min(1,(now-a.start)/a.duration),e=t*t*(3-2*t),mix=(k)=>a.from[k]+(a.to[k]-a.from[k])*e;
   const w=mix('w'),h=mix('h'),reveal=Math.max(0,Math.min(1,(w-L.dock.size)/(L.closed_width-L.dock.size))),s=20+44*reveal;
   hub.setFrameDisplay($.NSMakeRect(mix('x'),mix('y'),w,h),true);frame(whale,(w-s)*reveal,(h-s)/2,s,s);whale.alphaValue=reveal;const n=L.dock.size*(1+.045*Math.sin(Math.PI*t));frame(edgeBubble,(w-n)/2,(h-n)/2,n,n);edgeBubble.alphaValue=1-reveal;
-  if(t>=1){dockAnimation=null;whale.hidden=!a.show;edgeBubble.hidden=a.show;whale.alphaValue=1;edgeBubble.alphaValue=1;if(a.show)frame(whale,L.closed_whale_x,0,L.bubble,L.bubble);refreshUpdate();stopIdleMotion();}
+  if(t>=1){dockAnimation=null;whale.hidden=!a.show;edgeBubble.hidden=a.show;whale.alphaValue=1;edgeBubble.alphaValue=1;if(a.show)frame(whale,L.closed_whale_x,0,L.bubble,L.bubble);refreshUpdate();stopIdleMotion();if(a.show&&dockOpenPending){dockOpenPending=false;toggleOrbit(true,true);}}
  }
- function peekDock(instant){if(dock&&(!dock.revealed||dockAnimation)){setDockReveal(true,instant);}}
+ function openDockedOrbit(){if(!dock){toggleOrbit();return;}if(dockOpenPending)return;dockOpenPending=true;playBubble('open');if(dock.revealed&&!dockAnimation){dockOpenPending=false;toggleOrbit(true,true);}else peekDock(false);}
+ function peekDock(instant){if(dock&&(!dock.revealed||instant&&dockAnimation)){setDockReveal(true,instant);}}
  function wakeDock(){if(dock){peekDock(true);dock.waitForHover=true;}}
- function detachDock(){if(!dock)return;peekDock(true);dock=null;stopDockTimer();dockAnimation=null;edgeBubble.hidden=true;whale.hidden=false;dockLeave=0;savePosition();stopIdleMotion();}
+ function detachDock(){dockOpenPending=false;if(!dock)return;peekDock(true);dock=null;stopDockTimer();dockAnimation=null;edgeBubble.hidden=true;whale.hidden=false;dockLeave=0;savePosition();stopIdleMotion();}
  function nearestEdge(){const f=hub.frame,b=boundsAt(Number(f.origin.x)+48,Number(f.origin.y)+32),x=Number(f.origin.x),y=Number(f.origin.y),dist=[['left',x-Number(b.origin.x)],['right',Number(b.origin.x)+Number(b.size.width)-x-L.closed_width],['bottom',y-Number(b.origin.y)],['top',Number(b.origin.y)+Number(b.size.height)-y-L.bubble]];dist.sort((a,b)=>a[1]-b[1]);return dist[0][1]<=L.dock.threshold?dist[0][0]:null;}
  function hideDockHint(){dockHintEdge=null;dockHint.orderOut(null);}
  function updateDockHint(){const edge=nearestEdge();if(!edge){hideDockHint();return;}const target=dockTarget(edge),changed=edge!==dockHintEdge;dockHintEdge=edge;buttonData[Number(hintButton.tag)].drop.angle=L.dock.angles[edge];hintButton.needsDisplay=true;dockHint.setFrameOrigin($.NSMakePoint(target.small.x,target.small.y));if(!testing){dockHint.orderFrontRegardless;if(changed){dockHint.alphaValue=.15;$.NSAnimationContext.beginGrouping;$.NSAnimationContext.currentContext.duration=reduced()?0:.1;dockHint.animator.alphaValue=.85;$.NSAnimationContext.endGrouping;}}}
@@ -229,14 +231,14 @@ function run(argv){
  }
  function updateAction(){const p=updateState;if(!p.id||pending)return;const command=p.can_launch?'launch':p.can_start?'start':null;if(command)send('update_action',{},'updates',null,{id:p.id,phase:p.phase,command:command});}
  function refreshUpdate(){
-  let p=read(directory+'/progress.json');const phases=['available','checking','downloading','building','verifying','waiting_for_exit','closing','installing','activating','completed','failed'];
+  let p=read(directory+'/progress.json');const phases=['current','available','checking','downloading','building','verifying','waiting_for_exit','closing','installing','activating','completed','failed'];
   if(!p||p.edition!==initial.edition||!String(p.id||'').match(/^[a-f0-9]{32}$/)||phases.indexOf(p.phase)<0)p={};
-  updateState=p;const attention=Boolean(p.id&&p.phase!=='completed');if(attention!==updateAttention){updateAttention=attention;nodes.forEach(n=>n.needsDisplay=true);badge.needsDisplay=true;}
+  updateState=p;const attention=Boolean(p.id&&['completed','current'].indexOf(p.phase)<0);if(attention!==updateAttention){updateAttention=attention;nodes.forEach(n=>n.needsDisplay=true);badge.needsDisplay=true;}
   edgeBubble.needsDisplay=true;badge.hidden=Boolean(dock&&(!dock.revealed||dockAnimation))||!(p.id&&(attention||p.can_launch));frame(badge,(expanded?L.whale_x:L.closed_whale_x)+L.badge.offset_x,(expanded?whaleBottom:0)+L.bubble-L.badge.offset_y-L.badge.size,L.badge.size,L.badge.size);
-  if(!updateWidgets||cardMotion)return;const v=updateWidgets;snapshotDirty=true;if(!card||current.route!=='updates'){v.bar.stopAnimation(null);return;}
+  if(!updateWidgets||cardMotion)return;const check=read(directory+'/update.check.json');if(check&&check.edition===initial.edition&&String(check.id||'').match(/^[a-f0-9]{32}$/)&&(!p.id||['current','completed'].indexOf(p.phase)>=0)&&(check.active||!p.id))p=check;const v=updateWidgets;snapshotDirty=true;if(!card||current.route!=='updates'){v.bar.stopAnimation(null);return;}
   v.title.stringValue=String(p.title||'当前没有待安装的补丁').slice(0,100);v.version.stringValue=p.version?'目标版本 · '+String(p.version).slice(0,70):'已安装 · '+String(initial.version||'');
   v.detail.stringValue=String(p.detail||'可检查补丁更新，或单独同步模型与规格。').slice(0,220);
-  const known=Number.isInteger(p.completed)&&Number.isInteger(p.total)&&p.total>0,active=p.id&&['available','waiting_for_exit','completed','failed'].indexOf(p.phase)<0;
+  const known=Number.isInteger(p.completed)&&Number.isInteger(p.total)&&p.total>0,active=p.id&&['current','available','waiting_for_exit','completed','failed'].indexOf(p.phase)<0;
   v.bar.indeterminate=Boolean(active&&!known);if(active&&!known)v.bar.startAnimation(null);else{v.bar.stopAnimation(null);v.bar.doubleValue=known?Math.max(0,Math.min(100,p.completed*100/p.total)):p.phase==='completed'?100:0;}
   const seconds=Number.isFinite(p.phase_started_at)?Math.max(0,Math.floor(Date.now()/1000-p.phase_started_at)):0;
   v.units.stringValue=known?p.completed+' / '+p.total:active?'当前步骤 · '+(seconds>=60?Math.floor(seconds/60)+' 分 '+seconds%60+' 秒':seconds+' 秒'):p.phase==='completed'?'已完成':'';
@@ -275,6 +277,9 @@ function run(argv){
    dockAt('left',true,true);dockHover(true,now);motionChecks.release_stays_collapsed=!dock.revealed;dockHover(false,now+1);dockHover(true,now+2);motionChecks.reentry_reveals=dock.revealed;detachDock();
    const bounds=$.NSScreen.mainScreen.visibleFrame;hub.setFrameOrigin($.NSMakePoint(Number(bounds.origin.x)+5,Number(bounds.origin.y)+100));updateDockHint();motionChecks.arrival_hint=dockHintEdge==='left';hub.setFrameOrigin($.NSMakePoint(Number(bounds.origin.x)+Number(bounds.size.width)/2,Number(bounds.origin.y)+Number(bounds.size.height)/2));updateDockHint();motionChecks.hint_cleared=dockHintEdge===null;
    const mode=current.options.motion;current.options.motion='reduced';dockAt('right',true);peekDock(true);motionChecks.reduced=Boolean(dock.revealed&&!dockAnimation);detachDock();current.options.motion=mode;stopIdleMotion();motionChecks.idle_timer_stopped=!fastTimer&&!dockTimer;motionChecks.spray_released=Boolean(spray.hidden)&&!Boolean(content.subviews.containsObject(spray));
+   dockAt('left',true);openDockedOrbit();motionChecks.edge_click_deferred=Boolean(dockAnimation&&!expanded&&dockOpenPending);
+   const start=dockAnimation.start;openDockedOrbit();motionChecks.edge_click_coalesced=dockAnimation.start===start;animateDock(Date.now()+1000);
+   motionChecks.edge_click_revealed=Boolean(expanded&&!dockAnimation&&!dockOpenPending&&animation.direction==='edge-open'&&spray.hidden);hideOrbit();dockAt('right',true);openDockedOrbit();hide();motionChecks.hidden_click_cancelled=!dockOpenPending;detachDock();
    if(profiling)testResult.profile=profile;testResult.motion=motionChecks;testResult.draw_error=drawFailure;$.NSFileHandle.fileHandleWithStandardOutput.writeData($(JSON.stringify(testResult)+'\n').dataUsingEncoding($.NSUTF8StringEncoding));quit();
   }
  }

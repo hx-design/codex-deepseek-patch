@@ -18,13 +18,14 @@ from windows_support import background_options, native_ui_options
 
 ROOT = Path(__file__).resolve().parent
 TEXT = {
+    'current': ('补丁已是最新', '当前补丁已就绪，无需更新。'),
     'available': ('发现补丁新版本', '此次更新模型补丁。可以继续使用 Codex；点“开始更新”后，在检查完成后关闭 Codex 并安装补丁。'),
     'checking': ('正在检查补丁', '补丁已下载，正在检查来源和兼容性。可以继续使用 Codex。'),
     'downloading': ('正在下载补丁', '正在下载模型补丁。可以继续使用 Codex。'),
     'building': ('正在准备补丁', '正在准备模型目录和本地适配服务。可以继续使用 Codex。'),
     'verifying': ('正在验证补丁', '正在进行本地兼容性测试；检查通过后再安装补丁。'),
-    'waiting_for_exit': ('补丁已准备好', '可以继续使用 Codex；点“开始更新”将正常关闭 Codex，随后安装补丁。'),
-    'closing': ('正在关闭 Codex', '已请求正常关闭 Codex。请保存工作，安装期间暂勿启动 Codex。'),
+    'waiting_for_exit': ('补丁已准备好', '可以继续使用 Codex；点“开始更新”将关闭 Codex 及其后台进程，随后安装补丁。'),
+    'closing': ('正在关闭 Codex', '正在关闭 Codex 及其后台进程，安装期间暂勿启动 Codex。'),
     'installing': ('正在安装补丁', '正在安装模型补丁，暂勿启动 Codex。关窗不会中断更新。'),
     'activating': ('正在启用补丁', '正在启用补丁后台组件，暂勿启动 Codex。'),
     'completed': ('补丁更新完成', '模型补丁已就绪。点“启动 Codex”打开原版应用。'),
@@ -79,6 +80,34 @@ def _python(settings):
         if hidden.is_file():
             value = hidden
     return str(value.resolve())
+
+
+class CheckStatus:
+    """Read-only discovery feedback, separate from an install/action identity."""
+    def __init__(self, directory, edition):
+        self.directory, self.edition = Path(directory), edition
+        self.identity = uuid.uuid4().hex
+
+    @optional_view
+    def publish(self, phase, completed=None, total=None, present=False):
+        title, detail = {
+            'checking': ('正在检查补丁更新', '正在读取本版本的更新来源。'),
+            'downloading': ('正在下载候选补丁', '正在下载并校验文件，可继续使用 Codex。'),
+            'verifying': ('正在验证候选补丁', '正在隔离环境中验证兼容性，可继续使用 Codex。'),
+            'current': TEXT['current'],
+            'failed': ('更新检查未完成', '暂时无法取得有效更新，请稍后重试；现有补丁保持不变。'),
+        }[phase]
+        atomic_json(self.directory/'update.check.json', dict(id=self.identity, edition=self.edition,
+            phase=phase,title=title,detail=detail,completed=completed,total=total,
+            phase_started_at=time.time(),can_start=False,can_launch=False,
+            active=phase not in ('current','failed')))
+
+    @optional_view
+    def finish(self):
+        value=load_json(self.directory/'update.check.json', {})
+        if value.get('id')==self.identity:
+            value['active']=False
+            atomic_json(self.directory/'update.check.json', value)
 
 
 class Progress:
@@ -221,23 +250,24 @@ def _alive(pid):
 
 
 @optional_view
-def for_settings(settings, root=None, version=None, force=False):
+def for_settings(settings, root=None, version=None, force=False, *, runtime=None, app_hash=None):
     directory = settings.get('state_dir')
     if not directory or settings.get('edition') not in ('ds', 'proxy'):
         return None
     import patch as p
     import updater
     root = Path(root or p.ROOT)
-    identity = updater.runtime_digest(root)
+    identity = runtime or updater.runtime_digest(root)
     baseline = load_json(Path(settings.get('baseline') or directory) / 'manifest.json', {})
     if not force and baseline.get('update', {}).get('runtime_digest') == identity:
         return None
-    try:
-        app_hash = p.file_sha(p.app_layout(Path(settings['app']))['asar'])
-    except (OSError, ValueError, p.PatchError):
-        app_hash = str(settings.get('app', ''))
+    if app_hash is None:
+        try:
+            app_hash = p.file_sha(p.app_layout(Path(settings['app']))['asar'])
+        except (OSError, ValueError, p.PatchError):
+            app_hash = str(settings.get('app', ''))
     progress = Progress(directory, root)
-    progress.begin(settings['edition'], version or updater.edition(root)['version'], identity + ':' + app_hash, restart=force)
+    progress.begin(settings['edition'], version or updater.edition(root)['version'], identity + ':' + app_hash)
     return progress
 
 
@@ -311,19 +341,27 @@ def validated_close(progress):
     previous = load_json(Path(manifest.get('legacy_baseline') or directory) / 'manifest.json', {})
     if previous.get('deployment_target'):
         targets.add(str(Path(previous['deployment_target']).resolve()))
-    graceful_close(sorted(targets))
-    # Give a normal quit time to finish; there is deliberately no force-kill.
-    for attempt in range(40):
+    try:
+        graceful_close(sorted(targets))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return close_incomplete(progress)
+    # Windows waits for exact verified handles, including headless backends.
+    # Reopened processes still block installation and are never included in that set.
+    for attempt in range(2 if sys.platform == 'win32' else 40):
         try:
             for target in targets:
                 p.require_stopped(Path(target), read_only_source=sys.platform == 'win32')
             return True
         except (ValueError, p.PatchError):
             time.sleep(.25)
+    return close_incomplete(progress)
+
+
+def close_incomplete(progress):
     progress.publish('waiting_for_exit')
     with control_lock(progress.directory):
         value=progress.read()
-        value.update(detail='Codex 仍在运行。请手动退出，或再次点“开始更新”请求正常关闭。',can_start=True)
+        value.update(detail='Codex 尚未完全退出，补丁已准备好。可手动退出，或点击重试关闭。',can_start=True)
         atomic_json(progress.directory/'progress.json',value)
     return False
 
@@ -337,15 +375,8 @@ def graceful_close(targets):
         subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', script, json.dumps(targets)],
             check=True, capture_output=True, timeout=15, **background_options())
     elif sys.platform == 'win32':
-        # Paths are a JSON argument encoded as data; PowerShell never evaluates them.
-        import base64
-        data = base64.b64encode(json.dumps(targets).encode('utf-8')).decode('ascii')
-        script = ("$roots=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + data + "')));"
-            "Get-Process | ForEach-Object { try {$p=$_.Path; if($p){foreach($r in $roots){"
-            "if($p.StartsWith($r.TrimEnd('\\')+'\\',[StringComparison]::OrdinalIgnoreCase)){"
-            "$null=$_.CloseMainWindow();break}}}}catch{}}")
-        subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-            check=True, capture_output=True, timeout=15, **background_options())
+        from windows_support import close_app_handles
+        close_app_handles(targets)
     else:
         raise ValueError('Unsupported desktop platform')
 
@@ -407,10 +438,12 @@ def action(directory, identity, command, phase=None):
     if command == 'start':
         # Works for old monitors too: a ready build can quit immediately; an
         # in-flight new worker consumes this same durable request after verify.
-        validated_close(progress)
+        ready=validated_close(progress)
         settings = load_json(progress.directory / 'settings.json', {})
         from monitor import service_command
-        _spawn(service_command(progress.directory, _python(settings)), progress.directory)
+        command=service_command(progress.directory, _python(settings))
+        if ready:command.append('--install-ready')
+        _spawn(command, progress.directory)
     else:
         try:
             record = _build(progress)
@@ -433,7 +466,7 @@ def action(directory, identity, command, phase=None):
 @optional_view
 def worker_progress(action_name, job, job_path):
     """New candidate workers also bridge first upgrades from old monitors."""
-    if job.get('update',{}).get('quiet_model_sync') is True:
+    if job.get('quiet_progress') or job.get('update',{}).get('quiet_model_sync') is True:
         return None
     if action_name == 'install':
         return from_manifest(load_json(Path(job['directory']) / 'manifest.json', {}))

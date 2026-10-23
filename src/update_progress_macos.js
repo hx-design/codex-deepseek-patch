@@ -104,7 +104,7 @@ function run(argv) {
         edition.stringValue = (value.edition === 'ds' ? 'DS 版' : '扩展版') + (value.version ? ' · ' + String(value.version).slice(0, 80) : '');
         detail.stringValue = String(value.detail || '关闭此窗口不影响后台更新。').slice(0, 600);
         const known = Number.isFinite(value.completed) && Number.isFinite(value.total) && value.total > 0;
-        const terminal = ['completed','failed','error','launched'].indexOf(value.phase) >= 0;
+        const terminal = ['current','completed','failed','error','launched'].indexOf(value.phase) >= 0;
         progress.indeterminate = !known && !terminal;
         if (terminal) {
             progress.stopAnimation(null);
@@ -115,7 +115,7 @@ function run(argv) {
         } else progress.startAnimation(null);
         primary.title = value.can_launch ? '启动 Codex' : value.can_start ? '开始更新' : '正在更新…';
         primary.enabled = !!(value.can_start || value.can_launch) && !(currentAction === 'start' && value.can_start);
-        primary.hidden = !(value.can_start || value.can_launch) && ['completed','failed','error','launched'].indexOf(value.phase) >= 0;
+        primary.hidden = !(value.can_start || value.can_launch) && ['current','completed','failed','error','launched'].indexOf(value.phase) >= 0;
     }
     render(readState());
     if (!state) throw Error('Update state unavailable');
