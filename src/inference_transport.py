@@ -55,25 +55,27 @@ def zstd_body(data, *, decompress=True, node=None, cancelled=None):
     process = subprocess.Popen([str(node), '-e', script], stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
         **({'creationflags':0x08000000} if os.name == 'nt' else {}))
-    until = time.monotonic() + 120
+    # One communicate() owns both pipes. On Python 3.11, retrying it with
+    # input=None after a short timeout can leave unsent input unregistered.
+    # A lightweight waiter keeps cancellation responsive without restarting I/O.
+    finished=threading.Event();result=[];errors=[]
+    def exchange():
+        try:result.append(process.communicate(data))
+        except BaseException as error:errors.append(error)
+        finally:finished.set()
+    thread=threading.Thread(target=exchange,daemon=True);thread.start()
+    until=time.monotonic()+120
     try:
-        pending = data
-        while True:
-            if cancelled and cancelled.is_set():
-                raise OSError('Request cancelled')
-            if time.monotonic() >= until:
-                raise TimeoutError('Native request compression timed out')
-            try:
-                output, _ = process.communicate(pending, timeout=.1)
-                if process.returncode:
-                    raise ValueError('Invalid native compressed request or unavailable codec')
-                return output
-            except subprocess.TimeoutExpired:
-                pending = None
+        while not finished.wait(.1):
+            if cancelled and cancelled.is_set():raise OSError('Request cancelled')
+            if time.monotonic()>=until:raise TimeoutError('Native request compression timed out')
+        if errors:raise errors[0]
+        if process.returncode:raise ValueError('Invalid native compressed request or unavailable codec')
+        return result[0][0]
     finally:
-        if process.poll() is None:
-            process.kill()
-        process.communicate()
+        if process.poll() is None:process.kill()
+        thread.join()
+
 
 
 class WebSocketError(ConnectionError):
