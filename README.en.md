@@ -14,6 +14,9 @@ Extension **0.7.0-proxy.1**, update branch `codex/existing-proxy-models`.
 
 DS **0.7.0-proxy.1**, update branch `main`.
 <!-- /EDITION -->
+Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
+
+
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 

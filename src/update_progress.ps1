@@ -23,8 +23,8 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $script:runId = $null
 $script:state = $null
-$phases = @('current','available','checking','downloading','building','verifying','waiting_for_exit',
-            'closing','installing','activating','completed','failed')
+$phases = @('current','available','checking','downloading','checking_package','building','verifying','waiting_for_exit',
+            'waiting_for_idle','close_failed','recovering','rolled_back','closing','installing','activating','completed','failed')
 
 function Quote-Argument([string]$Value) {
     # Windows CRT argv quoting; no shell interprets these arguments.
@@ -35,7 +35,7 @@ function Quote-Argument([string]$Value) {
 
 function Send-Action([string]$Action) {
     # Only UI-generated fixed actions cross this boundary. Never run state data.
-    if ($Action -notin @('start','launch','dismiss') -or -not $script:runId) { return }
+    if ($Action -notin @('start','launch','dismiss','cancel') -or -not $script:runId) { return }
     if ($Action -eq 'start' -and $script:state.can_start -ne $true) { return }
     if ($Action -eq 'launch' -and $script:state.can_launch -ne $true) { return }
     $arguments = @($ControllerPath, '--state-dir', $StateDirectory, '--action', $Action, '--id', $script:runId)
@@ -120,7 +120,7 @@ $start.Enabled = $false
 $start.FlatStyle = 'Flat'
 $start.BackColor = [Drawing.Color]::FromArgb(43, 48, 56)
 $start.ForeColor = [Drawing.Color]::FromArgb(239, 241, 244)
-$start.Add_Click({ Send-Action 'start'; $start.Enabled = $false })
+$start.Add_Click({ Send-Action $(if($script:state.can_cancel){'cancel'}else{'start'}); $start.Enabled = $false })
 $form.Controls.Add($start)
 $launch = New-Object Windows.Forms.Button
 $launch.Text = '启动 Codex'
@@ -138,6 +138,7 @@ function Refresh-State {
         $info = New-Object IO.FileInfo($StateFile)
         if (-not $info.Exists -or $info.Length -gt 65536) { return }
         $next = [IO.File]::ReadAllText($StateFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if($next.display -and $next.display.id -eq $next.id -and $next.display.edition -eq $next.edition){foreach($key in $next.display.PSObject.Properties){$next | Add-Member -NotePropertyName $key.Name -NotePropertyValue $key.Value -Force}}
         if ($next.phase -notin $phases) { return }
         if ($next.format -ne 1 -or $next.id -isnot [string] -or $next.id.Length -gt 128 -or -not $next.id) { return }
         if ($script:runId -and $next.id -ne $script:runId) { $form.Close(); return }
@@ -145,9 +146,10 @@ function Refresh-State {
         $script:state = $next
         $title.Text = Short-Text $next.title 100
         $message.Text = Short-Text $next.detail 500
-        $start.Enabled = $next.can_start -eq $true
+        $start.Enabled = $next.can_start -eq $true -or $next.can_cancel -eq $true
+        $start.Text = if($next.can_cancel){'取消等待'}else{'开始更新'}
         $launch.Enabled = $next.can_launch -eq $true
-        if ($next.phase -in @('current','completed','failed')) {
+        if ($next.phase -in @('current','completed','failed','rolled_back','close_failed')) {
             $progress.MarqueeAnimationSpeed = 0
             $progress.Style = 'Continuous'
             $progress.Value = if ($next.phase -eq 'completed') { 100 } else { 0 }
@@ -164,7 +166,7 @@ function Refresh-State {
                 -not [double]::IsNaN($total) -and -not [double]::IsInfinity($total) -and $total -gt 0 -and $completed -ge 0) {
                 $progress.Style = 'Continuous'
                 $progress.Value = [int][Math]::Min(100, 100 * $completed / $total)
-                $percent.Text = [string]$next.completed + ' / ' + [string]$next.total
+                $percent.Text = [string][Math]::Floor(100*$completed/$total) + '% · ' + [string]$next.completed + ' / ' + [string]$next.total
                 return
             }
         }

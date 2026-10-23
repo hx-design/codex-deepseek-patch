@@ -106,7 +106,18 @@ def watch(directory, *, process_ids=None, enabled=None, invoke=None, wait=None):
             ids=process_ids(Path(settings['app']))
             atomic_json(directory/'exit-watch/state.json',{'format':1,'pid':os.getpid(),
                 'phase':'waiting' if ids else 'checking_exit','observed_pids':ids,'at':timestamp()})
-            if ids and not wait(ids,30):continue
+            from update_progress import Progress,pending_activity,wait_expired
+            progress=Progress(directory)
+            if progress.paused() or wait_expired(progress):break
+            if ids and progress.requested() and progress.read().get('phase')!='close_failed':
+                activity=pending_activity(progress)
+                if activity.get('idle'):
+                    # The installer rechecks and atomically acquires a drain lease.
+                    invoke()
+                    if pending(directory):time.sleep(1)
+                    continue
+                if not wait(ids,2 if activity.get('known') else 30):continue
+            elif ids and not wait(ids,30):continue
             if not pending(directory) or not enabled():break
             # The main process can disappear before its CLI finishes. Watch
             # remaining children, or the new main process after a fast reopen.

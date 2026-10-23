@@ -190,8 +190,11 @@ class SettingsTests(unittest.TestCase):
         self.save(self.build/'manifest.json',{**self.manifest,'edition':channel})
         progress=update_progress.Progress(self.root)
         progress.begin(channel,'1.0.0','fixture')
-        for phase,attention,primary in [('available',True,'开始更新'),('completed',False,'启动 Codex')]:
-            progress.publish(phase)
+        for phase,attention,primary in [('available',True,'开始更新'),('verifying',True,'开始更新'),
+                ('waiting_for_idle',True,'取消等待'),('completed',False,'启动 Codex')]:
+            if phase=='waiting_for_idle':
+                self.save(self.root/'progress.request.json',{'id':progress.identity,'action':'wait_idle'})
+            progress.publish(phase,4 if phase=='verifying' else None,16 if phase=='verifying' else None,unit='checks' if phase=='verifying' else None)
             with patch.object(ui.p,'EDITION',channel):result=ui.show(self.root,self_test=True,page='updates',notify=True)
             self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
             value=json.loads(result.stdout.decode('utf-8-sig'))
@@ -199,6 +202,9 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(value['update_attention'],attention)
             self.assertTrue(value['badge_visible'])
             self.assertEqual(value['update_primary'],primary)
+            if phase=='verifying':
+                self.assertEqual(value['update_percent'],25)
+                self.assertIn('25%',value['update_units'])
             self.assertFalse(value.get('draw_error'))
 
     def test_discovery_never_echoes_password_into_a_native_result(self):

@@ -97,7 +97,7 @@ class UpdateTests(unittest.TestCase):
             with mock('update_progress.worker_progress',return_value=progress), \
                  mock.object(update_worker,'execute',side_effect=p.AppRunningError('reopened')):
                 self.assertEqual(update_worker.main(['install',str(path)]),75)
-            progress.publish.assert_called_once_with('waiting_for_exit')
+            progress.reopened.assert_called_once();progress.publish.assert_not_called()
             self.assertFalse(path.with_suffix('.result.json').exists())
 
     def test_model_sync_is_quiet_only_when_app_and_code_are_unchanged(self):
@@ -434,3 +434,56 @@ class PairedCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Missing validation'):release.require_receipts(candidate,Path(temp)/'proof')
             candidate['editions']['ds']['release']['files']['common.py']='0'*64
             self.assertNotEqual(candidate['id'],release.candidate_id(candidate))
+
+class RuntimeTransactionTests(unittest.TestCase):
+    def fixture(self,root):
+        state=root/'state';state.mkdir();runtime=state/'runtime';runtime.mkdir();package=root/'package';package.mkdir()
+        for path,version in ((runtime,'old'),(package,'new')):
+            (path/'edition.json').write_text(json.dumps({'edition':'ds','version':version}))
+            (path/'code.py').write_text(version)
+        files=['edition.json','code.py']
+        def identity(path,action,job,out):
+            return {'edition':'ds','files':files,'runtime_digest':u.runtime_digest(path,files)}
+        return state,runtime,package,identity
+
+    def test_runtime_startup_failure_restores_exact_old_tree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state,runtime,package,identity=self.fixture(Path(temp).resolve());records=[]
+            def worker(path,action,job,out):
+                if Path(out).name=='activation-confirm':raise RuntimeError('startup fixture failed')
+                return identity(path,action,job,out)
+            with mock.object(u,'worker',side_effect=worker),mock.object(p,'SERVICE_RUNTIME_FILES',('edition.json','code.py')):
+                with self.assertRaisesRegex(RuntimeError,'startup fixture'):
+                    u.activate_runtime(package,state,'ds',checkpoint=records.append)
+            self.assertEqual((runtime/'code.py').read_text(),'old');self.assertEqual(len(records),1)
+            u.rollback_runtime(records[0]);self.assertEqual((runtime/'code.py').read_text(),'old')
+            self.assertEqual((package/'code.py').read_text(),'new')
+
+    def test_runtime_checkpoint_precedes_swap_and_recovery_rejects_user_edits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state,runtime,package,identity=self.fixture(Path(temp).resolve());records=[]
+            def checkpoint(record):
+                self.assertEqual((runtime/'code.py').read_text(),'old');records.append(record)
+            with mock.object(u,'worker',side_effect=identity),mock.object(p,'SERVICE_RUNTIME_FILES',('edition.json','code.py')):
+                u.activate_runtime(package,state,'ds',checkpoint=checkpoint)
+            self.assertEqual((runtime/'code.py').read_text(),'new')
+            (runtime/'code.py').write_text('independent')
+            with self.assertRaises(p.PatchError):u.rollback_runtime(records[0])
+            self.assertEqual((runtime/'code.py').read_text(),'independent')
+            (runtime/'code.py').write_text('new');u.rollback_runtime(records[0])
+            self.assertEqual((runtime/'code.py').read_text(),'old')
+
+    def test_public_download_reports_bytes_with_and_without_length(self):
+        import io
+        raw=b'x'*150000
+        for known in (True,False):
+            class Response(io.BytesIO):
+                headers={'Content-Length':str(len(raw))} if known else {}
+                status=200
+                def geturl(self):return 'https://raw.githubusercontent.com/limyum-creator/codex-deepseek-patch/main/update.json'
+            with mock.object(u.urllib.request,'build_opener') as make:
+                make.return_value.open.return_value=Response(raw);counts=[]
+                result=u.public_get('https://raw.githubusercontent.com/limyum-creator/codex-deepseek-patch/main/update.json',progress=lambda d,t:counts.append((d,t)))
+            self.assertEqual(result,raw);self.assertEqual(counts[-1],(len(raw),len(raw)))
+            self.assertTrue(all(d<=len(raw) for d,t in counts))
+            self.assertTrue(all(t in (len(raw),None) for d,t in counts))

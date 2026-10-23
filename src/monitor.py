@@ -291,6 +291,9 @@ class Monitor:
                 if isinstance(settings, dict) and request.get('code_now'):
                     settings['force_code'] = True
                     settings['skip_model_sync'] = not request['sync_now']
+            if retry:
+                from update_progress import Progress
+                Progress(self.directory).retry()
             self.state["last_checked_at"] = timestamp()
             fingerprint = "snapshot-unavailable"
             try:
@@ -366,6 +369,9 @@ class Monitor:
                 self.progress("waiting_for_exit")
                 request_close=getattr(self.backend,"request_close",None)
                 if request_close:request_close(pending["build"])
+                allowed=getattr(self.backend,'install_allowed',lambda:True)()
+                if not allowed:
+                    self.state['phase']='waiting_for_exit';self.save();return self.state
                 if self.backend.is_running():
                     self.state["phase"] = "waiting_for_exit"
                     self.save()

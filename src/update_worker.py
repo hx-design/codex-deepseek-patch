@@ -8,7 +8,7 @@ import patch as p
 import backend
 
 
-def verify_build(output):
+def verify_build(output, progress=None):
     output=Path(output)
     manifest=json.loads((output/'manifest.json').read_text(encoding='utf-8'))
     if manifest.get('architecture')=='official-client-v1':
@@ -23,7 +23,8 @@ def verify_build(output):
                       'Staged runtime differs from the source being tested: '+name)
         for name, field in [('desktop-models.json','catalog_sha256'),('adapter-profile.json','profile_sha256'),('host-settings.json','host_settings_sha256')]:
             p.require(p.file_sha(output/name) == manifest[field], 'Staged configuration changed: '+name)
-        report=run(Path(manifest['source_target']),output/'native-probe',manifest['edition'])
+        report=run(Path(manifest['source_target']),output/'native-probe',manifest['edition'],
+            **({'progress':lambda done,total:progress.publish('verifying',done,total,unit='checks')} if progress else {}))
         p.require(report.get('status')=='passed','Native official-client validation failed')
         manifest.update(native_probe='passed',native_probe_report=str(output/'native-probe'))
         p.save_json(output/'manifest.json',manifest)
@@ -108,7 +109,7 @@ def execute(action, job, progress=None):
                 model_snapshot=job.get('models'),install_target=Path(job['install_target']) if job.get('install_target') else None,
                 update_metadata={**(job.get('update') or {}),'architecture':'official-client-v1'},model_preferences=preferences)
             if progress:progress.publish('verifying')
-            verify_build(output)
+            verify_build(output,progress) if progress else verify_build(output)
             if progress:
                 progress.publish('waiting_for_exit',build=output)
                 from update_progress import validated_close
@@ -124,13 +125,14 @@ def execute(action, job, progress=None):
              model_snapshot=job.get('models'),update_metadata=job.get('update'))
         backend.build_compatible(args)
         if progress:progress.publish('verifying')
-        verify_build(output)
+        verify_build(output,progress) if progress else verify_build(output)
         if progress:progress.publish('waiting_for_exit',build=output)
         if settings.get('state_dir'):
             from monitor import migrate_windows_working_directory
             migrate_windows_working_directory(settings['state_dir'])
         return {'directory':str(output),'status':'prepared'}
     if action=='install':
+        if progress and progress.paused() is True:raise p.AppRunningError('Update is paused by the user')
         directory=Path(job['directory'])
         manifest=json.loads((directory/'manifest.json').read_text(encoding='utf-8'))
         if progress:progress.publish('installing',build=directory)
@@ -166,7 +168,7 @@ def main(argv=None):
         return 0
     except p.AppRunningError:
         if action=='install':
-            if progress:progress.publish('waiting_for_exit')
+            if progress:progress.reopened()
             return 75
         if progress:progress.publish('failed',present=True)
         return 1

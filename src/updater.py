@@ -25,13 +25,11 @@ from windows_support import background_options
 REPOSITORY = 'limyum-creator/codex-deepseek-patch'
 CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models'}
 CHECK_SECONDS = 3600
-NATIVE_PREFLIGHT_MODULES = ('tests.test_management','tests.test_local_history','tests.test_exit_watch','tests.test_official_client','tests.test_official_client_config','tests.test_official_client_host',
-    'tests.test_official_client_update','tests.test_official_client_install','tests.test_official_client_migration','tests.test_legacy_history',
-    'tests.test_reasoning_origin','tests.test_chat_completions_compat',
-    'tests.test_inference_adapter','tests.test_inference_transport','tests.test_responses_compat',
-    'tests.test_model_sync','tests.test_monitor','tests.test_updater',
-    'tests.test_update_progress','tests.test_update_progress_windows','tests.test_update_progress_macos',
-    'tests.test_inference_chat','tests.test_official_client_shortcut')
+# Full native/UI/failure matrices run once at release promotion. Each user's
+# download runs a small, headless contract smoke check; app compatibility is
+# verified separately against their bundled CLI before installation.
+NATIVE_PREFLIGHT_MODULES = ('tests.test_official_client_config','tests.test_responses_compat',
+    'tests.test_model_sync','tests.test_monitor')
 
 
 def edition(root=None):
@@ -46,7 +44,7 @@ def runtime_digest(root, names=None):
     return p.sha(json.dumps(values,sort_keys=True,separators=(',',':')).encode())
 
 
-def public_get(url, limit=7_000_000):
+def public_get(url, limit=7_000_000, progress=None):
     parsed=urllib.parse.urlsplit(url)
     raw = parsed.hostname == 'raw.githubusercontent.com' and parsed.path.startswith('/' + REPOSITORY + '/')
     archive = parsed.hostname == 'codeload.github.com' and re.fullmatch('/' + re.escape(REPOSITORY) + '/zip/[0-9a-f]{40}', parsed.path)
@@ -54,7 +52,17 @@ def public_get(url, limit=7_000_000):
               'Update files must come from the pinned HTTPS repository')
     from model_sync import NoRedirect
     with urllib.request.build_opener(NoRedirect).open(urllib.request.Request(url,headers={'User-Agent':'CodexModelPatch/1.0'}),timeout=30) as response:
-        raw=response.read(limit+1)
+        header=response.headers.get('Content-Length','')
+        total=int(header) if header.isdecimal() and int(header)>0 else None
+        chunks=[];done=0;last_report=0
+        while chunk:=response.read(65536):
+            chunks.append(chunk);done+=len(chunk)
+            p.require(done<=limit,'Update file is too large')
+            now=time.monotonic()
+            if progress and (now-last_report>=.1 or total and done>=total):
+                progress(done,total);last_report=now
+        raw=b''.join(chunks)
+        if progress:progress(done,total or done or None)
     p.require(len(raw)<=limit,'Update file is too large')
     return raw
 
@@ -73,6 +81,10 @@ def validate_release(value, channel, highest=0):
         p.require(isinstance(name,str) and not path.is_absolute() and '..' not in path.parts and '\\' not in name
                   and all(part not in ('','.git') and ':' not in part for part in path.parts),'Unsafe release path')
         p.require(re.fullmatch(r'[0-9a-f]{64}',digest),'Invalid release digest')
+    sizes=value.get('file_sizes')
+    if sizes is not None:
+        p.require(isinstance(sizes,dict) and set(sizes)==set(files) and
+                  all(type(n) is int and 0<=n<=100000 for n in sizes.values()),'Invalid release byte inventory')
     required={'patch.py','monitor.py','updater.py','update_worker.py','model_sync.py','edition.json',
               'tests/test_updater.py','tests/test_model_sync.py','tests/route.test.cjs'}
     if value.get('architecture')=='official-client-v1':
@@ -119,42 +131,53 @@ def unpack_archive(raw, release, stage, progress=None):
             destination = Path(stage) / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(data)
-            if progress:progress.publish('downloading', index, len(files))
+            if progress:progress.publish('checking_package', index, len(files)+1,unit='files')
 
 
 def source_package(release, directory, fetch=public_get, progress=None):
     directory=Path(directory)
     target=directory/'packages'/release['commit']
-    def verify(root):
-        for name,digest in release['files'].items():
+    def verify(root, report=False):
+        for index,(name,digest) in enumerate(release['files'].items(),1):
             path=root/name
+            if release.get('file_sizes'):p.require(path.stat().st_size==release['file_sizes'][name],'Update size mismatch: '+name)
             p.require(path.is_file() and not path.is_symlink() and p.file_sha(path)==digest,'Update file digest mismatch: '+name)
+            if report and progress:progress.publish('checking_package',index,len(release['files'])+1,unit='files')
         info=edition(root)
         p.require(info['edition']==release['edition'] and info['version']==release['version'],'Package edition/version mismatch')
     if target.exists():
-        verify(target)
+        verify(target,report=True)
+        if progress:progress.publish('checking_package',len(release['files'])+1,len(release['files'])+1,unit='files')
         return target
     target.parent.mkdir(parents=True,exist_ok=True)
     stage=Path(tempfile.mkdtemp(prefix='package-',dir=target.parent))
     try:
         import concurrent.futures
         import threading
-        count=0;count_lock=threading.Lock()
-        if progress:progress.publish('downloading',0,len(release['files']),present=True)
+        count_lock=threading.Lock();received={};last_report=[0]
+        sizes=release.get('file_sizes',{})
+        total=sum(sizes.values()) if sizes else None
+        def file_progress(name, done, expected):
+            if not progress:return
+            with count_lock:
+                received[name]=done
+                now=time.monotonic()
+                if now-last_report[0]>=.1 or total and sum(received.values())==total:
+                    progress.publish('downloading',sum(received.values()),total,unit='bytes')
+                    last_report[0]=now
         def download(item):
-            nonlocal count
             name,digest=item
-            raw=fetch('https://raw.githubusercontent.com/'+REPOSITORY+'/'+release['commit']+'/'+name)
+            url='https://raw.githubusercontent.com/'+REPOSITORY+'/'+release['commit']+'/'+name
+            raw=public_get(url,progress=lambda done,total:file_progress(name,done,total)) if fetch is public_get else fetch(url)
             p.require(hashlib.sha256(raw).hexdigest()==digest,'Downloaded update digest mismatch: '+name)
+            if sizes:p.require(len(raw)==sizes[name],'Downloaded update size mismatch: '+name)
             path=stage/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
-            if progress:
-                with count_lock:
-                    count+=1;progress.publish('downloading',count,len(release['files']))
+            file_progress(name,len(raw),len(raw))
         archived = False
         if release.get('archive') is not None:
             p.require(release['archive'] == archive_descriptor(release['commit']), 'Invalid pinned update archive')
             try:
-                raw = fetch(release['archive']['url'])
+                raw = public_get(release['archive']['url'],progress=(lambda done,total:progress.publish('downloading',done,total,unit='bytes')) if progress else None) if fetch is public_get else fetch(release['archive']['url'])
             except (OSError, TimeoutError, urllib.error.URLError):
                 # Older feeds and unavailable archive delivery retain the same
                 # pinned file transport. Integrity failures never fall back.
@@ -165,20 +188,23 @@ def source_package(release, directory, fetch=public_get, progress=None):
         if not archived:
             with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
                 list(pool.map(download,release['files'].items()))
-        verify(stage)
-        if progress:progress.publish('verifying')
+        verify(stage,report=not archived)
+        if progress:progress.publish('checking_package',len(release['files']),len(release['files'])+1,unit='files')
         # Do not expose user credentials/configuration to package preflight tests.
         with tempfile.TemporaryDirectory(prefix='codex-update-preflight-') as temp:
             from scripts.test_offline import isolated_environment
             env=isolated_environment(Path(temp))
             if release.get('architecture')=='official-client-v1':
-                commands=[[sys.executable,'-m','unittest',*NATIVE_PREFLIGHT_MODULES,'-q']]
+                commands=[[sys.executable,'-c',
+                    "import ast,pathlib;[ast.parse(p.read_bytes(),filename=str(p)) for p in pathlib.Path('.').rglob('*.py')]"],
+                    [sys.executable,'-m','unittest',*NATIVE_PREFLIGHT_MODULES,'-q']]
             else:
                 commands=[[sys.executable,'-m','unittest','discover','-s','tests','-q']]
                 commands.append([shutil.which('node'),'tests/route.test.cjs'])
             for command in commands:
                 result=subprocess.run(command,cwd=stage,env=env,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120,**background_options())
                 p.require(result.returncode==0,'Downloaded package preflight failed: '+result.stderr[-1500:])
+        if progress:progress.publish('checking_package',len(release['files'])+1,len(release['files'])+1,unit='files')
         from monitor import atomic_json
         atomic_json(stage / '.package.json', {'format': 1, 'release': release})
         os.replace(stage,target)
@@ -199,7 +225,7 @@ def worker(root, action, job, work_directory):
     return json.loads(path.with_suffix('.result.json').read_text(encoding="utf-8"))
 
 
-def activate_runtime(package, directory, expected_edition):
+def activate_runtime(package, directory, expected_edition, *, checkpoint=None):
     package=Path(package);directory=Path(directory)
     identity=worker(package,'identity',{},directory/'activation')
     p.require(identity['edition']==expected_edition,'Runtime edition mismatch')
@@ -219,14 +245,58 @@ def activate_runtime(package, directory, expected_edition):
         runtime=directory/'runtime'
         if Path.cwd().resolve().is_relative_to(runtime.resolve()):
             os.chdir(directory)  # Windows cannot rename its process working directory.
-        if runtime.exists():
-            backup=directory/('runtime-backup-'+str(time.time_ns()));os.replace(runtime,backup)
-        try:os.replace(stage,runtime)
+        backup=directory/('runtime-backup-'+str(time.time_ns())) if runtime.exists() else None
+        old=worker(runtime,'identity',{'quiet_progress':True},directory/'activation-before') if backup else {}
+        p.require(not backup or old['edition']==expected_edition,'Previous runtime edition changed')
+        journal={'directory':str(directory.resolve()),'backup':backup.name if backup else None,
+            'previous_digest':old.get('runtime_digest'),
+            'previous_files':old.get('files',[]),
+            'files':identity['files'],'digest':identity['runtime_digest'],'edition':expected_edition}
+        # Persist rename intent before moving either directory. The install
+        # journal owns recovery even if the process stops between the renames.
+        if checkpoint:checkpoint(journal)
+        if backup:os.replace(runtime,backup)
+        try:
+            os.replace(stage,runtime)
+            ready=worker(runtime,'identity',{'quiet_progress':True},directory/'activation-confirm')
+            p.require(ready['edition']==expected_edition and ready['runtime_digest']==identity['runtime_digest'],
+                      'Activated update runtime failed its startup identity check')
         except BaseException:
-            if backup:os.replace(backup,runtime)
+            rollback_runtime(journal)
             raise
     finally:
         if stage.exists():shutil.rmtree(stage)
+
+
+def rollback_runtime(journal):
+    """Restore only the two owned trees named by durable activation intent."""
+    directory=Path(journal['directory'])
+    p.require(directory.is_absolute() and directory.resolve()==directory and not directory.is_symlink(),
+              'Unsafe runtime recovery directory')
+    runtime=directory/'runtime';name=journal.get('backup')
+    p.require(name is None or re.fullmatch(r'runtime-backup-\d+',name),'Unsafe runtime recovery backup')
+    backup=directory/name if name else None
+    files=journal['files'];oldfiles=journal.get('previous_files',[])
+    for filename in [*files,*oldfiles]:
+        p.require(isinstance(filename,str) and not Path(filename).is_absolute() and '..' not in Path(filename).parts,
+                  'Unsafe runtime recovery inventory')
+    def digest(path,inventory):
+        p.require(not path.is_symlink() and all(not (path/f).is_symlink() for f in inventory),'Runtime recovery contains links')
+        return runtime_digest(path,inventory)
+    if backup and not backup.exists():
+        p.require(runtime.exists() and digest(runtime,oldfiles)==journal['previous_digest'],
+                  'Previous update runtime is unavailable')
+        return
+    if runtime.exists():
+        if backup:
+            try:
+                if digest(runtime,oldfiles)==journal['previous_digest']:return
+            except FileNotFoundError:pass
+        p.require(digest(runtime,files)==journal['digest'],'Runtime changed independently; recovery retained')
+    if backup:p.require(digest(backup,oldfiles)==journal['previous_digest'],'Runtime recovery backup changed')
+    if Path.cwd().resolve().is_relative_to(runtime.resolve()):os.chdir(directory)
+    if runtime.exists():shutil.rmtree(runtime)
+    if backup:os.replace(backup,runtime)
 
 
 NATIVE_RECOVERY = 'native-activation-recovery.json'
@@ -460,6 +530,21 @@ class UpdateBackend:
         # knowing this settings field. Import it from the committed baseline.
         if self.base.baseline:self.persist_architecture(self.base.baseline)
         self.prepared=True
+        from update_progress import Progress, _build
+        accepted=Progress(self.directory)
+        pinned=_build(accepted) if accepted.requested() and accepted.read().get('phase') not in ('completed','failed','rolled_back') else None
+        if pinned:
+            _, saved=pinned;meta=saved.get('update',{})
+            package=Path(meta.get('package') or p.ROOT)
+            p.require(package.is_dir() and edition(package)['edition']==self.edition,'Accepted update package is unavailable')
+            p.require(runtime_digest(package)==meta['runtime_digest'],'Accepted update package changed')
+            self.package=package;self.desired_runtime=meta['runtime_digest']
+            self.desired_architecture=saved['architecture'];self.progress=accepted
+            models=self.directory/'models.json'
+            if models.exists():
+                self.model_snapshot=json.loads(models.read_text(encoding='utf-8'))
+                p.require(self.model_snapshot.get('digest')==meta['model_digest'],'Accepted model snapshot changed; prepare again')
+            return
         now=time.time();force=self.settings.get('force_sync',False)
         force_code=self.settings.get('force_code',False)
         if (self.settings.get('auto_update',True) or force_code) and (force or force_code or now-self.cache.get('code_checked',0)>=CHECK_SECONDS):
@@ -640,6 +725,10 @@ class UpdateBackend:
         if progress:validated_close(progress)
 
     def is_running(self):return self.base.is_running()
+
+    def install_allowed(self):
+        from update_progress import Progress
+        return not Progress(self.directory).paused()
 
     def watch_exit(self,build):
         from exit_watch import arm

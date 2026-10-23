@@ -95,3 +95,13 @@ python3 src/scripts/release_manifest.py --promote PRIVATE_CANDIDATE_DIR/candidat
 ```
 
 Candidate preparation uses isolated Git indexes without changing the checkout or published feed. Portable artifacts retain historical paths and the 100-file limit for existing updaters. The old `--distribution` command remains available for historical tooling; new paired releases use the gates above. Never point a feed at a local-only commit.
+
+### 更新事务与空闲安装
+
+更新检查、预下载和校验不退出 Codex。一个候选只保存一份进度与操作意图；用户点击开始后固定候选，准备完成再等待实际请求与工具结果结束，连续空闲 10 秒后关闭已核验的应用进程并安装。等待可取消，超过一小时自动结束本次等待并保留下载包；旧适配服务没有空闲协议时，等待用户正常退出，不据此推断空闲。关闭页面不取消更新。
+
+下载进度按实际字节计量，文件校验和兼容检查按已完成项计量；阶段内进度不倒退。等待空闲、退出和启动没有可预知总量，显示状态与耗时。不得用计时器填充百分比，也不得让旧检查任务覆盖新安装状态。
+
+安装事务必须在提交前验证新服务身份及更新运行时启动身份。故障恢复上一版运行时、服务和受管配置；恢复失败保留日志和备份，不显示成功。原版 Codex 的启动按钮是独立操作，确认目标主进程与服务就绪后才消耗点击；启动失败恢复按钮。关闭进程测试只使用临时目录中的替身，禁止对用户工作中的应用执行退出测试。
+
+完整单元、原生 UI 与故障注入测试在发布四组合门禁中执行；用户端下载仅做文件校验、全源码语法检查和轻量协议检查，随后用其原版 CLI 验证兼容性。下载检查不得重复启动整套 GUI/服务生命周期测试。

@@ -20,13 +20,13 @@ function run(argv) {
         const raw = $.NSString.stringWithContentsOfFileEncodingError($(file), $.NSUTF8StringEncoding, null);
         if (!raw) return null;
         try {
-            const value = JSON.parse(ObjC.unwrap(raw));
+            let value = JSON.parse(ObjC.unwrap(raw));if(value.display&&value.display.id===value.id&&value.display.edition===value.edition)value=Object.assign({},value,value.display);
             if (value.format !== 1 || typeof value.id !== 'string' || !value.id || value.id.length > 200) return null;
             return value;
         } catch (_) { return null; }
     }
     function action(kind) {
-        if (!state || ['start','launch','dismiss'].indexOf(kind) < 0) return;
+        if (!state || ['start','launch','dismiss','cancel'].indexOf(kind) < 0) return;
         if (kind === 'start' && !state.can_start || kind === 'launch' && !state.can_launch) return;
         const task = $.NSTask.alloc.init;
         task.launchPath = $(python);
@@ -43,7 +43,7 @@ function run(argv) {
         protocols: ['NSWindowDelegate'],
         methods: {
             'primaryClicked:': {types: ['void', ['id']], implementation: function (_) {
-                action(state && state.can_launch ? 'launch' : 'start');
+                action(state && state.can_launch ? 'launch' : state && state.can_cancel ? 'cancel' : 'start');
             }},
             'dismissClicked:': {types: ['void', ['id']], implementation: function (_) {
                 panel.close;
@@ -102,9 +102,9 @@ function run(argv) {
         state = value;
         title.stringValue = String(value.title || '正在准备更新').slice(0, 160);
         edition.stringValue = (value.edition === 'ds' ? 'DS 版' : '扩展版') + (value.version ? ' · ' + String(value.version).slice(0, 80) : '');
-        detail.stringValue = String(value.detail || '关闭此窗口不影响后台更新。').slice(0, 600);
+        detail.stringValue = String(value.detail || '关闭此窗口不影响后台更新。').slice(0, 500)+(value.total?' · '+Math.floor(100*value.completed/value.total)+'%':'');
         const known = Number.isFinite(value.completed) && Number.isFinite(value.total) && value.total > 0;
-        const terminal = ['current','completed','failed','error','launched'].indexOf(value.phase) >= 0;
+        const terminal = ['current','completed','failed','rolled_back','close_failed','error','launched'].indexOf(value.phase) >= 0;
         progress.indeterminate = !known && !terminal;
         if (terminal) {
             progress.stopAnimation(null);
@@ -113,9 +113,9 @@ function run(argv) {
             progress.stopAnimation(null);
             progress.doubleValue = Math.max(0, Math.min(100, value.completed * 100 / value.total));
         } else progress.startAnimation(null);
-        primary.title = value.can_launch ? '启动 Codex' : value.can_start ? '开始更新' : '正在更新…';
-        primary.enabled = !!(value.can_start || value.can_launch) && !(currentAction === 'start' && value.can_start);
-        primary.hidden = !(value.can_start || value.can_launch) && ['current','completed','failed','error','launched'].indexOf(value.phase) >= 0;
+        primary.title = value.can_launch ? '启动 Codex' : value.can_start ? '开始更新' : value.can_cancel ? '取消等待' : '正在更新…';
+        primary.enabled = !!(value.can_start || value.can_launch || value.can_cancel) && !(currentAction === 'start' && value.can_start);
+        primary.hidden = !(value.can_start || value.can_launch || value.can_cancel) && ['current','completed','failed','rolled_back','close_failed','error','launched'].indexOf(value.phase) >= 0;
     }
     render(readState());
     if (!state) throw Error('Update state unavailable');

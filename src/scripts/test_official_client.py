@@ -596,12 +596,19 @@ def require_tool_success(events, kind, marker=None):
     raise patch.PatchError('Native ' + kind + ' did not report successful execution')
 
 
-def run(app, reportdir, edition, *, services=False):
+def run(app, reportdir, edition, *, services=False, progress=None):
     app, reportdir = Path(app), Path(reportdir)
     patch.require(edition in ('ds', 'proxy'), 'Unknown edition')
     reportdir.mkdir(parents=True, exist_ok=True)
     report = {'status': 'failed', 'edition': edition, 'external_inference_turns': 0,
               'real_credentials_used': False, 'provider': PROVIDER, 'mcp_tools': 160, 'checks': {}}
+    if progress:
+        class Checks(dict):
+            def __setitem__(self,key,value):
+                super().__setitem__(key,value)
+                progress(len(self),19 if edition=='proxy' else 16)
+        report['checks']=Checks()
+        progress(0,19 if edition=='proxy' else 16)
     report.update(runner_runtime=Path(sys.executable).name, mcp_runtime=Path(mcp_runtime()).name)
     process, adapter, upstream = None, None, None
     started_servers = []
