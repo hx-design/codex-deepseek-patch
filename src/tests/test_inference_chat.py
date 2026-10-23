@@ -193,3 +193,57 @@ class ChatRelayTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MessagesUpstream(ChatUpstream):
+    def do_POST(self):
+        body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.server.seen.append((self.path,dict(self.headers),body))
+        results=[b for m in body['messages'] for b in m['content'] if b['type']=='tool_result']
+        blocks=([{'type':'tool_use','id':'call_native','name':body['tools'][0]['name'],'input':{'input':'exact native patch'}}]
+                if body.get('tools') and not results else [{'type':'text','text':'Messages answer.'}])
+        reason='tool_use' if blocks[0]['type']=='tool_use' else 'end_turn'
+        message={'type':'message','model':body['model'],'content':blocks,'stop_reason':reason,'usage':{'input_tokens':8,'output_tokens':2}}
+        if body.get('stream'):
+            events=[{'type':'message_start','message':{**message,'content':[],'stop_reason':None}}]
+            for i,b in enumerate(blocks):events.extend([{'type':'content_block_start','index':i,'content_block':b},{'type':'content_block_stop','index':i}])
+            events.extend([{'type':'message_delta','delta':{'stop_reason':reason},'usage':message['usage']},{'type':'message_stop'}])
+            if self.server.mode=='truncated':events=events[:-1]
+            raw=b''.join(b'data: '+encoded(v)+b'\n\n' for v in events)
+        else:raw=encoded(message)
+        self.send_response(200);self.send_header('Content-Type','text/event-stream' if body.get('stream') else 'application/json')
+        self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+
+
+class AnthropicRelayTests(unittest.TestCase):
+    request=ChatRelayTests.request
+    terminal=ChatRelayTests.terminal
+    declarations=ChatRelayTests.declarations
+    tearDown=ChatRelayTests.tearDown
+
+    def setUp(self):
+        ChatRelayTests.setUp(self)
+        self.upstream.RequestHandlerClass=MessagesUpstream
+        self.server.profile['routes']['any-local-model'].update(wire_api='anthropic_messages',max_output_tokens=65536,reasoning_levels=['low','high'])
+
+    def test_anthropic_http_websocket_tools_and_auth_isolation(self):
+        status,raw=self.request({'model':'any-local-model','input':[{'role':'user','content':'hello'}]})
+        self.assertEqual(status,200,raw);self.assertEqual(json.loads(raw)['status'],'completed')
+        path,headers,body=self.upstream.seen[-1]
+        self.assertEqual(path,'/v1/messages');self.assertEqual(headers['x-api-key'],'independent-peer-key')
+        self.assertNotIn('Authorization',headers);self.assertNotIn('ChatGPT-Account-ID',headers)
+        self.assertEqual(body['max_tokens'],65536)
+        ws=connect_websocket(self.wsurl,timeout=3)[0]
+        try:
+            ws.send(encoded({'type':'response.create','model':'any-local-model','input':[self.declarations(),{'role':'user','content':'patch'}]}))
+            first=self.terminal(ws)[-1]['response'];self.assertEqual(first['status'],'completed')
+            self.assertEqual(first['output'][0]['type'],'custom_tool_call')
+            ws.send(encoded({'type':'response.create','model':'any-local-model','previous_response_id':first['id'],
+                             'input':[{'type':'custom_tool_call_output','call_id':'call_native','output':'done'}]}))
+            final=self.terminal(ws)[-1];self.assertEqual(final['type'],'response.completed')
+            self.assertEqual(self.upstream.seen[-1][2]['messages'][-1]['content'][0]['tool_use_id'],'call_native')
+        finally:ws.close()
+        self.upstream.mode='truncated'
+        status,raw=self.request({'model':'any-local-model','input':'hello','stream':True})
+        events=[json.loads(line[5:]) for line in raw.splitlines() if line.startswith(b'data:')]
+        self.assertEqual(events[-1]['type'],'response.failed')

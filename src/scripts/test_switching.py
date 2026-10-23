@@ -28,7 +28,7 @@ def finish(rpc,tid,turn):
         if event.get('params',{}).get('threadId')!=tid:continue
         values.append(event)
         if event.get('method')=='turn/completed' and event['params']['turn']['id']==turn['turn']['id']:
-            patch.require(event['params']['turn']['status']=='completed','Switching turn failed')
+            patch.require(event['params']['turn']['status']=='completed','Switching turn failed: '+str(event['params']['turn'].get('error',{})))
             return values
     raise TimeoutError('Switching turn did not complete')
 

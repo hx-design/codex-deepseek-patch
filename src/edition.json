@@ -2,5 +2,5 @@
   "architecture": "official-client-v1",
   "branch": "codex/existing-proxy-models",
   "edition": "proxy",
-  "version": "0.7.6-proxy.1"
+  "version": "0.8.0-proxy.1"
 }

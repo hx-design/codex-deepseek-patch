@@ -1,3 +1,19 @@
+## Next development candidate: bootstrap and Messages
+
+Before release, validate both editions on macOS and Windows using ordinary-user, hidden/private-desktop fixtures. Additional mandatory regressions cover bootstrap digest rejection, atomic staging, channel isolation, stable runtime after deleting the original download, first-setup progress/cancellation, pending-recovery ownership, Messages text/images/tools, HTTP/WS translation, truncated SSE, cached token usage, reasoning signatures and foreign-model isolation. Native CLI tests include GPT → Anthropic lazy tool discovery/execution → GPT and old encrypted-history recovery through Messages.
+
+Installer artifacts have a separate runtime inventory and vendor SHA256 pin. Test the exact bundled interpreter and native setup card; source-only tests do not establish bootstrap usability. CPU variants not exercised on hardware remain unvalidated. Public Mac installer signing/notarization and downloaded-file launch must pass before distributing that artifact. Generated binaries never enter the source feed.
+
+Protocol references: [Messages](https://platform.claude.com/docs/en/api/messages/create), [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), [model metadata](https://platform.claude.com/docs/en/api/models/list). No real provider inference or media generation is performed by these synthetic checks.
+
+## First setup, request diagnostics and specification sources
+
+The next candidate must pass first-install native cards on both systems and editions, manager-conflict rejection before credentials/network, failed discovery secret rollback, revision conflicts, cancellation, unverified install refusal, and resuming monitor registration after installation. Use disposable homes and mocked activation; never install into the developer's current model manager.
+
+Recent request diagnostics must exercise the existing HTTP/WebSocket inference paths with synthetic bodies, authenticate their local endpoint, omit bodies/credentials/full URLs, bound retained records, and distinguish upstream HTTP errors. Native GPT forwarding, cancellation and payload fidelity gates remain mandatory. Local-only request metadata is not added to exported diagnostic reports.
+
+Specification provenance is descriptive: test service metadata, explicit declarations, inferred capabilities and conflicts without changing context precedence or user reductions. Check first-install and synchronized catalogs separately.
+
 ## 后续版本的强制发布检查
 
 ### 预下载、空闲安装与事务回退

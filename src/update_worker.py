@@ -8,6 +8,122 @@ import patch as p
 import backend
 
 
+class SetupProgress:
+    """Private, fixed-vocabulary progress for the first-install child."""
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def publish(self, phase, completed=None, total=None, **ignored):
+        from monitor import atomic_json
+        labels = {'building':'正在准备适配文件', 'verifying':'正在验证原生兼容性', 'ready':'准备和验证完成'}
+        if phase not in labels:raise ValueError('Unknown setup phase')
+        value = {'phase':phase, 'message':labels[phase]}
+        if type(completed) is int and type(total) is int and 0 <= completed <= total and total > 0:
+            value.update(completed=completed, total=total)
+        atomic_json(self.path, value)
+
+
+def setup_command(arguments, cancelled=None):
+    """One cancellable child; only fixed progress metadata crosses the boundary."""
+    import os, signal, subprocess, tempfile, time
+    from management import SettingsError, require
+    from official_client_host import windowless_python
+    from monitor import load_json
+    with tempfile.TemporaryDirectory(prefix='setup-progress-', dir=Path(arguments[arguments.index('--output')+1]).parent.parent/'setup') as temporary:
+        progress_path=Path(temporary)/'progress.json'
+        command=[str(windowless_python(sys.executable)),str(p.ROOT/'patch.py'),*map(str,arguments),'--progress-file',str(progress_path)]
+        with tempfile.TemporaryFile() as log:
+            child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log,
+                **(__import__('windows_support').background_options() if os.name=='nt' else {'start_new_session':True}))
+            try:
+                previous=None
+                while True:
+                    if cancelled and cancelled():raise SettingsError('cancelled','操作已取消，正式配置未改变。')
+                    value=load_json(progress_path,{})
+                    if value!=previous and getattr(cancelled,'progress',None):cancelled.progress(value)
+                    previous=value
+                    if child.poll() is not None:break
+                    time.sleep(.1)
+                require(child.returncode==0,'准备或验证未通过；正式配置未改变，请检查应用版本、接口和模型规格。','setup_validation_failed')
+            finally:
+                if child.poll() is None:
+                    if os.name=='nt':subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],capture_output=True,**p.background_options())
+                    else:os.killpg(child.pid,signal.SIGTERM)
+                    try:child.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        if os.name=='nt':child.kill()
+                        else:os.killpg(child.pid,signal.SIGKILL)
+                        child.wait(timeout=5)
+
+
+def first_setup_view(directory, notice=''):
+    import os
+    from management import (setup_read, setup_app, hub_field, hub_button,
+                            hub_options, setup_revision, footer_layout)
+    draft=setup_read(directory);phase=draft.get('phase','draft')
+    rows=[hub_field('app','Codex 应用位置',draft.get('app') or setup_app()),
+          hub_field('home','Codex 配置目录',draft.get('home') or str(Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))))]
+    if p.EDITION=='ds':
+        rows += [hub_field('key','DeepSeek API Key','','secret',hint='只保存于本机；无需重新登录 GPT。')]
+    else:
+        connection=draft.get('connection',{})
+        rows += [hub_field('name','连接名称',connection.get('name','我的模型')),
+                 hub_field('url','接口地址',connection.get('base_url','')),
+                 hub_field('kind','服务类型',connection.get('kind','openai'),'choice',choices=[['openai','兼容接口'],['ollama','Ollama'],['lmstudio','LM Studio']]),
+                 hub_field('wire','接口协议',connection.get('wire_api','chat_completions'),'choice',choices=[['chat_completions','Chat Completions'],['responses','Responses'],['anthropic_messages','Anthropic Messages']]),
+                 hub_field('key','API Key','','secret',hint='本地服务可留空；留空保留已保存密钥。'),
+                 hub_field('models','型号',', '.join(connection.get('models',[])),hint='填写检测到的型号，多个用逗号分隔。'),
+                 hub_field('maximum','最大上下文',draft.get('maximum'),kind='number',hint='仅在服务未提供规格时填写实际最大值。'),
+                 hub_field('output','最大输出',draft.get('output'),kind='number',hint='Anthropic 缺少规格时填写'),
+                 hub_field('respect','保留本地服务加载窗口',connection.get('respect_server_context',True),'toggle')]
+    if p.EDITION=='proxy' and draft.get('available'):
+        rows.append({'type':'note','text':'勾选接入型号，再保存选择。'})
+        rows += [hub_field('model_'+str(i),model,model in draft.get('connection',{}).get('models',[]),'toggle') for i,model in enumerate(draft['available'])]
+    rows += [hub_field('maintenance','安装后自动检查补丁和模型更新',draft.get('maintenance',True),'toggle')]
+    buttons=[hub_button('保存并检测','setup_save')]
+    if phase=='draft' and draft:buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
+    if phase=='prepared':
+        rows.append({'type':'note','text':'准备和隔离验证通过。请先正常退出 Codex，再点击安装。'})
+        buttons.append(hub_button('安装','setup_install',style='primary'))
+    if phase=='installed':
+        rows.append({'type':'note','text':'适配层已安装，继续完成设置入口与自动维护。'})
+        buttons=[hub_button('完成设置','setup_install',style='primary')]
+    return {'route':'setup','title':'首次设置 · '+('DS 版' if p.EDITION=='ds' else '扩展版'),
+            'subtitle':'发现应用 → 检测模型 → 验证 → 安装','rows':rows,'buttons':buttons,
+            'revision':setup_revision(directory),'edition':p.EDITION,'notice':notice,
+            'options':hub_options(directory),'footer':footer_layout(buttons),'back':None}
+
+
+
+def recovery_target(directory, baseline):
+    """Select only the monitor's owned candidate; never recover another edition."""
+    from monitor import load_json
+    directory,baseline=Path(directory).resolve(),Path(baseline).resolve()
+    settings=load_json(directory/'settings.json',{})
+    pending=load_json(directory/'state.json',{}).get('pending',{}).get('build',{}).get('directory')
+    if not pending:return baseline
+    target=Path(pending).resolve()
+    p.require(target.is_relative_to(directory/'builds'),'Recovery candidate is outside this installation')
+    manifest=load_json(target/'manifest.json',{})
+    p.require(manifest.get('edition')==settings.get('edition') and manifest.get('codex_home')==settings.get('codex_home'),
+              'Recovery candidate identity changed')
+    return target
+
+
+def recovery_summary(directory, baseline):
+    from monitor import load_json
+    try:
+        target=recovery_target(directory,baseline)
+        manifest=load_json(target/'manifest.json',{})
+        install=load_json(target/'native-install-transaction.json',{})
+        uninstall=load_json(target/'native-uninstall-transaction.json',{})
+        interrupted=(uninstall and uninstall.get('phase')!='complete') or (install and install.get('phase') not in ('committed','rolled_back'))
+        return {'candidate_version':manifest.get('tool_version') if target!=Path(baseline).resolve() else None,
+                'interrupted':bool(interrupted),'message':'安装中断，可从这里恢复' if interrupted else '当前安装记录完整'}
+    except (OSError,ValueError,TypeError,p.PatchError):
+        return {'interrupted':False,'message':'安装记录需要核对，请查看诊断'}
+
+
 def verify_build(output, progress=None):
     output=Path(output)
     manifest=json.loads((output/'manifest.json').read_text(encoding='utf-8'))

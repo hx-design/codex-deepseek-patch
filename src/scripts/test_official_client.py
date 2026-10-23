@@ -399,8 +399,8 @@ class Fixture(ToolStub):
             'tool_count': len(body.get('tools', [])), 'input_types': [v.get('type', 'message')
                 for v in body.get('input', []) if isinstance(v, dict)],
             'auth_is_official_fixture': self.headers.get('Authorization') == 'Bearer official-api-fixture',
-            'auth_is_route_fixture': self.headers.get('Authorization') == 'Bearer independent-route-fixture',
-            'auth_is_anonymous': self.headers.get('Authorization') is None,
+            'auth_is_route_fixture': (self.headers.get('x-api-key') == 'independent-route-fixture' and self.headers.get('Authorization') is None) if self.path.endswith('/messages') else self.headers.get('Authorization') == 'Bearer independent-route-fixture',
+            'auth_is_anonymous': self.headers.get('Authorization') is None and self.headers.get('x-api-key') is None,
             'official_account_header': self.headers.get('ChatGPT-Account-ID') is not None})
 
     def reject_exhausted_gpt(self, body, ws=None):
@@ -440,8 +440,18 @@ class Fixture(ToolStub):
         events.append({'type': 'response.completed', 'response': response})
         return response, events
 
-    def chat_response(self, raw):
+    def chat_response(self, raw, messages_protocol=False):
         body = json.loads(raw)
+        if messages_protocol:
+            patch.require(self.headers.get('x-api-key')=='independent-route-fixture' and not self.headers.get('Authorization'),'Messages authentication isolation failed')
+            messages=[{'role':'system','content':'\n'.join(b['text'] for b in body.get('system',[]))}] if body.get('system') else []
+            for message in body['messages']:
+                plain=[b.get('text','') for b in message['content'] if b['type']=='text']
+                if plain:messages.append({'role':message['role'],'content':'\n'.join(plain)})
+                for block in message['content']:
+                    if block['type']=='tool_result':messages.append({'role':'tool','tool_call_id':block['tool_use_id'],'content':block['content']})
+            body={**body,'messages':messages,'reasoning_effort':body.get('output_config',{}).get('effort'),
+                  'tools':[{'function':{'name':t['name'],'parameters':t['input_schema']}} for t in body.get('tools',[])]}
         tools = [v['function'] for v in body.get('tools', [])]
         messages = body['messages']
         self.record({'model':body['model'], 'reasoning':{'effort':body.get('reasoning_effort')},
@@ -451,7 +461,7 @@ class Fixture(ToolStub):
         call = None
         text = self.recovery_text(body) or 'CONTEXT_OK'
         if self.server.tool_mode and phase == 'search':
-            if len(raw) > 120000 or not any(v['name'] == SEARCH_NAME for v in tools):
+            if len(json.dumps(tools).encode()) > 120000 or not any(v['name'] == SEARCH_NAME for v in tools):
                 error = 'Chat route eager catalog or missing native discovery'
             call = (SEARCH_NAME, 'chat_search', '{"query":"probe_tool_42","limit":1}')
             self.server.phase = 'call'
@@ -492,7 +502,12 @@ class Fixture(ToolStub):
                    'choices':[{'index':0,'delta':delta,'finish_reason':None}]},
                   {'choices':[{'index':0,'delta':{},'finish_reason':'tool_calls' if call else 'stop'}],
                    'usage':{'prompt_tokens':3000,'completion_tokens':3,'total_tokens':3003}}]
-        payload = b''.join(b'data: '+json.dumps(v).encode()+b'\n\n' for v in chunks)+b'data: [DONE]\n\n'
+        if messages_protocol:
+            block={'type':'tool_use','id':'messages_'+call[1],'name':call[0],'input':json.loads(call[2])} if call else {'type':'text','text':text}
+            chunks=[{'type':'message_start','message':{'usage':{'input_tokens':3000,'output_tokens':0}}},
+                    {'type':'content_block_start','index':0,'content_block':block}, {'type':'content_block_stop','index':0},
+                    {'type':'message_delta','delta':{'stop_reason':'tool_use' if call else 'end_turn'},'usage':{'output_tokens':3}}, {'type':'message_stop'}]
+        payload = b''.join(b'data: '+json.dumps(v).encode()+b'\n\n' for v in chunks)+(b'' if messages_protocol else b'data: [DONE]\n\n')
         self.send_response(200)
         self.send_header('Content-Type','text/event-stream')
         self.send_header('Content-Length',str(len(payload)))
@@ -501,6 +516,7 @@ class Fixture(ToolStub):
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if self.path.endswith('/messages'):return self.chat_response(raw,True)
         if self.path.endswith('/chat/completions'):
             return self.chat_response(raw)
         if not self.path.endswith('/responses'):
@@ -606,9 +622,9 @@ def run(app, reportdir, edition, *, services=False, progress=None):
         class Checks(dict):
             def __setitem__(self,key,value):
                 super().__setitem__(key,value)
-                progress(len(self),19 if edition=='proxy' else 16)
+                progress(len(self),(20 if edition=='proxy' else 16)+(9 if services else 0))
         report['checks']=Checks()
-        progress(0,19 if edition=='proxy' else 16)
+        progress(0,(20 if edition=='proxy' else 16)+(9 if services else 0))
     report.update(runner_runtime=Path(sys.executable).name, mcp_runtime=Path(mcp_runtime()).name)
     process, adapter, upstream = None, None, None
     started_servers = []
@@ -643,7 +659,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
             template = patch.catalog_template(native)
             models = [(GPT, 272000), (DS, 1048576)]
             if edition == 'proxy':
-                models += [('grok-4.7', 500000), ('gemini-3.8-flash-high', 1048576), ('local-probe', 256000)]
+                models += [('grok-4.7', 500000), ('gemini-3.8-flash-high', 1048576), ('local-probe', 256000), ('messages-probe', 1000000)]
             entries = []
             for slug, window in models:
                 entry = copy.deepcopy(template)
@@ -679,6 +695,8 @@ def run(app, reportdir, edition, *, services=False, progress=None):
             if 'local-probe' in profile['routes']:
                 profile['routes']['local-probe'].update(credential={'kind':'none'},
                     wire_api='chat_completions', supports_reasoning_effort=True)
+            if 'messages-probe' in profile['routes']:
+                profile['routes']['messages-probe'].update(wire_api='anthropic_messages',max_output_tokens=65536,reasoning_levels=['low','medium','high'],flatten_namespaces=True)
             (base / 'route.key').write_text('independent-route-fixture')
             adapter = inference_adapter.create_server(profile, session_factory=ObservedSession)
             adapter.native_frames = []
@@ -818,6 +836,12 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                                   'Chat Completions custom apply_patch did not execute')
                     turn(GPT, 'return to GPT after Chat Completions tools')
                     report['checks']['native_chat_custom_tools_return_gpt'] = 'passed'
+                    upstream.tool_mode,upstream.phase=True,'search'
+                    turn('messages-probe','Anthropic native discovery and tool execution')
+                    patch.require(not any(v['error'] for v in upstream.records),'Anthropic native tools failed')
+                    upstream.tool_mode,upstream.phase=False,'message'
+                    turn(GPT,'return to GPT after Anthropic Messages')
+                    report['checks']['native_anthropic_tools_return_gpt']='passed'
                 # A real native usage-limit error must not poison the same
                 # thread when its next turn selects an independent provider.
                 # Carry a native usage count above the destination's threshold.
@@ -925,7 +949,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                     blocked_external_connections=upstream.blocked_external, wire=upstream.wire,
                     tool_records=upstream.records, native_frames=adapter.native_frames)
         if services:
-            report['checks'].update(native_image_contract(app, reportdir, edition))
+            for name,status in native_image_contract(app, reportdir, edition).items():report['checks'][name]=status
     except Exception as exc:
         report['status'] = 'failed'
         report['error_type'], report['error'] = type(exc).__name__, str(exc)[:1000]

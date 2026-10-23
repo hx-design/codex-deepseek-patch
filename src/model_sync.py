@@ -126,7 +126,7 @@ def parse_spec(model, document, url):
         levels = list(dict.fromkeys(re.findall(r'\b(none|minimal|low|medium|high|xhigh|max)\b', match[1].lower()))) or levels
     levels=REASONING_PRESETS.get(model, levels)
     return {'context_window':values.pop(), 'input_modalities':modalities, 'reasoning_levels':levels,
-            'source':url}
+            'source':url, 'spec_sources':{'context_window':'official','input_modalities':'official' if 'image' in modalities else 'inferred','reasoning_levels':'official' if match or model in REASONING_PRESETS else 'inferred'}}
 
 
 def provider_models(provider):

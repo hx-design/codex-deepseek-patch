@@ -33,7 +33,7 @@ def validate(value):
     result.setdefault('respect_server_context',False)
     if type(result['respect_server_context']) is not bool:raise ValueError('Invalid server context preference')
     result.setdefault('wire_api','responses')
-    if result['wire_api'] not in ('responses','chat_completions'):raise ValueError('Unsupported model API protocol')
+    if result['wire_api'] not in ('responses','chat_completions','anthropic_messages'):raise ValueError('Unsupported model API protocol')
     result.setdefault('supports_reasoning_effort',False)
     if type(result['supports_reasoning_effort']) is not bool:raise ValueError('Invalid reasoning-effort capability')
     result.setdefault('chat_only_models',[])
@@ -65,7 +65,8 @@ def request(connection,path='',body=None):
     if connection.get('key_file'):
         key=Path(connection['key_file']).read_text(encoding='utf-8').strip()
         if not key or any(c in key for c in '\r\n\0'):raise ValueError('Invalid local API key file')
-        headers['Authorization']='Bearer '+key
+        headers['x-api-key' if connection.get('wire_api')=='anthropic_messages' else 'Authorization']=key if connection.get('wire_api')=='anthropic_messages' else 'Bearer '+key
+    if connection.get('wire_api')=='anthropic_messages':headers['anthropic-version']='2023-06-01'
     root=connection['base_url']
     url=root+path if not path.startswith('@') else root.removesuffix('/v1')+path[1:]
     raw=None if body is None else json.dumps(body).encode()
@@ -76,11 +77,26 @@ def request(connection,path='',body=None):
     return json.loads(data)
 
 
+def model_list(connection, fetch=request):
+    page=fetch(connection,'/models');rows=page.get('data',[])
+    if connection.get('wire_api')=='anthropic_messages':
+        cursors=set()
+        while page.get('has_more'):
+            cursor=page.get('last_id')
+            if not isinstance(cursor,str) or not cursor or cursor in cursors:raise ValueError('Invalid model pagination cursor')
+            cursors.add(cursor)
+            page=fetch(connection,'/models?after_id='+urllib.parse.quote(cursor,safe=''))
+            more=page.get('data')
+            if not isinstance(more,list):raise ValueError('Invalid model list page')
+            rows.extend(more)
+    if not isinstance(rows,list):raise ValueError('Invalid compatible model list')
+    return {'data':rows,'has_more':False}
+
+
 def discover(connection, fetch=request):
     """Query metadata only; no model download, loading or inference."""
     connection=validate(connection);kind=connection['kind']
-    rows=fetch(connection,'/models').get('data',[])
-    if not isinstance(rows,list):raise ValueError('Invalid compatible model list')
+    rows=model_list(connection,fetch)['data']
     lms={}
     if kind=='lmstudio':
         try:
@@ -103,6 +119,14 @@ def discover(connection, fetch=request):
         if row.get('type') in ('embedding','embeddings'):continue
         info=copy.deepcopy(row);modalities=['text'];levels=[];tools=True
         try:
+            if connection['wire_api']=='anthropic_messages':
+                capabilities=info.get('capabilities') or {}
+                if info.get('max_input_tokens'):info['context_window']=info['max_input_tokens']
+                if info.get('max_tokens'):info['max_output_tokens']=info['max_tokens']
+                efforts=capabilities.get('effort') or {}
+                info['reasoning_levels']=[k for k in ('low','medium','high','xhigh','max') if isinstance(efforts.get(k),dict) and efforts[k].get('supported') is True]
+                if capabilities.get('image_input',{}).get('supported'):info['input_modalities']=['text','image']
+                if capabilities.get('thinking',{}).get('types',{}).get('adaptive',{}).get('supported'):info['thinking_mode']='adaptive'
             if kind=='ollama':
                 details=fetch(connection,'@/api/show',{'model':model})
                 capabilities=details.get('capabilities',[])
@@ -127,11 +151,20 @@ def discover(connection, fetch=request):
                     tools=info['capabilities'].get('trained_for_tool_use',info['capabilities'].get('tools',True))
                 if 'gpt-oss' in model:levels=['low','medium','high']
             # Explicit metadata supplied by an operator is used when an API omits it.
-            info.update(connection['model_specs'].get(model,{}))
+            declared=connection['model_specs'].get(model,{})
+            reported=info.get('max_context_window') or info.get('max_context_length') or info.get('context_window')
+            sources={key:('user' if key in declared else 'service' if key in info else 'inferred')
+                     for key in ('context_window','max_output_tokens','input_modalities','reasoning_levels','supports_tools')}
+            info.update(declared)
             maximum=info.get('max_context_window') or info.get('max_context_length') or info.get('context_window')
             if type(maximum) is not int or not 1024<=maximum<=100_000_000:
                 raise ValueError('Model maximum context is missing')
-            result[model]={'context_window':maximum,'display_name':info.get('display_name',model),
+            maximum_key=next(k for k in ('max_context_window','max_context_length','context_window') if info.get(k))
+            sources['context_window']='user' if maximum_key in declared else 'service'
+            if connection['wire_api']=='anthropic_messages' and (type(info.get('max_output_tokens')) is not int or info['max_output_tokens']<=0):raise ValueError('Anthropic maximum output is missing')
+            result[model]={'max_output_tokens':info.get('max_output_tokens'),'thinking_mode':info.get('thinking_mode'),'spec_sources':sources,'reported_context_window':reported,
+                           'context_conflict':bool(declared.get('context_window') and reported and declared['context_window']!=reported),
+                           'context_window':maximum,'display_name':info.get('display_name',model),
                            'input_modalities':info.get('input_modalities',modalities),
                            'reasoning_levels':info.get('reasoning_levels',levels),
                            'supports_tools':info.get('supports_tools',tools),

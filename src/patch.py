@@ -606,6 +606,7 @@ def main():
     p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
     p.add_argument("--model-preferences", type=Path, help="Explicit per-model reductions and hidden models")
     p.add_argument("--connections", type=Path, help="Connections saved by the connect command")
+    p.add_argument("--progress-file",type=Path,help=argparse.SUPPRESS)
     p.add_argument("--verify",action="store_true",help="Run all isolated installation checks after building")
     ds=p.add_mutually_exclusive_group()
     ds.add_argument("--with-deepseek", dest="deepseek_enabled", action="store_true")
@@ -657,7 +658,7 @@ def main():
     p.add_argument("--kind",choices=["ollama","lmstudio","openai"])
     p.add_argument("--models",nargs="+")
     p.add_argument("--key-file",type=Path)
-    p.add_argument("--wire-api",choices=['responses','chat_completions'],default='responses',help='Protocol exposed by the existing model service')
+    p.add_argument("--wire-api",choices=['responses','chat_completions','anthropic_messages'],default='responses',help='Protocol exposed by the existing model service')
     p.add_argument("--supports-reasoning-effort",action='store_true',help='Service explicitly accepts Chat Completions reasoning_effort')
     p.add_argument("--context-window",type=int)
     p.add_argument("--respect-server-context",action="store_true",help="Keep an existing smaller local-server window")
@@ -665,10 +666,17 @@ def main():
     p.set_defaults(func=__import__("local_support").connect)
     args = parser.parse_args()
     try:
+        progress=None
+        if args.action=='build' and args.progress_file:
+            progress=__import__('update_worker').SetupProgress(args.progress_file)
+            progress.publish('building')
         result = args.func(args)
         if args.action in ('settings','diagnose'):
             return result
-        if args.action=='build' and args.verify:__import__('update_worker').verify_build(args.output)
+        if args.action=='build' and args.verify:
+            if progress:progress.publish('verifying')
+            __import__('update_worker').verify_build(args.output,progress)
+        if progress:progress.publish('ready')
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         return 1

@@ -246,3 +246,67 @@ class NonstreamTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class AnthropicTests(unittest.TestCase):
+    def adapter(self,**body):
+        from chat_completions_compat import ResponsesToAnthropic
+        return ResponsesToAnthropic({'model':'arbitrary-name','input':'hello',**body},max_output_tokens=64000,reasoning_levels=['low','high'])
+
+    def records(self):
+        return [
+            {'type':'message_start','message':{'usage':{'input_tokens':7,'cache_read_input_tokens':11,'cache_creation_input_tokens':5}}},
+            {'type':'content_block_start','index':0,'content_block':{'type':'thinking','thinking':''}},
+            {'type':'content_block_delta','index':0,'delta':{'type':'thinking_delta','thinking':'Public facts'}},
+            {'type':'content_block_delta','index':0,'delta':{'type':'signature_delta','signature':'private-signature'}},
+            {'type':'content_block_stop','index':0},
+            {'type':'content_block_start','index':1,'content_block':{'type':'tool_use','id':'call_1','name':'lookup','input':{}}},
+            {'type':'content_block_delta','index':1,'delta':{'type':'input_json_delta','partial_json':'{"query":'}},
+            {'type':'content_block_delta','index':1,'delta':{'type':'input_json_delta','partial_json':'"星空"}'}},
+            {'type':'content_block_stop','index':1},
+            {'type':'message_delta','delta':{'stop_reason':'tool_use'},'usage':{'output_tokens':4}},
+            {'type':'message_stop'}]
+
+    def test_anthropic_tools_images_usage_thinking_roundtrip_and_foreign_isolation(self):
+        from reasoning_origin import stamp_response,resolve_request
+        adapter=self.adapter(stream=True,reasoning={'effort':'low'},tools=[{'type':'function','name':'lookup','parameters':{'type':'object'}}])
+        self.assertEqual(adapter.body['max_tokens'],64000)
+        self.assertEqual(adapter.body['output_config']['effort'],'low')
+        result=final(adapter.events([sse(self.records(),done=False)]))['response']
+        self.assertEqual(result['status'],'completed');self.assertEqual(result['usage']['input_tokens'],23)
+        self.assertEqual(result['usage']['input_tokens_details']['cached_tokens'],11)
+        self.assertEqual(json.loads(result['output'][-1]['arguments']),{'query':'星空'})
+        stamped=stamp_response(result,'arbitrary-name')
+        history=[{'role':'user','content':'hello'},*stamped['output'],{'type':'function_call_output','call_id':'call_1','output':'found'}]
+        restored,_,_=resolve_request({'model':'arbitrary-name','input':history},'arbitrary-name')
+        sent=self.adapter(input=restored['input']).body['messages']
+        self.assertEqual(sent[1]['content'][0],{'type':'thinking','thinking':'Public facts','signature':'private-signature'})
+        self.assertEqual(sent[-1]['content'][0]['tool_use_id'],'call_1')
+        foreign,_,_=resolve_request({'input':history},'another-model')
+        self.assertNotIn('private-signature',json.dumps(foreign));self.assertIn('Public facts',json.dumps(foreign))
+        image=self.adapter(input=[{'role':'user','content':[{'type':'input_image','image_url':'data:image/png;base64,YQ=='}]}])
+        self.assertEqual(image.body['messages'][0]['content'][0]['source']['type'],'base64')
+
+    def test_anthropic_truncation_errors_and_output_limit_are_explicit(self):
+        from chat_completions_compat import ResponsesToAnthropic
+        with self.assertRaisesRegex(ChatCompatibilityError,'max_output_tokens'):ResponsesToAnthropic({'model':'x','input':'hello'})
+        for records in (self.records()[:-1],self.records()[:-3]+[{'type':'message_stop'}],self.records()+[{'type':'ping'}]):
+            self.assertEqual(final(self.adapter().events(records))['type'],'response.failed')
+        error=final(self.adapter().events([{'type':'error','error':{'type':'overloaded_error','message':'fixture'}}]))
+        self.assertEqual(error['response']['error']['code'],'overloaded_error')
+        value={'type':'message','content':[{'type':'text','text':'partial'}],'stop_reason':'max_tokens','usage':{'input_tokens':9,'output_tokens':64}}
+        result=self.adapter().response(value)
+        self.assertEqual(result['status'],'incomplete');self.assertEqual(result['incomplete_details']['reason'],'max_output_tokens')
+
+    def test_anthropic_redacted_thinking_and_tool_result_order(self):
+        value={'type':'message','content':[{'type':'redacted_thinking','data':'opaque'},{'type':'text','text':'answer'}],
+               'stop_reason':'end_turn','usage':{'input_tokens':1,'output_tokens':1}}
+        result=self.adapter().response(value)
+        self.assertEqual(result['status'],'completed');self.assertIn('encrypted_content',result['output'][0])
+        body={'input':[{'role':'user','content':'hello'},{'type':'function_call','call_id':'1','name':'a','arguments':'{}'},
+                       {'type':'function_call','call_id':'2','name':'b','arguments':'{}'},
+                       {'type':'function_call_output','call_id':'2','output':'b'}, {'type':'function_call_output','call_id':'1','output':'a'}]}
+        compact=self.adapter(input=[{'role':'assistant','content':'Readable compacted history'},{'role':'user','content':'continue'}])
+        self.assertEqual(compact.body['messages'][0]['role'],'assistant')
+        messages=self.adapter(**body).body['messages']
+        self.assertEqual([b['tool_use_id'] for b in messages[-1]['content']],['2','1'])

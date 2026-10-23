@@ -346,3 +346,23 @@ class DiscoveryOrderingTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class RecoverySelectionTests(unittest.TestCase):
+    def test_recovery_selects_owned_pending_candidate_and_refuses_crossed_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();base=root/'builds/current';pending=root/'builds/next';base.mkdir(parents=True);pending.mkdir()
+            for edition in ('ds','proxy'):
+                monitor.atomic_json(root/'settings.json',{'edition':edition,'codex_home':str(root/'home')})
+                monitor.atomic_json(pending/'manifest.json',{'edition':edition,'codex_home':str(root/'home'),'tool_version':'next'})
+                monitor.atomic_json(root/'state.json',{'pending':{'build':{'directory':str(pending)}}})
+                monitor.atomic_json(pending/'native-install-transaction.json',{'phase':'config_installed'})
+                self.assertEqual(update_worker.recovery_target(root,base),pending)
+                value=update_worker.recovery_summary(root,base)
+                self.assertTrue(value['interrupted']);self.assertEqual(value['candidate_version'],'next')
+                monitor.atomic_json(pending/'native-install-transaction.json',{'phase':'rolled_back'})
+                self.assertFalse(update_worker.recovery_summary(root,base)['interrupted'])
+                monitor.atomic_json(pending/'manifest.json',{'edition':'foreign','codex_home':str(root/'home')})
+                with self.assertRaises(p.PatchError):update_worker.recovery_target(root,base)
+            monitor.atomic_json(root/'state.json',{'pending':{'build':{'directory':str(root.parent/'elsewhere')}}})
+            with self.assertRaises(p.PatchError):update_worker.recovery_target(root,base)
