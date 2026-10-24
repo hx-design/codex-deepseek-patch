@@ -12,6 +12,7 @@ import platform
 import sys
 import time
 import zipfile
+from contextlib import ExitStack
 
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
@@ -310,7 +311,7 @@ def verify_candidate(path, channel, app, output):
     raw = (Path(path).parent / item['archive']).read_bytes()
     if hashlib.sha256(raw).hexdigest() != item['archive_sha256']:
         raise ValueError('Candidate archive changed')
-    with tempfile.TemporaryDirectory(prefix='codex-candidate-') as temp:
+    with tempfile.TemporaryDirectory(prefix='codex-candidate-') as temp, ExitStack() as owned:
         work = Path(temp)
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             if set(archive.namelist()) - {n for n in archive.namelist() if n.endswith('/')} != set(item['release']['files']):
@@ -331,13 +332,30 @@ def verify_candidate(path, channel, app, output):
         logs = {}
         prepared=work/'first-install-build'
         (work/'first-install-home').mkdir()
+        connection_args=[]
+        if channel=='proxy':
+            import http.server,threading
+            class Metadata(http.server.BaseHTTPRequestHandler):
+                def log_message(self,*args):pass
+                def do_GET(self):
+                    if self.path!='/v1/models':self.send_error(404);return
+                    raw=b'{"data":[{"id":"validator-fixture","context_window":262144,"supports_tools":true}]}'
+                    self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+                def do_POST(self):self.send_error(503,'Inference is disabled in this metadata fixture')
+            server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Metadata)
+            owned.callback(server.server_close);owned.callback(server.shutdown)
+            threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.02},daemon=True).start()
+            connections=work/'first-install-connections.json'
+            connections.write_bytes(_json({'locals':[{'id':'local-validator','kind':'openai',
+                'base_url':'http://127.0.0.1:'+str(server.server_port)+'/v1','models':['validator-fixture']}]}))
+            connection_args=['--connections',str(connections)]
         for name, arguments in (
             ('unit', ['-m', 'unittest', 'discover', '-s', 'tests', '-v']),
             ('native', ['scripts/test_official_client.py', '--app', str(Path(app).resolve()),
                         '--edition', channel, '--services', '--reportdir', str(work / 'native-report')]),
             ('prepared-build', ['patch.py','build','--app',str(Path(app).resolve()),
                 '--codex-home',str(work/'first-install-home'),'--output',str(prepared),'--bundled-catalog',
-                '--with-deepseek' if channel=='ds' else '--without-deepseek','--verify']),
+                '--with-deepseek' if channel=='ds' else '--without-deepseek','--verify',*connection_args]),
         ):
             completed = subprocess.run([sys.executable, *arguments], cwd=work, env=env,
                 capture_output=True, timeout=600, **options)

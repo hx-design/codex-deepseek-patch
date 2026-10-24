@@ -745,8 +745,10 @@ class RealBuildValidationTests(unittest.TestCase):
                     with mock.object(p,'EDITION',edition),self.app_boundary() as signature:
                         installer.validate_build(directory,manifest)
                     signature.assert_called_once_with(Path(manifest['source_target']))
-                    with mock.object(p,'EDITION',edition),self.app_boundary():
-                        installer.validate_build(Path(os.path.relpath(directory)),manifest)
+                    # Cross-drive paths on Windows have no relative form.
+                    if directory.drive.lower()==Path.cwd().drive.lower():
+                        with mock.object(p,'EDITION',edition),self.app_boundary():
+                            installer.validate_build(Path(os.path.relpath(directory)),manifest)
 
     def test_real_validate_build_rejects_missing_invalid_provider_and_mismatched_identity(self):
         missing=object()
