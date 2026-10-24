@@ -168,6 +168,7 @@ else{$t=$t[0];@{registered=$true;loaded=($t.State -eq 4);enabled=[bool]$t.Enable
                   'The previous adapter service state was not restored')
 
 def validate_build(directory, manifest):
+    directory = Path(directory).resolve()
     p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') in ('prepared','prepared_idle'),
               'A prepared native-client build is required')
     p.require(manifest.get('edition') == p.EDITION, 'Native build belongs to another edition')
@@ -188,11 +189,20 @@ def validate_build(directory, manifest):
               and command[1:] == [str(directory / 'inference_adapter.py'), 'serve', str(directory / 'adapter-profile.json')],
               'Native service command does not belong to the validated build')
     inference_url = endpoint(profile['port'], profile['token'])
+    ownership = manifest.get('native_config')
+    p.require(isinstance(ownership, dict) and isinstance(ownership.get('root'), dict)
+              and 'provider' in ownership, 'Native configuration ownership is missing or invalid')
+    root, provider = ownership['root'], ownership['provider']
+    selected = root.get('model_provider')
+    # Fresh builtin integrations have no owned provider table. Migrations may
+    # retain the old table dormant for rollback; its endpoint still must match.
+    provider_matches = ((provider is None and selected == 'openai')
+                        or (isinstance(provider, dict) and selected in ('openai', 'codex-model-adapter')
+                            and provider.get('base_url') == inference_url))
     p.require(profile['port'] > 0 and settings.get('edition') == profile['edition'] == manifest['edition']
               and settings.get('health_identity') == profile['identity']
               and settings.get('health_url') == inference_url.removesuffix('/backend-api/codex') + '/health'
-              and manifest['native_config']['root']['openai_base_url'] == inference_url
-              and manifest['native_config']['provider']['base_url'] == inference_url,
+              and root.get('openai_base_url') == inference_url and provider_matches,
               'Native service, catalog configuration and profile identity disagree')
     source = Path(manifest['source_target'])
     verify_official(source)
