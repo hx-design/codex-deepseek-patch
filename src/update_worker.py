@@ -131,6 +131,7 @@ def verify_build(output, progress=None):
         from scripts.test_official_client import run
         manifest.pop('native_probe',None)
         manifest.pop('native_probe_report',None)
+        manifest.pop('native_install_validation',None)
         p.save_json(output/'manifest.json',manifest)
         from official_client import ADAPTER_FILES
         p.require(set(manifest.get('runtime_sha256',{})) == set(ADAPTER_FILES),'Native runtime inventory mismatch')
@@ -147,6 +148,10 @@ def verify_build(output, progress=None):
             # Older UI controllers only know `prepared` and may close the app
             # without waiting for idle. They must defer to the new installer.
             manifest['status']='prepared_idle'
+        if manifest.get('status') != 'installed':
+            from official_client_install import validate_build
+            validate_build(output,manifest)
+            manifest['native_install_validation']='passed'
         p.save_json(output/'manifest.json',manifest)
         return report
     from scripts.test_offline import main as offline

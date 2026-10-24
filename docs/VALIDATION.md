@@ -1,3 +1,9 @@
+## Builtin installation validation regression (Issue #3)
+
+`validate_build()` must run directly for fresh builtin ownership (`provider=None`), legacy provider tables, and builtin migrations retaining a dormant table. Invalid/missing ownership, provider types, selected provider, endpoints, health identity, service command, staged hashes, app identity and failed probes remain rejected. First-install transaction fixtures must have a path that keeps the production validator enabled.
+
+The build verifier now runs this same installation validator before saving success. Every release receipt additionally requires a fresh isolated `build --bundled-catalog --verify` with the real signed app, no existing configuration/provider table, and `native_install_validation=passed`. Both editions on macOS and Windows must produce the content-bound prepared-build log. This prepares and checks an isolated build without activating it on the user's system.
+
 ## Next development candidate: bootstrap and Messages
 
 Before release, validate both editions on macOS and Windows using ordinary-user, hidden/private-desktop fixtures. Additional mandatory regressions cover bootstrap digest rejection, atomic staging, channel isolation, stable runtime after deleting the original download, first-setup progress/cancellation, pending-recovery ownership, Messages text/images/tools, HTTP/WS translation, truncated SSE, cached token usage, reasoning signatures and foreign-model isolation. Native CLI tests include GPT → Anthropic lazy tool discovery/execution → GPT and old encrypted-history recovery through Messages.
