@@ -5,7 +5,7 @@
 
 **Use DeepSeek in the original Codex.** Add DeepSeek Flash alongside GPT, keep your login and native tools, and switch within one chat. Manage credentials, context limits and patch updates in the settings window.
 
-DS **0.7.0**, update branch `main`.
+DS **0.7.1**, update branch `main`.
 Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
 
 

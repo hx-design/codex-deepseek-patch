@@ -155,8 +155,8 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(stage.call_args.kwargs['app'],root/'official')
             verify.assert_called_once_with(root/'next');migrate.assert_called_once_with(str(root))
 
-    def test_native_gate_uses_original_cli_and_only_marks_success(self):
-        for status in ('passed','failed'):
+    def test_native_gate_requires_install_validation_before_marking_success(self):
+        for status in ('passed','failed','invalid-install'):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
                 root=Path(temp);record={'architecture':native.ARCHITECTURE,'edition':'ds','source_target':'/official',
                     'native_probe':'passed','native_probe_report':'previous-run','status':'prepared','update':{'monitor_state_dir':str(root)}}
@@ -168,7 +168,8 @@ class WorkerTests(unittest.TestCase):
                 for name,field in [('desktop-models.json','catalog_sha256'),('adapter-profile.json','profile_sha256'),('host-settings.json','host_settings_sha256')]:
                     (root/name).write_text('{}',encoding='utf-8');record[field]=p.file_sha(root/name)
                 p.save_json(root/'manifest.json',record)
-                with mock('scripts.test_official_client.run',return_value={'status':status}) as run, \
+                with mock('scripts.test_official_client.run',return_value={'status':'passed' if status=='invalid-install' else status}) as run, \
+                     mock('official_client_install.validate_build',side_effect=p.PatchError('install validation failed') if status=='invalid-install' else None) as validation, \
                      mock('scripts.test_boot.main') as old:
                     if status=='passed': update_worker.verify_build(root)
                     else:
@@ -176,7 +177,10 @@ class WorkerTests(unittest.TestCase):
                 run.assert_called_once_with(Path('/official'),root/'native-probe','ds');old.assert_not_called()
                 self.assertEqual(json.loads((root/'manifest.json').read_text()).get('native_probe'),
                                  'passed' if status=='passed' else None)
-                if status=='passed':self.assertEqual(json.loads((root/'manifest.json').read_text())['status'],'prepared_idle')
+                if status=='passed':
+                    saved=json.loads((root/'manifest.json').read_text());self.assertEqual(saved['status'],'prepared_idle')
+                    self.assertEqual(saved['native_install_validation'],'passed');validation.assert_called_once()
+                elif status=='failed':validation.assert_not_called()
 
     def test_native_install_does_not_call_legacy_bundle_installer(self):
         with tempfile.TemporaryDirectory() as temp:

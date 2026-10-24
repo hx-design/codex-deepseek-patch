@@ -149,7 +149,7 @@ class Fixture:
         test.assertEqual(json.loads((self.directory/'manifest.json').read_text())['status'], 'prepared')
 
     @contextmanager
-    def boundaries(self):
+    def boundaries(self, *, validate=False):
         fixture = self
 
         class Service:
@@ -217,6 +217,7 @@ class Fixture:
                 'AdapterService': Service, 'healthy': lambda *args: fixture.service['loaded'],
                 'native_session': session, 'inventory': inventory, '_set_provider': set_provider,
                 'migrate': migrate, 'rollback': rollback}.items():
+                if name=='validate_build' and validate:continue
                 stack.enter_context(mock.object(installer, name, value))
             stack.enter_context(mock.object(installer.sys, 'platform', 'darwin'))
             stack.enter_context(mock.object(p, 'app_layout', side_effect=lambda app: {'asar': Path(app)/'app.asar'}))
@@ -700,3 +701,101 @@ class RuntimeCommitTests(unittest.TestCase):
             with fixture.boundaries():installer.install(fixture.directory,fixture.manifest)
             self.assertEqual(fixture.manifest['status'],'installed')
             self.assertEqual((fixture.target/'app.asar').read_text(),'official')
+
+
+class RealBuildValidationTests(unittest.TestCase):
+    """Keep the production validator intact; fake only the external app boundary."""
+    def stage(self, directory, source, edition, url):
+        from official_client import endpoint
+        token=url.split('/')[3]
+        port=int(url.split(':')[2].split('/')[0])
+        profile={'format':1,'edition':edition,'identity':'validator-fixture','token':token,'port':port,'routes':{},
+            'gpt':{'chatgpt_base_url':'https://example.invalid/codex','api_base_url':'https://example.invalid/v1'}}
+        settings={'edition':edition,'health_identity':profile['identity'],
+            'health_url':url.removesuffix('/backend-api/codex')+'/health',
+            'adapter_command':[sys.executable,str(directory/'inference_adapter.py'),'serve',str(directory/'adapter-profile.json')]}
+        for name,data in [('desktop-models.json',{'models':[]}),('adapter-profile.json',profile),('host-settings.json',settings)]:p.save_json(directory/name,data)
+        (directory/'inference_adapter.py').write_text('# isolated fixture',encoding='utf-8')
+        return {'architecture':installer.ARCHITECTURE,'status':'prepared_idle','edition':edition,'native_probe':'passed',
+                'catalog_sha256':p.file_sha(directory/'desktop-models.json'),'profile_sha256':p.file_sha(directory/'adapter-profile.json'),
+                'host_settings_sha256':p.file_sha(directory/'host-settings.json'),'runtime_sha256':{'inference_adapter.py':p.file_sha(directory/'inference_adapter.py')},
+                'source_target':str(source),'original_asar':p.file_sha(source/'app.asar')}
+
+    def fixture(self, directory, edition, mode='builtin', previous=None):
+        directory.mkdir();source=directory/'official.app';source.mkdir();(source/'app.asar').write_bytes(b'official')
+        url='http://127.0.0.1:41232/'+('fixture-'+'x'*40)+'/backend-api/codex'
+        manifest=self.stage(directory,source,edition,url)
+        current=''
+        if previous:
+            current,previous=prepare_config('',directory/'desktop-models.json',url,mode='native-summary')
+        _,owned=prepare_config(current,directory/'desktop-models.json',url,mode=mode,previous=previous)
+        manifest['native_config']=owned
+        return manifest
+
+    @contextmanager
+    def app_boundary(self):
+        with mock.object(installer,'verify_official') as signature, mock.object(p,'app_layout',side_effect=lambda app:{'asar':Path(app)/'app.asar'}):
+            yield signature
+
+    def test_real_validate_build_accepts_builtin_none_legacy_and_dormant_provider(self):
+        for edition in ('ds','proxy'):
+            for mode,previous in [('builtin',False),('native-summary',False),('builtin',True)]:
+                with self.subTest(edition=edition,mode=mode,previous=previous),tempfile.TemporaryDirectory() as temp:
+                    directory=Path(temp).resolve()/'build';manifest=self.fixture(directory,edition,mode,previous)
+                    with mock.object(p,'EDITION',edition),self.app_boundary() as signature:
+                        installer.validate_build(directory,manifest)
+                    signature.assert_called_once_with(Path(manifest['source_target']))
+                    # Cross-drive paths on Windows have no relative form.
+                    if directory.drive.lower()==Path.cwd().drive.lower():
+                        with mock.object(p,'EDITION',edition),self.app_boundary():
+                            installer.validate_build(Path(os.path.relpath(directory)),manifest)
+
+    def test_real_validate_build_rejects_missing_invalid_provider_and_mismatched_identity(self):
+        missing=object()
+        for edition in ('ds','proxy'):
+            with tempfile.TemporaryDirectory() as temp:
+                directory=Path(temp).resolve()/'build';original=self.fixture(directory,edition)
+                changes=[('provider',value) for value in (missing,False,[],42,'openai',{}, {'base_url':'https://wrong.invalid'})]
+                changes += [('selected','foreign'),('selected',None),('root_url','https://wrong.invalid'),('root',None),('ownership',None)]
+                for field,value in changes:
+                    manifest=copy.deepcopy(original);owned=manifest['native_config']
+                    if field=='provider':
+                        if value is missing:owned.pop('provider')
+                        else:owned['provider']=value
+                    elif field=='selected':owned['root']['model_provider']=value
+                    elif field=='root_url':owned['root']['openai_base_url']=value
+                    elif field=='root':owned['root']=value
+                    else:manifest['native_config']=value
+                    with self.subTest(edition=edition,field=field,value=value),mock.object(p,'EDITION',edition),self.app_boundary() as signature:
+                        with self.assertRaises(p.PatchError):installer.validate_build(directory,manifest)
+                        signature.assert_not_called()
+
+    def test_real_validate_build_keeps_digest_health_command_signature_and_probe_guards(self):
+        for mutation in ('runtime','health','command','signature','probe'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as temp:
+                directory=Path(temp).resolve()/'build';manifest=self.fixture(directory,'ds')
+                if mutation=='runtime':(directory/'inference_adapter.py').write_bytes(b'changed')
+                elif mutation in ('health','command'):
+                    settings=json.loads((directory/'host-settings.json').read_bytes())
+                    if mutation=='health':settings['health_identity']='another-service'
+                    else:settings['adapter_command'][1]='another-script.py'
+                    p.save_json(directory/'host-settings.json',settings);manifest['host_settings_sha256']=p.file_sha(directory/'host-settings.json')
+                elif mutation=='signature':(Path(manifest['source_target'])/'app.asar').write_bytes(b'changed')
+                else:manifest['native_probe']='failed'
+                with mock.object(p,'EDITION','ds'),self.app_boundary():
+                    with self.assertRaises(p.PatchError):installer.validate_build(directory,manifest)
+
+    def test_fresh_builtin_install_runs_real_validation_before_transaction_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture=Fixture(Path(temp).resolve(),fresh=True,native_identity=True)
+            manifest=fixture.manifest
+            url='http://127.0.0.1:41232/'+('fixture-'+'x'*40)+'/backend-api/codex'
+            prepared,manifest['native_config']=prepare_config(fixture.before,fixture.directory/'desktop-models.json',url,mode='builtin')
+            (fixture.directory/'config-prepared.toml').write_text(prepared,encoding='utf-8')
+            manifest.update(self.stage(fixture.directory,fixture.source,'ds',manifest['native_config']['root']['openai_base_url']))
+            p.save_json(fixture.directory/'manifest.json',manifest)
+            with mock.object(p,'EDITION','ds'),fixture.boundaries(validate=True):
+                installer.install(fixture.directory,manifest)
+            self.assertEqual(manifest['status'],'installed')
+            self.assertEqual(tomllib.loads(fixture.config.read_text())['model_provider'],'openai')
+            self.assertEqual(json.loads((fixture.directory/'native-install-transaction.json').read_bytes())['phase'],'committed')

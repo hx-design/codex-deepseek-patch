@@ -12,12 +12,14 @@ import platform
 import sys
 import time
 import zipfile
+from contextlib import ExitStack
 
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
 CHANNELS = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}
 VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHANNELS}
 REQUIRED_NATIVE = frozenset((
+    'prepared_build_install_validation',
     'native_catalog_reasoning', 'existing_chat_native_identity_migration',
     'same_thread_model_switching', 'native_auto_manual_compaction_windows',
     'same_thread_external_after_gpt_quota_exhausted',
@@ -33,6 +35,11 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_real_validate_build_accepts_builtin_none_legacy_and_dormant_provider',
+    'test_real_validate_build_rejects_missing_invalid_provider_and_mismatched_identity',
+    'test_real_validate_build_keeps_digest_health_command_signature_and_probe_guards',
+    'test_fresh_builtin_install_runs_real_validation_before_transaction_commit',
+    'test_native_gate_requires_install_validation_before_marking_success',
     'test_anthropic_tools_images_usage_thinking_roundtrip_and_foreign_isolation',
     'test_anthropic_http_websocket_tools_and_auth_isolation',
     'test_anthropic_truncation_errors_and_output_limit_are_explicit',
@@ -304,7 +311,7 @@ def verify_candidate(path, channel, app, output):
     raw = (Path(path).parent / item['archive']).read_bytes()
     if hashlib.sha256(raw).hexdigest() != item['archive_sha256']:
         raise ValueError('Candidate archive changed')
-    with tempfile.TemporaryDirectory(prefix='codex-candidate-') as temp:
+    with tempfile.TemporaryDirectory(prefix='codex-candidate-') as temp, ExitStack() as owned:
         work = Path(temp)
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             if set(archive.namelist()) - {n for n in archive.namelist() if n.endswith('/')} != set(item['release']['files']):
@@ -323,10 +330,32 @@ def verify_candidate(path, channel, app, output):
         if codec.is_file():env['CODEX_TEST_COMPRESSION_NODE']=str(codec)
         options = {'creationflags': 0x08000000} if os.name == 'nt' else {}
         logs = {}
+        prepared=work/'first-install-build'
+        (work/'first-install-home').mkdir()
+        connection_args=[]
+        if channel=='proxy':
+            import http.server,threading
+            class Metadata(http.server.BaseHTTPRequestHandler):
+                def log_message(self,*args):pass
+                def do_GET(self):
+                    if self.path!='/v1/models':self.send_error(404);return
+                    raw=b'{"data":[{"id":"validator-fixture","context_window":262144,"supports_tools":true}]}'
+                    self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+                def do_POST(self):self.send_error(503,'Inference is disabled in this metadata fixture')
+            server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Metadata)
+            owned.callback(server.server_close);owned.callback(server.shutdown)
+            threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.02},daemon=True).start()
+            connections=work/'first-install-connections.json'
+            connections.write_bytes(_json({'locals':[{'id':'local-validator','kind':'openai',
+                'base_url':'http://127.0.0.1:'+str(server.server_port)+'/v1','models':['validator-fixture']}]}))
+            connection_args=['--connections',str(connections)]
         for name, arguments in (
             ('unit', ['-m', 'unittest', 'discover', '-s', 'tests', '-v']),
             ('native', ['scripts/test_official_client.py', '--app', str(Path(app).resolve()),
                         '--edition', channel, '--services', '--reportdir', str(work / 'native-report')]),
+            ('prepared-build', ['patch.py','build','--app',str(Path(app).resolve()),
+                '--codex-home',str(work/'first-install-home'),'--output',str(prepared),'--bundled-catalog',
+                '--with-deepseek' if channel=='ds' else '--without-deepseek','--verify',*connection_args]),
         ):
             completed = subprocess.run([sys.executable, *arguments], cwd=work, env=env,
                 capture_output=True, timeout=600, **options)
@@ -335,7 +364,11 @@ def verify_candidate(path, channel, app, output):
             if completed.returncode:
                 raise ValueError(name + ' validation failed; see the private validation log')
             logs[name] = hashlib.sha256(data).hexdigest()
+        manifest=json.loads((prepared/'manifest.json').read_bytes())
+        if manifest.get('native_install_validation')!='passed' or manifest.get('native_config',{}).get('provider') is not None:
+            raise ValueError('Fresh builtin build did not pass real installation validation')
         native = json.loads((work / 'native-report' / ('official-client-' + channel + '-result.json')).read_bytes())
+        native['checks']['prepared_build_install_validation']='passed'
         unit_log = (output / (host + '-' + channel + '-unit.log')).read_text(encoding='utf-8', errors='replace')
         passed = set(re.findall(r'^(test_\w+) \([^\n]+\) \.\.\. ok$', unit_log, re.MULTILINE))
         coverage = {'format': 1, 'kind': 'native-client-with-synthetic-services', 'platform': host,
@@ -348,7 +381,7 @@ def verify_candidate(path, channel, app, output):
         logs['coverage'] = hashlib.sha256(data).hexdigest()
         receipt = {'format': 1, 'candidate_id': value['id'], 'platform': host, 'edition': channel,
             'commit': item['release']['commit'], 'core_sha256': item['release']['core_sha256'],
-            'status': 'passed', 'checks': {'unit': 'passed', 'native': 'passed'}, 'logs': logs}
+            'status': 'passed', 'checks': {'unit': 'passed', 'native': 'passed', 'install_validation':'passed'}, 'logs': logs}
         if os.name == 'nt':
             import ctypes
             receipt['execution'] = {'console': int(ctypes.windll.kernel32.GetConsoleWindow()),
@@ -369,11 +402,11 @@ def require_receipts(candidate, directory):
         release = candidate['editions'][channel]['release']
         expected = {'candidate_id': candidate['id'], 'platform': host, 'edition': channel,
                     'commit': release['commit'], 'core_sha256': release['core_sha256'], 'status': 'passed'}
-        if any(receipt.get(k) != v for k, v in expected.items()) or receipt.get('checks') != {'unit': 'passed', 'native': 'passed'}:
+        if any(receipt.get(k) != v for k, v in expected.items()) or receipt.get('checks') != {'unit': 'passed', 'native': 'passed', 'install_validation':'passed'}:
             raise ValueError('Validation belongs to another candidate or is incomplete: ' + str(path.name))
         if host == 'windows' and receipt.get('execution') != {'console': 0, 'admin': False}:
             raise ValueError('Windows validation did not use the ordinary hidden execution context')
-        for name in ('unit', 'native', 'coverage'):
+        for name in ('unit', 'native', 'prepared-build', 'coverage'):
             log = Path(directory) / (host + '-' + channel + '-' + name + ('.json' if name == 'coverage' else '.log'))
             if not log.is_file() or hashlib.sha256(log.read_bytes()).hexdigest() != receipt.get('logs', {}).get(name):
                 raise ValueError('Validation evidence is missing or changed')
