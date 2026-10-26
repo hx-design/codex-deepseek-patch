@@ -26,6 +26,7 @@ class NativeStagingTests(unittest.TestCase):
             initial={'manifest':{'architecture':'official-original','edition':'proxy','target':str(app),
                                 'locals':[connection],'model_routes':routes,'deepseek_enabled':False},'catalog':catalog}
             with patch.object(native,'compression_node',return_value=None), \
+                 patch('official_client_host.prepare',return_value={'format':1,'models':['glm-fixture']}), \
                  patch('official_client_update.verify_official',return_value={'verified':True}), \
                  patch.object(p,'app_layout',return_value={'asar':asar,'version':'fixture','build':'1'}):
                 manifest=native.stage(app=app,codex_home=home,output=output,baseline=None,initial=initial)

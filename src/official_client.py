@@ -198,6 +198,8 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
             profile["network_proxy"] = old_profile["network_proxy"]
     prepared, ownership = prepare_config(before, output / "desktop-models.json", endpoint(port, token),
                                           mode="builtin", previous=previous)
+    from official_client_host import prepare as prepare_composer
+    composer = prepare_composer(app, sorted(mapped)) if mapped else None
     output.mkdir(parents=True, mode=0o700)
     for name in ADAPTER_FILES:
         shutil.copy2(p.ROOT / name, output / name)
@@ -222,6 +224,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                 "catalog_sha256":p.file_sha(output / "desktop-models.json"),
                 "runtime_sha256":{name:p.file_sha(output / name) for name in ADAPTER_FILES},
                 "profile_sha256":p.file_sha(output / "adapter-profile.json"),
+                "composer_compat":composer,
                 "host_settings_sha256":p.file_sha(output / "host-settings.json"), "model_routes":routes,
                 "keychain_account":effective.get("keychain_account"), "keychain_service":effective.get("keychain_service"),
                 "deepseek_enabled":effective.get("deepseek_enabled", edition == "ds"),
