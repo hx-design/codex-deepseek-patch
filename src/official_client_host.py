@@ -454,6 +454,77 @@ def assets(app, plan):
     return result
 
 
+def _mac_process(command, input_fd, output_fd, env, cwd):
+    """Launch the signed app as its own TCC responsible process, like open -a.
+
+    Disclaim only for the official app child, never for its tools or a shell.
+    Pipes remain inherited without moving privacy grants to the Python host.
+    """
+    import ctypes as ct
+    import signal
+    library=ct.CDLL(None)
+    try:disclaim=library.responsibility_spawnattrs_setdisclaim
+    except AttributeError:
+        raise CompatibilityError('This macOS cannot preserve the official app permission identity') from None
+    pointer=ct.POINTER(ct.c_void_p)
+    signatures={
+        'posix_spawnattr_init':[pointer], 'posix_spawnattr_destroy':[pointer],
+        'posix_spawn_file_actions_init':[pointer], 'posix_spawn_file_actions_destroy':[pointer],
+        'posix_spawnattr_setflags':[pointer,ct.c_short], 'posix_spawnattr_setpgroup':[pointer,ct.c_int],
+        'posix_spawn_file_actions_adddup2':[pointer,ct.c_int,ct.c_int],
+        'posix_spawn_file_actions_addclose':[pointer,ct.c_int],
+        'posix_spawn_file_actions_addopen':[pointer,ct.c_int,ct.c_char_p,ct.c_int,ct.c_uint],
+        'posix_spawn_file_actions_addchdir_np':[pointer,ct.c_char_p],
+        'posix_spawn':[ct.POINTER(ct.c_int),ct.c_char_p,pointer,pointer,ct.POINTER(ct.c_char_p),ct.POINTER(ct.c_char_p)]}
+    for name,args in signatures.items():
+        getattr(library,name).argtypes=args;getattr(library,name).restype=ct.c_int
+    disclaim.argtypes=[pointer,ct.c_int];disclaim.restype=ct.c_int
+    def checked(result):
+        if result:raise OSError(result,os.strerror(result))
+    attributes=ct.c_void_p();actions=ct.c_void_p()
+    checked(library.posix_spawnattr_init(ct.byref(attributes)))
+    copies=[]
+    try:
+        checked(library.posix_spawn_file_actions_init(ct.byref(actions)))
+        try:
+            copies=[os.dup(input_fd),os.dup(output_fd)]
+            for fd,mode in ((0,os.O_RDONLY),(1,os.O_WRONLY),(2,os.O_WRONLY)):
+                checked(library.posix_spawn_file_actions_addopen(ct.byref(actions),fd,b'/dev/null',mode,0))
+            for source,target in zip(copies,(3,4)):
+                checked(library.posix_spawn_file_actions_adddup2(ct.byref(actions),source,target))
+                checked(library.posix_spawn_file_actions_addclose(ct.byref(actions),source))
+            if cwd:checked(library.posix_spawn_file_actions_addchdir_np(ct.byref(actions),os.fsencode(cwd)))
+            checked(library.posix_spawnattr_setflags(ct.byref(attributes),0x4000|0x0002))
+            checked(library.posix_spawnattr_setpgroup(ct.byref(attributes),0))
+            checked(disclaim(ct.byref(attributes),1))
+            args=[os.fsencode(v) for v in command]
+            environment=[os.fsencode(k+'='+v) for k,v in (env if env is not None else os.environ).items()]
+            argv=(ct.c_char_p*(len(args)+1))(*args,None)
+            envp=(ct.c_char_p*(len(environment)+1))(*environment,None)
+            child=ct.c_int()
+            checked(library.posix_spawn(ct.byref(child),args[0],ct.byref(actions),ct.byref(attributes),argv,envp))
+        finally:library.posix_spawn_file_actions_destroy(ct.byref(actions))
+    finally:
+        library.posix_spawnattr_destroy(ct.byref(attributes))
+        for fd in copies:os.close(fd)
+    class Process:
+        pid=child.value
+        returncode=None
+        def poll(self):
+            if self.returncode is None:
+                pid,status=os.waitpid(self.pid,os.WNOHANG)
+                if pid:self.returncode=os.waitstatus_to_exitcode(status)
+            return self.returncode
+        def terminate(self):os.kill(self.pid,signal.SIGTERM)
+        def wait(self,timeout=None):
+            deadline=time.monotonic()+timeout if timeout is not None else float('inf')
+            while self.poll() is None:
+                if time.monotonic()>=deadline:raise subprocess.TimeoutExpired(command,timeout)
+                time.sleep(.02)
+            return self.returncode
+    return Process()
+
+
 def _package_process(command, handles, env, cwd):
     """Retain the package identity on this app, with normal child breakaway.
 
@@ -539,6 +610,8 @@ class Pipe:
             options.update(startupinfo=startup, creationflags=0x08000000)
             command = [*argv, '--remote-debugging-pipe',
                        '--remote-debugging-io-pipes=' + ','.join(map(str, handles))]
+        elif sys.platform=='darwin':
+            command=[*argv,'--remote-debugging-pipe']
         else:
             # A tiny exec shim maps only inherited pipe descriptors to 3/4.
             # It avoids preexec_fn in a potentially multithreaded host.
@@ -551,7 +624,9 @@ class Pipe:
                        *argv, '--remote-debugging-pipe']
             options.update(pass_fds=(read_child, write_child), start_new_session=True)
         try:
-            if package and os.name == 'nt':
+            if sys.platform=='darwin':
+                self.process = _mac_process(command,read_child,write_child,env,cwd)
+            elif package and os.name == 'nt':
                 self.process = _package_process(command, handles, env, cwd)
             else:
                 self.process = subprocess.Popen(command, env=env, cwd=cwd,

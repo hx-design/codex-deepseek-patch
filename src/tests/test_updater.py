@@ -397,8 +397,12 @@ class PairedCandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'tests').mkdir()
             (root/'pythonw.exe').write_bytes(b'fixture')
+            (root/'package-unit-exit.json').write_text('{"returncode":99}')
+            (root/'package-unit-start.json').write_text('{"pid":1}')
             (root/'tests/test_fixture.py').write_text('import os,unittest\nclass Check(unittest.TestCase):\n def test_fixture(self):self.assertEqual(os.environ["CODEX_COMPOSER_EDITION"],"ds")\n')
             def invoke(script):
+                self.assertFalse((root/'package-unit-exit.json').exists())
+                self.assertFalse((root/'package-unit-start.json').exists())
                 self.assertIn('Invoke-CommandInDesktopPackage',script)
                 self.assertNotIn('PreventBreakaway',script)
                 subprocess.run([interpreter,str(root/'package-unit-driver.py')],cwd=root,

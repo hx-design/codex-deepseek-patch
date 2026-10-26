@@ -311,6 +311,9 @@ def _windows_unit_check(work, app, env, log_path):
     python=Path(sys.executable).with_name('pythonw.exe')
     if not python.is_file():raise ValueError('Windowless Python is required for Windows UI validation')
     driver=work/'package-unit-driver.py';done=work/'package-unit-exit.json';started=work/'package-unit-start.json'
+    # A retry in the same private work directory must await this run's worker.
+    done.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
     selected={k:env[k] for k in ('CODEX_COMPOSER_APP','CODEX_COMPOSER_FIXTURE','CODEX_COMPOSER_EDITION','CODEX_TEST_COMPRESSION_NODE') if k in env}
     driver.write_text('import os,sys,json,unittest,traceback\nfrom pathlib import Path\n'
         'def main():\n'

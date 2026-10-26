@@ -392,6 +392,11 @@ class NativeComposerQuotaTests(unittest.TestCase):
         pending={};evaluated=set();result=None;deadline=time.monotonic()+25
         try:
             package_identity=None
+            if sys.platform=='darwin':
+                import ctypes
+                responsible=ctypes.CDLL(None).responsibility_get_pid_responsible_for_pid
+                responsible.argtypes=[ctypes.c_int];responsible.restype=ctypes.c_int
+                self.assertEqual(responsible(pipe.process.pid),pipe.process.pid)
             if sys.platform=='win32':
                 import ctypes
                 from official_client_shortcut import official_entry
@@ -429,6 +434,7 @@ class NativeComposerQuotaTests(unittest.TestCase):
                 self.assertEqual(row['dispatched'],int(row['model'] in models),row)
             report={'kind':'source-bound-native-renderer-button-contract','platform':sys.platform,'edition':edition,
                     'checks':len(result),'status':'passed','plan':plan,'application_identity':package_identity,
+                    'mac_permission_owner_verified':sys.platform=='darwin',
                     'scope':'Native quota and submit expressions; synthetic account/model state and DOM controls. No signed-in full-composer claim.'}
             (root/'composer-result.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
         finally:
