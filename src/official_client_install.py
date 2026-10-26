@@ -208,6 +208,14 @@ def validate_build(directory, manifest):
     verify_official(source)
     p.require(p.file_sha(p.app_layout(source)['asar']) == manifest['original_asar'],
               'The original app changed after native validation')
+    if 'composer_compat' in manifest:
+        plan=manifest['composer_compat']
+        p.require((plan is None and not profile['routes']) or
+                  isinstance(plan,dict) and plan.get('models')==sorted(profile['routes']),
+                  'Composer compatibility and independent model routes disagree')
+        if plan is not None:
+            from official_client_host import assets
+            assets(source,plan)
 
 
 

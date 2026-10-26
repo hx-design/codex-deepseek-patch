@@ -32,7 +32,7 @@ PHASES = {'installed': '已生效', 'idle': '等待检查', 'stabilizing': '正�
 READ_ACTIONS = {'snapshot', 'diagnose', 'probe_connection', 'cleanup_preview', 'compare_models', 'hub'}
 ACTIONS = READ_ACTIONS | {'save_connection', 'remove_connection', 'save_model', 'save_options',
                          'save_proxy', 'save_deepseek', 'save_images', 'check_updates', 'retry_update',
-                         'show_progress', 'update_action', 'sync_models', 'cleanup', 'recover', 'restore', 'cancel_recovery'}
+                         'show_progress', 'update_action', 'sync_models', 'cleanup', 'recover', 'restore', 'cancel_recovery', 'launch_codex'}
 
 
 class SettingsError(ValueError):
@@ -375,6 +375,17 @@ def diagnose(directory, *, endpoints=False):
     health = health_status(host)
     add('adapter','ok' if health['ready'] else 'error',
         '本地适配服务正常。' if health['ready'] else '本地适配服务未就绪，请检查或恢复安装。')
+    if manifest.get('composer_compat'):
+        session=monitor.load_json(build/'composer-session.json',{})
+        try:
+            processes=p.active_app_processes(Path(manifest['target']),read_only_source=True)
+            active=(session.get('status')=='active' and session.get('identity')==host.get('health_identity')
+                    and any(row.get('pid')==session.get('pid') for row in processes))
+            add('composer','ok' if active else 'warning' if processes else 'info',
+                '本次 Codex 已启用独立模型发送兼容。' if active else
+                '请正常退出 Codex，再从「偏好 → 启动 Codex」开启独立模型发送。' if processes else
+                '发送兼容已准备；下次请从「偏好 → 启动 Codex」打开。')
+        except Exception:add('composer','warning','暂时无法确认本次启动的发送兼容状态。')
     try:
         enabled = monitor.Scheduler(directory).status()['enabled']
         add('monitor','ok' if enabled else 'warning','自动监测已开启。' if enabled else '自动监测未开启。')
@@ -442,6 +453,14 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
     if action == 'hub':
         return hub_dispatch(directory, payload, expected, cancelled)
     if action == 'snapshot':return snapshot(directory)
+    if action == 'launch_codex':
+        _,build,manifest=records(directory)
+        from official_client_host import ComposerAlreadyRunningError
+        try:__import__('update_progress').launch_official(build,manifest)
+        except ComposerAlreadyRunningError:
+            raise SettingsError('codex_already_open','请先正常退出 Codex，再从这里启动，以启用外部模型独立发送。') from None
+        return {'message':('Codex 已启动，外部模型发送兼容已随本次启动启用。'
+                           if manifest.get('composer_compat') else 'Codex 已启动。')}
     if action == 'diagnose':return diagnose(directory,endpoints=payload.get('endpoints') is True)
     if action == 'probe_connection':
         connection=_validate_connection(payload['connection'])
@@ -1260,7 +1279,9 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         if extra:buttons.append(hub_button('复制报告','copy',text=extra.get('text','')))
     elif route=='preferences':
         data['subtitle']='右键进入设置 · 隐藏后随时唤醒。'
-        rows += [hub_field('theme','外观',opts['theme'],'choice',
+        rows += [{'type':'action',**hub_button('启动 Codex','launch_codex',style='primary')},
+                 {'type':'note','text':'GPT 额度耗尽时，请先正常退出 Codex，再从这里启动，以启用外部模型独立发送。'},
+                 hub_field('theme','外观',opts['theme'],'choice',
                        choices=[['system','跟随系统'],['light','浅色'],['dark','深色']]),
                  hub_field('motion','动效',opts['motion'],'choice',choices=[['system','跟随系统'],['reduced','减少动效']]),
                  hub_field('sound','气泡音效',opts['sound'],'toggle'),
@@ -1382,7 +1403,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         notice=result['message']+f"\n{result['from']:,} → {result['to']:,} tokens"
     elif intent=='diagnose':
         extra=perform(intent,{'endpoints':True})
-    elif intent in ('check_updates','retry_update','sync_models','show_progress'):
+    elif intent in ('check_updates','retry_update','sync_models','show_progress','launch_codex'):
         result=perform(intent);notice=result.get('message')
     elif intent=='update_action':
         perform('update_action',{k:payload.get(k) for k in ('id','phase','command')});route='updates';key=None

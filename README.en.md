@@ -4,7 +4,7 @@
 
 **Your models, in the original Codex.** Add existing cloud endpoints and local models to the native picker. Keep your login, history and tools, switch within one chat, and manage connections and patch updates in one settings window.
 
-Extension **0.8.1-proxy.1**, update branch `codex/existing-proxy-models`.
+Extension **0.8.2-proxy.1**, update branch `codex/existing-proxy-models`.
 
 Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
 
@@ -20,6 +20,17 @@ Updates download and verify ahead of time. One Start click queues installation u
 | Extension | Native GPT + existing cloud/local services; optional DeepSeek | `codex/existing-proxy-models` |
 
 The extension does not require DeepSeek. Existing services continue to own subscription login and inference.
+
+## Using DeepSeek after GPT quota is exhausted
+
+This feature starts with DS **0.7.2** / extension **0.8.2-proxy.1**. Update the patch through your edition's channel first; versions 0.7.1 / 0.8.1-proxy.1 do not include this composer compatibility.
+
+- **Normal use:** open Codex from its original icon. You do not need to use the patch settings each time.
+- **If GPT's five-hour or weekly quota disables Send even after selecting DeepSeek:** save your work, fully quit Codex normally, then open it through the whale's **Preferences → Launch Codex** action. Select DeepSeek and send your message. The update completion page's **Launch Codex** button also uses this entry point.
+- **Lifetime:** the compatibility remains active until that Codex process exits. Switching chats or models, or hiding the window, does not require another launch.
+- **Later launches:** while GPT quota is still exhausted, use that entry point again. Fully quitting and opening the original icon restores the native composer behavior. Once GPT quota recovers, you can resume using the original icon.
+
+The compatibility scopes the send-button quota lock to the selected model: explicitly registered independent services remain usable, while GPT keeps its own quota checks. The same rule applies to both editions on macOS and Windows. Official app files and signatures remain unchanged.
 
 ## Design
 

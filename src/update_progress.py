@@ -534,7 +534,10 @@ def launch_official(directory, manifest):
     app = Path(manifest['target']).resolve()
     from official_client_update import verify_official
     verify_official(app)
-    if sys.platform == 'darwin':
+    if manifest.get('composer_compat'):
+        from official_client_host import start_composer
+        start_composer(directory,manifest)
+    elif sys.platform == 'darwin':
         _spawn(['/usr/bin/open', '-a', str(app)], directory)
     elif sys.platform == 'win32':
         from official_client_shortcut import official_entry
@@ -614,14 +617,18 @@ def action(directory, identity, command, phase=None):
             if not record:
                 raise ValueError('The installed update record is unavailable')
             launch_official(*record)
-        except Exception:
+        except Exception as error:
             # A failed launch must not permanently consume the user's button.
+            from official_client_host import ComposerAlreadyRunningError
+            detail=('请先正常退出 Codex，再点“启动 Codex”启用外部模型独立发送。'
+                    if isinstance(error,ComposerAlreadyRunningError) else
+                    '启动未完成，请再次点击“启动 Codex”。补丁已安装。')
             with control_lock(progress.directory):
                 value = progress.read()
                 claim = load_json(progress.directory / 'progress.launch.json', {})
                 if claim.get('id') == identity and value.get('id') == identity:
                     (progress.directory / 'progress.launch.json').unlink(missing_ok=True)
-                    value.update(can_launch=True, detail='启动未完成，请再次点击“启动 Codex”。补丁已安装。')
+                    value.update(can_launch=True, detail=detail)
                     write_progress(progress.directory,value)
             raise
     return {'action': command}

@@ -216,6 +216,7 @@ class NativeStagePreferencesTest(unittest.TestCase):
             next(row for row in catalog['models'] if row['slug']=='gpt-6.1-sol').update(context_window=128000,auto_compact_token_limit=100000)
             p.save_json(path,catalog)
             with mock('official_client.compression_node',return_value=None), \
+                 mock('official_client_host.prepare',return_value={'format':1,'models':['deepseek-flash']}), \
                  mock('official_client_update.verify_official',return_value={}),mock.object(p,'app_layout',return_value=layout):
                 official_client.stage(app=app,codex_home=home,output=root/'next',baseline=baseline,edition='ds')
             gpt=next(row for row in json.loads((root/'next/desktop-models.json').read_text(encoding='utf-8'))['models'] if row['slug']=='gpt-6.1-sol')
