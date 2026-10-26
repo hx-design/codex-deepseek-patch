@@ -386,6 +386,20 @@ class ProgressTest(unittest.TestCase):
             with self.assertRaises(ValueError):u.launch_official(self.root,manifest)
         self.spawn_mock.assert_not_called()
 
+    def test_launch_uses_composer_entry_and_keeps_existing_health_checks(self):
+        manifest={'status':'installed','target':str(self.root/'app'),'composer_compat':{'format':1}}
+        executable=self.root/'app'/'Codex.exe'
+        for platform in ('darwin','win32'):
+            with self.subTest(platform=platform), mock.patch.object(u.sys,'platform',platform), \
+                 mock.patch('official_client_update.verify_official'), \
+                 mock.patch('official_client_host.start_composer') as start, \
+                 mock.patch.object(patch,'app_layout',return_value={'exe':executable}), \
+                 mock.patch.object(patch,'active_app_processes',return_value=[{'exe':str(executable)}]), \
+                 mock.patch('official_client_host.healthy',return_value=True):
+                u.launch_official(self.root,manifest)
+            start.assert_called_once_with(self.root,manifest)
+        self.spawn_mock.assert_not_called()
+
     def test_ready_start_uses_local_install_path_and_no_second_check(self):
         self.settings();self.build();self.progress.publish('waiting_for_exit')
         with mock.patch.object(u,'validated_close',return_value=True):

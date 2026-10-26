@@ -388,6 +388,31 @@ class ArchiveAndReleaseTests(unittest.TestCase):
 
 
 class PairedCandidateTests(unittest.TestCase):
+    def test_windows_package_unit_driver_captures_results_and_scopes_environment(self):
+        import subprocess
+        import sys
+        from scripts import release_manifest as release
+        from windows_support import background_options
+        interpreter=sys.executable
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'tests').mkdir()
+            (root/'pythonw.exe').write_bytes(b'fixture')
+            (root/'tests/test_fixture.py').write_text('import os,unittest\nclass Check(unittest.TestCase):\n def test_fixture(self):self.assertEqual(os.environ["CODEX_COMPOSER_EDITION"],"ds")\n')
+            def invoke(script):
+                self.assertIn('Invoke-CommandInDesktopPackage',script)
+                self.assertNotIn('PreventBreakaway',script)
+                subprocess.run([interpreter,str(root/'package-unit-driver.py')],cwd=root,
+                               check=True,capture_output=True,timeout=30,**background_options())
+                return {'ok':True}
+            with mock('official_client_shortcut.official_entry',return_value={'app_user_model_id':'OpenAI.Codex_fixture!App'}), \
+                 mock('official_client_shortcut._powershell',side_effect=invoke), \
+                 mock.object(release.sys,'executable',str(root/'python.exe')):
+                code,data=release._windows_unit_check(root,root/'app',{'CODEX_COMPOSER_EDITION':'ds',
+                    'PRIVATE_TEST_SECRET':'do-not-serialize-this'},root/'unit.log')
+            self.assertEqual(code,0)
+            self.assertIn(b'... ok',data)
+            self.assertNotIn('do-not-serialize-this',(root/'package-unit-driver.py').read_text())
+
     def test_release_rejects_missing_or_skipped_native_services_and_regressions(self):
         from scripts import release_manifest as release
         for host,channel in release.VARIANTS:

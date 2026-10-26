@@ -35,6 +35,9 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_native_composer_quota_button_before_inference',
+    'test_composer_quota_model_switch_keeps_gpt_and_other_submit_guards',
+    'test_composer_interception_failure_keeps_pipe_until_native_exit',
     'test_real_validate_build_accepts_builtin_none_legacy_and_dormant_provider',
     'test_real_validate_build_rejects_missing_invalid_provider_and_mismatched_identity',
     'test_real_validate_build_keeps_digest_health_command_signature_and_probe_guards',
@@ -299,6 +302,52 @@ def read_candidate(path):
     return value
 
 
+def _windows_unit_check(work, app, env, log_path):
+    """Run portable tests in the registered package, without a console/elevation."""
+    import base64
+    from official_client_shortcut import official_entry, _powershell
+    entry=official_entry(app)
+    family,app_id=entry['app_user_model_id'].split('!',1)
+    python=Path(sys.executable).with_name('pythonw.exe')
+    if not python.is_file():raise ValueError('Windowless Python is required for Windows UI validation')
+    driver=work/'package-unit-driver.py';done=work/'package-unit-exit.json';started=work/'package-unit-start.json'
+    selected={k:env[k] for k in ('CODEX_COMPOSER_APP','CODEX_COMPOSER_FIXTURE','CODEX_COMPOSER_EDITION','CODEX_TEST_COMPRESSION_NODE') if k in env}
+    driver.write_text('import os,sys,json,unittest,traceback\nfrom pathlib import Path\n'
+        'def main():\n'
+        ' os.chdir('+repr(str(work))+');sys.path.insert(0,'+repr(str(work))+')\n'
+        ' os.environ.update('+repr(selected)+')\n'
+        ' Path('+repr(str(started))+').write_text(json.dumps({"pid":os.getpid()}))\n'
+        ' with open('+repr(str(log_path))+',"w",encoding="utf-8") as log:\n'
+        '  sys.stdout=sys.stderr=log\n'
+        '  try:\n'
+        '   result=unittest.main(module=None,argv=["unittest","discover","-s","tests","-v"],exit=False).result\n'
+        '   code=0 if result.wasSuccessful() else 1\n'
+        '  except BaseException:\n'
+        '   traceback.print_exc();code=1\n'
+        ' tmp=Path('+repr(str(done)+'.tmp')+');tmp.write_text(json.dumps({"returncode":code}));tmp.replace('+repr(str(done))+')\n'
+        'if __name__=="__main__":main()\n',encoding='utf-8')
+    value={'family':family,'app_id':app_id,'python':str(python),'args':subprocess.list2cmdline([str(driver)])}
+    encoded=base64.b64encode(json.dumps(value).encode()).decode()
+    script=r'''$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();
+$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__VALUES__'))|ConvertFrom-Json;
+Invoke-CommandInDesktopPackage -PackageFamilyName $v.family -AppId $v.app_id -Command $v.python -Args $v.args;
+@{ok=$true}|ConvertTo-Json -Compress'''
+    _powershell(script.replace('__VALUES__',encoded))
+    deadline=time.monotonic()+600
+    while time.monotonic()<deadline:
+        if done.is_file():return json.loads(done.read_text())['returncode'],log_path.read_bytes()
+        time.sleep(.25)
+    if started.is_file():
+        pid=json.loads(started.read_text())['pid']
+        value={'pid':pid,'python':str(python),'driver':str(driver)}
+        encoded=base64.b64encode(json.dumps(value).encode()).decode()
+        _powershell(r'''$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__VALUES__'))|ConvertFrom-Json;
+$p=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$v.pid);
+if($p.ExecutablePath -ieq $v.python -and $p.CommandLine.Contains($v.driver)){Stop-Process -Id $p.ProcessId};
+@{ok=$true}|ConvertTo-Json -Compress'''.replace('__VALUES__',encoded))
+    raise ValueError('Windows package unit validation timed out')
+
+
 def verify_candidate(path, channel, app, output):
     """Run actual portable tests/native CLI on this host; emit a content-bound receipt."""
     value = read_candidate(path)
@@ -326,6 +375,9 @@ def verify_candidate(path, channel, app, output):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(data)
         env = {**os.environ, 'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost'}
+        fixture=owned.enter_context(tempfile.TemporaryDirectory(prefix='cq-'))
+        env.update(CODEX_COMPOSER_APP=str(Path(app).resolve()),CODEX_COMPOSER_FIXTURE=fixture,
+                   CODEX_COMPOSER_EDITION=channel)
         codec=Path(app)/('Contents/Resources/cua_node/bin/node' if host=='macos' else 'resources/cua_node/bin/node.exe')
         if codec.is_file():env['CODEX_TEST_COMPRESSION_NODE']=str(codec)
         options = {'creationflags': 0x08000000} if os.name == 'nt' else {}
@@ -357,11 +409,15 @@ def verify_candidate(path, channel, app, output):
                 '--codex-home',str(work/'first-install-home'),'--output',str(prepared),'--bundled-catalog',
                 '--with-deepseek' if channel=='ds' else '--without-deepseek','--verify',*connection_args]),
         ):
-            completed = subprocess.run([sys.executable, *arguments], cwd=work, env=env,
-                capture_output=True, timeout=600, **options)
-            data = completed.stdout + completed.stderr
+            if name=='unit' and host=='windows':
+                returncode,data=_windows_unit_check(work,app,env,output/(host+'-'+channel+'-unit.log'))
+            else:
+                check_env=env if name=='unit' else {k:v for k,v in env.items() if not k.startswith('CODEX_COMPOSER_')}
+                completed = subprocess.run([sys.executable, *arguments], cwd=work, env=check_env,
+                    capture_output=True, timeout=600, **options)
+                returncode,data=completed.returncode,completed.stdout+completed.stderr
             (output / (host + '-' + channel + '-' + name + '.log')).write_bytes(data)
-            if completed.returncode:
+            if returncode:
                 raise ValueError(name + ' validation failed; see the private validation log')
             logs[name] = hashlib.sha256(data).hexdigest()
         manifest=json.loads((prepared/'manifest.json').read_bytes())

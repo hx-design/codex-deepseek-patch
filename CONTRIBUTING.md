@@ -52,6 +52,8 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 3. Run the original CLI with isolated state and synthetic endpoints in the background. Do not launch GUI windows or touch the user's keychain during routine validation.
 4. Preserve native login, tool execution, approvals, chat identity, working directory and readable-summary compaction. Test native API metadata migrations and interruption recovery; never write the history database directly.
 5. Stage and validate the same bytes. Recheck source/runtime/profile identity before activation. Test rollback with fault injection and real Windows normal-user service states.
+6. The Issue #4 composer compatibility is an explicit exception for in-memory UI adaptation, not for application-file edits. Only the selected independent model may bypass the ChatGPT account quota guard. Keep the account quota atom and every other submit guard unchanged. Use an inherited private pipe, verify exact source/adapted asset hashes, and preserve Windows package identity with normal descendant-process behavior. Never turn a UI compatibility error into termination of a working app.
+7. Quota regressions must cover the renderer's disabled button before any inference request, separately from CLI/provider 429 tests. Record synthetic DOM/selected-state coverage separately from a complete signed-in composer run; test five-hour/weekly limits, new/existing chat state, external/GPT switching, unknown models and other disabled conditions in both editions on both OSes.
 
 ## Monitor and configuration changes
 

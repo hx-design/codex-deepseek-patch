@@ -31,6 +31,8 @@ The extension does not require DeepSeek. Existing services continue to own subsc
 
 ## Design
 
+Development-branch quota fix: after installing a build containing this change, normally quit Codex and use the whale's **Preferences → Launch Codex** action (or the update completion button). It scopes the native send-button quota lock to the selected model, allowing explicitly registered independent services while retaining GPT's quota checks. Official app files and signatures stay unchanged. Starting a stopped app through its original icon does not load this runtime UI compatibility.
+
 The official app stays unchanged: no ASAR edits, macOS re-signing, or copied Windows app. Windows retains its Store package identity and native updater. A small Python standard-library service listens only on loopback, forwarding GPT authentication to its original destination and using separate credentials for registered model services.
 
 The built-in `openai` identity and native prediction request path are retained. Codex owns GPT stream deadlines, model selection, permissions, tools and compaction scheduling; external models generate readable handoffs through their own service. Switch models after the current reply completes. Provider-specific reasoning signatures are isolated across models; readable history and tool results remain available. Context defaults follow model maxima, while explicit reductions and hidden models are preserved.
