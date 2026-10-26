@@ -29,9 +29,18 @@ Updates download and verify ahead of time. One Start click queues installation u
 
 The extension does not require DeepSeek. Existing services continue to own subscription login and inference.
 
-## Design
+## Using DeepSeek after GPT quota is exhausted
 
-Development-branch quota fix: after installing a build containing this change, normally quit Codex and use the whale's **Preferences → Launch Codex** action (or the update completion button). It scopes the native send-button quota lock to the selected model, allowing explicitly registered independent services while retaining GPT's quota checks. Official app files and signatures stay unchanged. Starting a stopped app through its original icon does not load this runtime UI compatibility.
+This applies after installing a build with the composer fix. The fix is currently on the [`codex/issue4-quota-composer`](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/issue4-quota-composer) candidate branch and is not yet in the stable automatic-update channels.
+
+- **Normal use:** open Codex from its original icon. You do not need to use the patch settings each time.
+- **If GPT's five-hour or weekly quota disables Send even after selecting DeepSeek:** save your work, fully quit Codex normally, then open it through the whale's **Preferences → Launch Codex** action. Select DeepSeek and send your message. The update completion page's **Launch Codex** button also uses this entry point.
+- **Lifetime:** the compatibility remains active until that Codex process exits. Switching chats or models, or hiding the window, does not require another launch.
+- **Later launches:** while GPT quota is still exhausted, use that entry point again. Fully quitting and opening the original icon restores the native composer behavior. Once GPT quota recovers, you can resume using the original icon.
+
+The compatibility scopes the send-button quota lock to the selected model: explicitly registered independent services remain usable, while GPT keeps its own quota checks. The same rule applies to both editions on macOS and Windows. Official app files and signatures remain unchanged.
+
+## Design
 
 The official app stays unchanged: no ASAR edits, macOS re-signing, or copied Windows app. Windows retains its Store package identity and native updater. A small Python standard-library service listens only on loopback, forwarding GPT authentication to its original destination and using separate credentials for registered model services.
 
