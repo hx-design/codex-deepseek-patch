@@ -31,7 +31,7 @@ The extension does not require DeepSeek. Existing services continue to own subsc
 
 ## Using DeepSeek after GPT quota is exhausted
 
-This applies after installing a build with the composer fix. The fix is currently on the [`codex/issue4-quota-composer`](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/issue4-quota-composer) candidate branch and is not yet in the stable automatic-update channels.
+This feature starts with DS **0.7.2** / extension **0.8.2-proxy.1**. Update the patch through your edition's channel first; versions 0.7.1 / 0.8.1-proxy.1 do not include this composer compatibility.
 
 - **Normal use:** open Codex from its original icon. You do not need to use the patch settings each time.
 - **If GPT's five-hour or weekly quota disables Send even after selecting DeepSeek:** save your work, fully quit Codex normally, then open it through the whale's **Preferences → Launch Codex** action. Select DeepSeek and send your message. The update completion page's **Launch Codex** button also uses this entry point.

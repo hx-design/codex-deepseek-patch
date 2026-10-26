@@ -161,7 +161,7 @@ python3 patch.py settings
 
 ## GPT 额度耗尽后如何继续使用 DeepSeek
 
-适用于安装了发送入口兼容修复的版本。目前修复位于 [`codex/issue4-quota-composer`](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/issue4-quota-composer) 候选分支，尚未进入正式自动更新通道。
+此功能从 DS **0.7.2**／扩展版 **0.8.2-proxy.1** 开始提供。请先通过对应通道更新补丁，旧版 0.7.1／0.8.1-proxy.1 不包含这项发送入口兼容。
 
 - **正常使用时**：照常点击原来的 Codex 图标，无需每次从补丁设置启动。
 - **GPT 的 5 小时或每周额度耗尽，切到 DeepSeek 后发送按钮仍不可用时**：保存当前工作并正常完全退出 Codex，再从鲸鱼「偏好 → 启动 Codex」打开，选择 DeepSeek 后发送消息。安装更新后，也可使用更新完成页的「启动 Codex」。
