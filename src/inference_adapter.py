@@ -889,7 +889,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             route = self.server.profile['routes'].get(body['model'])
             trace_id=self.server.trace.begin(body['model'],bool(route),'http',standalone_compaction or _is_compaction(body),(route or {}).get('base_url'))
             if standalone_compaction and route:
-                raise RelayError(501, 'remote_compaction_unsupported', 'Standalone compaction is unavailable for this model route')
+                response, events = _route_compaction(self, body, route, operation)
+                if body.get('stream'):
+                    payload = b''.join(b'event: ' + value['type'].encode() + b'\ndata: ' + _json(value) + b'\n\n' for value in events)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    sent = self.close_connection = True
+                    self.wfile.write(payload)
+                else:
+                    self.reply(200, response)
+                    sent = True
+                self.server.trace.update(trace_id,'completed')
+                return
             adapter = None
             protocol = None
             if route:
