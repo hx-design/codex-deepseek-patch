@@ -1,6 +1,6 @@
 {
   "architecture": "official-client-v1",
-  "branch": "main",
-  "edition": "ds",
-  "version": "0.7.2"
+  "branch": "codex/existing-proxy-models",
+  "edition": "proxy",
+  "version": "0.8.2-proxy.1"
 }
