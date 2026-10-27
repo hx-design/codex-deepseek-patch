@@ -300,7 +300,8 @@ class _Completion:
                  'This Chat route cannot convert output audio or images','unsupported_chat_output',502)
         _require(self.finish is None or not any(delta.get(k) for k in ('content','reasoning_content','tool_calls','refusal')),
                  'Chat content arrived after its finish reason','invalid_upstream_response',502)
-        for field,kind in (('reasoning_content','reasoning'),('content','text'),('refusal','refusal')):
+        # GLM reasoning summary repeats in TUI; strip reasoning_content stream.
+        for field,kind in (('content','text'),('refusal','refusal')):
             if delta.get(field) is not None and delta[field]!='':yield from self.add_text(delta[field],kind)
         _require(not delta.get('function_call'),'Legacy Chat function_call requires an explicit compatibility capability','invalid_upstream_response',502)
         calls=delta.get('tool_calls') or []
