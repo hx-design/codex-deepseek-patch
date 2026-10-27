@@ -320,6 +320,9 @@ def build(args):
     if app is None and sys.platform == 'win32':
         from windows_support import discover_app
         app = discover_app()
+    elif app is None and sys.platform == 'linux':
+        from linux_support import discover_app
+        app = discover_app()
     app = Path(app).resolve()
     baseline = getattr(args, 'baseline', None)
     initial = initial_models(app, args) if not baseline or getattr(args, 'connections', None) else None

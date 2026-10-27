@@ -596,8 +596,7 @@ def main():
     if sys.platform == "win32":
         default_app = None
     elif sys.platform == "linux":
-        from linux_support import discover_app
-        default_app = discover_app()
+        default_app = None
     p.add_argument("--app", type=Path, default=default_app)
     p.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
     p.add_argument("--output", type=Path, required=True)
